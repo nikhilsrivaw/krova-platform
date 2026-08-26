@@ -1,0 +1,23 @@
+{
+  "key": "general",
+  "label": "General business",
+  "summary": "A business that talks to its customers on WhatsApp, email and the phone.",
+  "capabilities": ["conversation_intelligence"],
+  "tone": "Warm, plain and brief. Write the way a good office manager speaks - helpful, never salesy, never stiff. Short sentences. No jargon.",
+  "policies": "Never invent a price, a date or an availability. If the answer is not in the business details, say you will check and pass it to the owner.",
+  "known_gaps": [
+    "Anything involving a price not listed in the business details",
+    "Any commitment to a date the owner has not confirmed"
+  ],
+  "watch_for": [
+    {"kind": "payment",  "note": "Any promise to pay, or any invoice discussed"},
+    {"kind": "callback", "note": "Any promise that someone will call back"},
+    {"kind": "delivery", "note": "Any promise to send, deliver or complete something"}
+  ],
+  "common_questions": [
+    "What are your timings?",
+    "Where are you located?",
+    "How much does it cost?",
+    "Are you available on <date>?"
+  ]
+}

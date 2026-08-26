@@ -1,0 +1,382 @@
+"""
+One live call, orchestrated.
+
+Three concurrent things happen for the length of a call: caller audio flows
+in from Plivo, transcripts flow out of Sarvam's STT, and replies flow out
+through Sarvam's TTS back to Plivo. This module is the state machine that
+keeps them coherent.
+
+Barge-in is the part worth reading carefully. When a caller talks over the
+agent, three things must happen together:
+
+  1. tell Plivo to stop playing whatever is queued (clearAudio) - otherwise
+     the agent keeps talking into a call the caller has already redirected
+  2. cancel the in-flight Claude generation - tokens generated for a reply
+     nobody will hear are pure cost
+  3. record only the words the caller actually heard before interrupting, so
+     Claude's own memory of what it said matches reality - otherwise the next
+     turn reasons from a sentence that was never fully spoken
+
+Every turn - caller and agent - is written through the same ingest() every
+other channel uses, with channel=voice. That single line is what makes a
+phone call join the same customer record as their WhatsApp messages, with no
+special-casing anywhere else in the platform.
+"""
+
+import asyncio
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Awaitable, Callable
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.ai import agent as agent_module
+from shared.ai import context as agent_context
+from shared.billing import usage
+from shared.channels import ingest
+from shared.channels.voice.tenant import VoiceRoute
+from shared.db.models import Call, Channel, Direction, IdentityKind, UsageEventType
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+# How long to wait after the caller stops speaking before treating the
+# utterance as something the agent should answer. Sarvam's own VAD produces
+# transcript.final, so this is a light debounce on top rather than the
+# primary signal.
+FINAL_DEBOUNCE_S = 0.3
+
+SendAudio = Callable[[bytes], Awaitable[None]]
+SendClear = Callable[[], Awaitable[None]]
+
+
+async def _single_chunk(text: str):
+    """Wrap one fixed string (the greeting) as the one-item stream speak() expects."""
+    yield text
+
+
+@dataclass(slots=True)
+class Turn:
+    role: str  # "caller" | "agent"
+    text: str
+    complete: bool = True  # False when cut off by barge-in
+
+
+@dataclass(slots=True)
+class CallPipeline:
+    """
+    Holds one call's state. Fed transcripts and audio; drives the reply.
+
+    Every I/O boundary is a plain async callable, injected rather than opened
+    here - that is what makes the barge-in logic testable without a live
+    Plivo or Sarvam connection.
+    """
+
+    route: VoiceRoute
+    caller_phone: str
+    provider_call_id: str
+    send_audio: SendAudio
+    send_clear: SendClear
+    # Takes a STREAM of text pieces, not one string - a reply is spoken
+    # sentence by sentence as Claude generates it, so TTS can start on the
+    # first sentence while later ones are still being decided. The greeting
+    # (a fixed string known instantly) uses the same path via
+    # _single_chunk(), rather than keeping a second, one-shot code path.
+    speak: Callable[["asyncio.AsyncIterator[str]"], "asyncio.AsyncIterator[bytes]"]
+    db: AsyncSession
+    call_row_id: uuid.UUID | None = None
+
+    history: list[dict] = field(default_factory=list)
+    turns: list[Turn] = field(default_factory=list)
+    customer_id: uuid.UUID | None = None
+    # What Sarvam's STT actually heard the caller speaking, not what the
+    # business's connection was configured for - a caller code-mixing
+    # Hindi and English should get a reply spoken back the same way, not
+    # forced into whatever language_code the connection happened to default
+    # to. Read by relay.py's speak() closure; falls back to route.language
+    # until the first final transcript reports one.
+    detected_language: str | None = None
+    _reply_task: asyncio.Task | None = field(default=None, repr=False)
+    _spoken_chars: int = 0
+
+    async def start(self) -> None:
+        """Greet the caller. The first thing anyone hears on the call."""
+        await self._say_stream(_single_chunk(self.route.greeting), record=True)
+
+    async def on_transcript(self, text: str, *, is_final: bool, language: str | None = None) -> None:
+        """
+        A piece of caller speech arrived.
+
+        Partial transcripts are used only to detect that the caller has
+        started talking again - which is what triggers barge-in - never to
+        drive a reply. Only a final transcript is answered.
+        """
+        if not text.strip():
+            return
+
+        if language:
+            self.detected_language = language
+
+        if self._reply_task is not None and not self._reply_task.done():
+            await self._barge_in()
+
+        if is_final:
+            await self._handle_utterance(text.strip())
+
+    async def _barge_in(self) -> None:
+        """
+        The caller started talking while the agent was still speaking.
+
+        Order matters: silence Plivo first, so nothing more plays while the
+        rest of this unwinds, then stop paying for a generation nobody will
+        hear.
+        """
+        await self.send_clear()
+
+        if self._reply_task is not None:
+            self._reply_task.cancel()
+            try:
+                await self._reply_task
+            except asyncio.CancelledError:
+                pass
+            self._reply_task = None
+            # Cancelling mid-flush/commit leaves the shared session in a
+            # rolled-back-but-not-cleared state - confirmed on a real call,
+            # where the NEXT _store_turn on this same session raised
+            # PendingRollbackError and silently dropped a turn. One session
+            # lives for the whole call, so a cancellation anywhere in it has
+            # to leave the session clean for whatever runs next.
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.exception("failed to clear session state after barge-in cancel")
+
+        # The agent's turn is on record as whatever fraction was actually
+        # spoken before it was cut off, not the sentence it never finished -
+        # so the next turn reasons from what the caller heard.
+        if self.turns and self.turns[-1].role == "agent" and not self.turns[-1].complete:
+            spoken = self.turns[-1].text[: self._spoken_chars].strip()
+            if spoken and self.history and self.history[-1]["role"] == "assistant":
+                self.history[-1]["content"] = spoken
+                self.turns[-1].text = spoken
+
+    async def _handle_utterance(self, text: str) -> None:
+        """Store what the caller said, then generate and speak a reply."""
+        self.turns.append(Turn(role="caller", text=text))
+        self.history.append({"role": "user", "content": text})
+
+        await self._store_turn(direction=Direction.inbound, text=text)
+
+        self._reply_task = asyncio.create_task(self._reply(started_at=time.monotonic()))
+        try:
+            await self._reply_task
+        except asyncio.CancelledError:
+            pass
+
+    async def _reply(self, *, started_at: float | None = None) -> None:
+        """
+        Ask the agent what to say, speaking each sentence as it is decided.
+
+        Uses agent_module.stream_reply, not draft_reply: a live call cannot
+        wait for a whole JSON tool-call to finish (action, message,
+        reasoning, gap, confidence, in that order) before it can even start
+        speaking - the reasoning/gap/confidence generated AFTER the message
+        was pure added latency nobody heard the benefit of. Streaming plain
+        text instead means the first sentence can reach Sarvam the instant
+        Claude finishes writing it.
+
+        escalate is the case worth reading carefully. On text channels it
+        means "queue this for a person, the customer hears nothing yet" -
+        correct there, since someone can pick it up in an hour. A live call
+        has nobody to hand off to mid-conversation: silence is not neutral,
+        it sounds like the line dropped. So escalate here still speaks -
+        honestly, naming what it does not know rather than guessing - and
+        records the gap the same way a text escalation does, so the
+        business's knowledge still compounds even though nothing was queued.
+        """
+        if self.customer_id is None:
+            logger.warning("reply requested with no resolved customer, skipping")
+            return
+
+        t_context = time.monotonic()
+        context = await agent_context.build(self.route.business_id, self.customer_id, self.db)
+        t_stream_start = time.monotonic()
+        if started_at is not None:
+            logger.info(
+                "voice latency call=%s context=%.2fs",
+                self.provider_call_id,
+                t_stream_start - t_context,
+            )
+
+        events = agent_module.stream_reply(context)
+        try:
+            first = await events.__anext__()
+        except StopAsyncIteration:
+            logger.warning("stream_reply produced no events at all")
+            return
+
+        action = first.action if isinstance(first, agent_module.ReplyStart) else "escalate"
+
+        if action == "no_action":
+            async for _ in events:
+                pass
+            return
+
+        if action == "escalate":
+            gap: str | None = None
+            cost_paise = 0
+            async for ev in events:
+                if isinstance(ev, agent_module.ReplyDone):
+                    gap = ev.gap
+                    cost_paise = ev.cost_paise
+            usage.record(
+                business_id=self.route.business_id,
+                event_type=UsageEventType.ai_reply_generated,
+                channel="voice",
+                quantity=1,
+                unit="call",
+                krova_cost_paise=cost_paise,
+                source_type="call",
+                source_id=self.call_row_id,
+                db=self.db,
+            )
+            if gap:
+                await agent_module.record_gap(self.route.business_id, gap, self.db)
+            if self.call_row_id is not None:
+                call_row = await self.db.get(Call, self.call_row_id)
+                if call_row is not None:
+                    call_row.escalated = True
+                    call_row.escalation_reason = gap
+            spoken = (
+                f"I don't have {gap} on hand right now, but I'll make sure "
+                "someone follows up with you on that."
+                if gap
+                else "I don't have enough to answer that properly, but I'll make "
+                "sure someone follows up with you."
+            )
+            await self._say_stream(_single_chunk(spoken), record=True)
+            return
+
+        reply_cost = {"paise": 0}
+
+        async def reply_text_chunks():
+            async for ev in events:
+                if isinstance(ev, agent_module.ReplyChunk):
+                    yield ev.text
+                elif isinstance(ev, agent_module.ReplyDone):
+                    reply_cost["paise"] = ev.cost_paise
+
+        if started_at is not None:
+            t_first_event = time.monotonic()
+            logger.info(
+                "voice latency call=%s time-to-action=%.2fs (utterance-to-action=%.2fs)",
+                self.provider_call_id,
+                t_first_event - t_stream_start,
+                t_first_event - started_at,
+            )
+
+        await self._say_stream(reply_text_chunks(), record=True)
+        usage.record(
+            business_id=self.route.business_id,
+            event_type=UsageEventType.ai_reply_generated,
+            channel="voice",
+            quantity=1,
+            unit="call",
+            krova_cost_paise=reply_cost["paise"],
+            source_type="call",
+            source_id=self.call_row_id,
+            db=self.db,
+        )
+
+    async def _say_stream(self, text_chunks, *, record: bool) -> None:
+        """
+        Speak a reply as its text arrives, tracking what actually reached
+        the caller and what Claude has said so far as one and the same
+        growing string.
+
+        `_spoken_chars` is read by `_barge_in` if this gets cut off
+        mid-flow, which is how a partial sentence becomes the honest record
+        instead of the whole thing - unchanged from before streaming, but
+        now measured against `turn.text` as it grows rather than a string
+        that was already complete when speaking began. `self.history[-1]`
+        is kept live-updated for the same reason: `_barge_in` patches
+        `self.history[-1]["content"]` on interruption, and that code was
+        never rewritten - it still finds an assistant entry there because
+        one is appended immediately, not after the reply is fully known.
+        """
+        turn = Turn(role="agent", text="", complete=False)
+        self.turns.append(turn)
+        if record:
+            self.history.append({"role": "assistant", "content": ""})
+
+        async def tracked_chunks():
+            async for chunk in text_chunks:
+                turn.text += (" " if turn.text and not turn.text.endswith(" ") else "") + chunk
+                if record:
+                    self.history[-1]["content"] = turn.text
+                yield chunk
+
+        self._spoken_chars = 0
+        t_start = time.monotonic()
+        t_first_chunk: float | None = None
+        try:
+            async for chunk in self.speak(tracked_chunks()):
+                if t_first_chunk is None:
+                    t_first_chunk = time.monotonic()
+                await self.send_audio(chunk)
+                # Rough proportional tracking - good enough for barge-in
+                # recovery, not claimed as exact.
+                self._spoken_chars = min(
+                    len(turn.text), self._spoken_chars + max(1, len(chunk) // 40)
+                )
+            turn.complete = True
+            self._spoken_chars = len(turn.text)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if t_first_chunk is not None:
+                logger.info(
+                    "voice latency call=%s tts_connect_and_first_chunk=%.2fs",
+                    self.provider_call_id,
+                    t_first_chunk - t_start,
+                )
+            if record and turn.text.strip():
+                await self._store_turn(
+                    direction=Direction.outbound,
+                    text=turn.text[: self._spoken_chars] if not turn.complete else turn.text,
+                )
+
+    async def _store_turn(self, *, direction: Direction, text: str) -> None:
+        """
+        Write this turn through the same path every channel uses.
+
+        This one line is what makes a phone call join the same customer
+        record as a WhatsApp conversation - identity resolves on phone
+        number, and voice needs no special case anywhere downstream.
+        """
+        if not text.strip():
+            return
+        try:
+            result = await ingest.ingest(
+                business_id=self.route.business_id,
+                channel=Channel.voice,
+                direction=direction,
+                identity_kind=IdentityKind.phone,
+                identity_value=self.caller_phone,
+                external_id=f"{self.provider_call_id}:{int(time.time() * 1000)}",
+                text=text,
+                occurred_at=datetime.now(timezone.utc),
+                # A call transcript is drafted-and-approved territory later,
+                # not something to draft a reply to - the reply already
+                # happened, out loud.
+                enqueue_analysis=True,
+                db=self.db,
+            )
+            if result.customer is not None:
+                self.customer_id = result.customer.id
+            await self.db.commit()
+        except Exception:
+            logger.exception("failed to store call turn - continuing the call")
+            await self.db.rollback()

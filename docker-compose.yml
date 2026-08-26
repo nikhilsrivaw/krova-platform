@@ -1,0 +1,32 @@
+# Local development database.
+#
+# Port 5433 on the host, because PostgreSQL 18 is already installed natively
+# on 5432 and we don't want to guess which one a connection reached.
+# Version matches what we'll run on RDS, so local and production behave alike.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: krova-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: krova
+      POSTGRES_PASSWORD: krova_dev
+      POSTGRES_DB: krova
+      # Deterministic collation, so ORDER BY doesn't differ between a
+      # developer's machine and the server.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # Postgres 18 images want the mount one level up: data then lives in a
+      # version-named subdirectory, which is what makes pg_upgrade --link work.
+      - krova_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U krova -d krova"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  krova_pgdata:

@@ -1,0 +1,267 @@
+"""
+Channel webhooks.
+
+The most timing-sensitive code in the platform. Meta expects a 200 quickly;
+a webhook that is slow or errors gets retried, and one that keeps failing gets
+disabled - at which point every business on the platform silently stops
+receiving messages.
+
+So the shape is fixed: verify the signature, hand the body to a background
+task, return 200. No database work, no AI, nothing that can block, before the
+response goes out.
+"""
+
+from fastapi import APIRouter, BackgroundTasks, Header, Query, Request, Response, status
+from fastapi.responses import PlainTextResponse
+
+from shared.channels import ingest
+from shared.auth.encryption import decrypt
+from shared.channels.whatsapp import media, signature, webhook
+from shared.db.models import Channel, Direction, IdentityKind
+from shared.db.session import AsyncSessionLocal
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+@router.get("/whatsapp", response_class=PlainTextResponse)
+async def verify_whatsapp_webhook(
+    hub_mode: str | None = Query(default=None, alias="hub.mode"),
+    hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
+    hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
+) -> Response:
+    """
+    Meta's subscription handshake.
+
+    Sent once when the callback URL is saved. Meta expects hub.challenge
+    echoed back verbatim, but only after hub.verify_token matches the token
+    configured in the dashboard - that is what proves we own this endpoint.
+    """
+    if not signature.verify_subscription(hub_mode, hub_verify_token):
+        logger.warning("webhook verification rejected (mode=%r)", hub_mode)
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    logger.info("webhook subscription verified")
+    return PlainTextResponse(content=hub_challenge or "")
+
+
+@router.post("/whatsapp")
+async def receive_whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str | None = Header(default=None),
+) -> Response:
+    """
+    Inbound messages and delivery statuses.
+
+    Signature is checked against the raw bytes, before any parsing - parse and
+    re-serialise and the MAC no longer matches what was signed.
+    """
+    raw_body = await request.body()
+
+    try:
+        signature.verify(raw_body, x_hub_signature_256)
+    except signature.InvalidSignature:
+        # 403 with no body. An unsigned or wrongly signed request is either a
+        # misconfiguration or someone probing; neither deserves detail.
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    background_tasks.add_task(_process_whatsapp, raw_body)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_whatsapp(raw_body: bytes) -> None:
+    """
+    Store what arrived. Runs after the response has already been sent.
+
+    Never raises: this runs detached, so an exception here would vanish into
+    the task runner. Everything is logged instead.
+    """
+    import json
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("webhook body was not JSON (%d bytes)", len(raw_body))
+        return
+
+    parsed = webhook.parse(payload)
+    if not parsed:
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            for message in parsed.messages:
+                connection = await ingest.find_connection(
+                    Channel.whatsapp, message.phone_number_id, db
+                )
+                if connection is None:
+                    # A number we do not have connected. Happens if a business
+                    # disconnects while Meta still delivers, or if someone
+                    # points another app's webhook at us.
+                    logger.warning(
+                        "message for unknown number %s (waba=%s) - dropped",
+                        message.phone_number_id,
+                        message.waba_id,
+                    )
+                    continue
+
+                text = message.text
+                media_info = dict(message.media or {})
+
+                # A photographed invoice is the most information-dense message
+                # in a conversation and the one we would otherwise understand
+                # least. Read it now: Meta's download URL lasts five minutes
+                # and the media id only seven days.
+                if media_info.get("id") and connection.access_token:
+                    read_text, details = await media.read(
+                        media_info["id"],
+                        decrypt(connection.access_token),
+                        phone_number_id=connection.external_account_id,
+                    )
+                    media_info.update(details)
+                    if read_text:
+                        # A caption plus what the image says beats either alone.
+                        text = f"{text}\n\n{read_text}" if text else read_text
+
+                result = await ingest.ingest(
+                    business_id=connection.business_id,
+                    channel=Channel.whatsapp,
+                    direction=Direction.inbound,
+                    identity_kind=IdentityKind.phone,
+                    identity_value=message.from_phone,
+                    external_id=message.external_id,
+                    text=text,
+                    occurred_at=message.occurred_at,
+                    display_name=message.profile_name,
+                    media=media_info,
+                    raw=message.raw,
+                    connection_id=connection.id,
+                    db=db,
+                )
+                if result.created:
+                    logger.info(
+                        "inbound whatsapp business=%s customer=%s",
+                        connection.business_id,
+                        result.customer.id if result.customer else None,
+                    )
+
+            for update in parsed.statuses:
+                await _apply_status(update, db)
+
+            for other in parsed.other:
+                field = other.get("field")
+                if field == "message_template_status_update":
+                    await _apply_template_status(other.get("value") or {}, db)
+                else:
+                    # account_update, quality changes. Logged rather than
+                    # silently discarded, so we notice the first time one
+                    # arrives rather than discovering it months later.
+                    logger.info(
+                        "unhandled webhook field %r for waba=%s",
+                        field,
+                        other.get("waba_id"),
+                    )
+
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("failed to process whatsapp webhook")
+
+
+async def _apply_status(update: webhook.StatusUpdate, db) -> None:
+    """
+    Record what happened to a message we sent.
+
+    Failures matter more than deliveries: a failed send means a customer never
+    got an answer, and nothing else in the system would ever notice.
+    """
+    if update.status == "failed":
+        logger.warning(
+            "message %s to %s FAILED: %s",
+            update.external_id,
+            update.recipient_phone,
+            update.errors,
+        )
+
+
+# Meta's event values, mapped to what we store. Anything unrecognised leaves
+# the template alone rather than guessing - a wrong status here would either
+# hide a usable template or offer an unusable one.
+_TEMPLATE_EVENTS = {
+    "APPROVED": "APPROVED",
+    "REJECTED": "REJECTED",
+    "PAUSED": "PAUSED",
+    "DISABLED": "DISABLED",
+    "FLAGGED": "FLAGGED",
+    "ARCHIVED": "ARCHIVED",
+    "DELETED": "DELETED",
+    "PENDING": "PENDING",
+    "PENDING_DELETION": "PENDING",
+    "REINSTATED": "APPROVED",
+    "UNARCHIVED": "APPROVED",
+    "IN_APPEAL": "PENDING",
+}
+
+
+async def _apply_template_status(value: dict, db) -> None:
+    """
+    Record Meta's verdict on a template.
+
+    This is the other half of template creation. Submitting returns PENDING
+    and nothing else; the answer arrives here, up to 24 hours later, long
+    after the request that created it has finished. Without this a client
+    would watch a template sit at "pending review" forever even after Meta
+    approved it.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from shared.db.models import MessageTemplate
+
+    event = (value.get("event") or "").upper()
+    external_id = str(value.get("message_template_id") or "")
+    name = value.get("message_template_name")
+    language = value.get("message_template_language")
+
+    mapped = _TEMPLATE_EVENTS.get(event)
+    if mapped is None:
+        logger.info("unrecognised template event %r for %r", event, name)
+        return
+
+    # Prefer Meta's id; fall back to name+language, which is how a template
+    # created in WhatsApp Manager reaches us before we have ever seen its id.
+    template = None
+    if external_id:
+        result = await db.execute(
+            select(MessageTemplate).where(MessageTemplate.external_id == external_id)
+        )
+        template = result.scalars().first()
+    if template is None and name:
+        conditions = [MessageTemplate.name == name]
+        if language:
+            conditions.append(MessageTemplate.language == language)
+        result = await db.execute(select(MessageTemplate).where(*conditions))
+        template = result.scalars().first()
+
+    if template is None:
+        logger.info("template status for %r (%s) - not one of ours", name, event)
+        return
+
+    template.status = mapped
+    template.reviewed_at = datetime.now(timezone.utc)
+    if external_id and not template.external_id:
+        template.external_id = external_id
+
+    if mapped == "REJECTED":
+        reason = value.get("reason") or (value.get("rejection_info") or {}).get(
+            "rejection_reason"
+        )
+        template.rejection_reason = str(reason) if reason else None
+        logger.warning("template %r rejected: %s", template.name, reason)
+    else:
+        template.rejection_reason = None
+        logger.info("template %r -> %s", template.name, mapped)
