@@ -51,6 +51,13 @@ class MeResponse(BaseModel):
     business_id: str | None
     business_name: str | None
     vertical: str | None
+    # What this business's vertical actually declares - e.g. "scheduling",
+    # "case_tracking" - the one thing the frontend is allowed to gate a
+    # nav item or a page on. Never a second, frontend-side copy of the
+    # vertical->capability map: that map already lives in
+    # shared/verticals/templates/*.json, and duplicating it here is exactly
+    # the kind of drift the template system exists to prevent.
+    capabilities: list[str]
     autonomy: str | None
     role: str | None
 
@@ -176,6 +183,9 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         business_id=str(current_user.business_id) if current_user.business_id else None,
         business_name=business.name if business else None,
         vertical=business.vertical if business else None,
+        capabilities=(
+            verticals.get(business.vertical).get("capabilities", []) if business else []
+        ),
         autonomy=business.autonomy if business else None,
         role=current_user.role,
     )
