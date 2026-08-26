@@ -221,6 +221,15 @@ class Appointment(UUIDMixin, TimestampMixin, Base):
         ForeignKey("customers.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Only meaningful for a business with the property_listings capability -
+    # which property a viewing is for. Nullable and SET NULL on delete: a
+    # clinic appointment has none, and a withdrawn listing should not take
+    # its viewing history down with it.
+    property_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("properties.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -251,6 +260,8 @@ class Appointment(UUIDMixin, TimestampMixin, Base):
         Index("idx_appointments_customer", "customer_id"),
         # The reminder worker's main query: confirmed appointments coming up.
         Index("idx_appointments_doctor_time", "doctor_id", "starts_at"),
+        # A property's viewing history - who has seen it, and when.
+        Index("idx_appointments_property", "property_id"),
         # Slot-grid booking (see shared/scheduling) means two live appointments
         # can never legitimately share a start time - cheap, DB-level double-
         # booking protection without needing a range-exclusion constraint.

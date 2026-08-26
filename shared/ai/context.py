@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
 from shared.db.models import (
+    Appointment,
     Business,
     BusinessDNA,
     Case,
@@ -40,6 +41,7 @@ from shared.db.models import (
     KnowledgeItem,
     Message,
     Order,
+    Property,
 )
 from shared.scheduling import availability as scheduling_availability
 
@@ -52,6 +54,14 @@ MAX_DOCTORS_IN_CONTEXT = 5
 # question is almost always about the most recent order, occasionally the
 # one before it - never a customer's entire purchase history.
 MAX_ORDERS_IN_CONTEXT = 3
+
+# Properties listed per reply, when the business has property_listings.
+# Deliberately the *customer's own* viewing history, not the agency's whole
+# inventory - a portfolio can run to hundreds of listings, and dumping all
+# of it into every reply would neither fit the budget nor answer what a
+# customer actually asked. Full inventory search is a real, separate
+# feature this pass does not attempt - see VERTICAL_TEMPLATES.md.
+MAX_PROPERTIES_IN_CONTEXT = 5
 
 # How much verbatim history to include. Enough for the thread to make sense,
 # not so much that a chatty customer costs a fortune on every reply.
@@ -82,6 +92,11 @@ class AgentContext:
     # Same convention again: rendered text, None when the vertical has no
     # order_sync capability, distinct from "has it, no orders on record".
     orders: str | None
+    # Same convention again: rendered text, None when the vertical has no
+    # property_listings capability, distinct from "has it, no viewings for
+    # this customer yet". This is the customer's own viewing history, not
+    # the agency's inventory - see MAX_PROPERTIES_IN_CONTEXT.
+    properties: str | None
 
     customer_name: str | None
     customer_summary: str | None
@@ -161,6 +176,15 @@ class AgentContext:
                 if self.orders
                 else "\nNo order on record for this customer yet. If they say "
                 "they placed one, escalate rather than guessing at a status."
+            )
+        if self.properties is not None:
+            lines.append(
+                f"\nProperties they have viewed or have a viewing booked for - "
+                f"the only source of truth for these listings' price and status, "
+                f"never a guess, and never state a price or status for any other "
+                f"property from memory:\n{self.properties}"
+                if self.properties
+                else "\nNo viewing on record for this customer yet."
             )
 
         if self.open_commitments:
@@ -295,6 +319,33 @@ async def build(
             )
         orders_text = "\n".join(order_lines)
 
+    properties_text: str | None = None
+    if business and verticals.has_capability(business.vertical, "property_listings"):
+        rows = (
+            await db.execute(
+                select(Appointment, Property)
+                .join(Property, Property.id == Appointment.property_id)
+                .where(Appointment.customer_id == customer_id)
+                .order_by(Appointment.starts_at.desc())
+            )
+        ).all()
+        seen: set[uuid.UUID] = set()
+        property_lines = []
+        for appt, prop in rows:
+            if prop.id in seen or len(property_lines) >= MAX_PROPERTIES_IN_CONTEXT:
+                continue
+            seen.add(prop.id)
+            price = f"₹{prop.price_paise / 100:,.0f}" if prop.price_paise else "price on request"
+            if prop.price_period == "monthly":
+                price += "/month"
+            when = appt.starts_at.strftime("%d %b")
+            status_value = prop.status.value if hasattr(prop.status, "value") else str(prop.status)
+            property_lines.append(
+                f"- {prop.title} ({prop.locality or 'location on file'}), {price} - "
+                f"status: {status_value}, viewing {when}"
+            )
+        properties_text = "\n".join(property_lines)
+
     return AgentContext(
         business_name=business.name if business else "this business",
         vertical=business.vertical if business else "general",
@@ -308,6 +359,7 @@ async def build(
         availability=availability_text,
         cases=cases_text,
         orders=orders_text,
+        properties=properties_text,
         knowledge=[
             {
                 "title": k.title,

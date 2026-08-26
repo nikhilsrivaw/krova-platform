@@ -39,6 +39,7 @@ from shared.db.models import (
     Job,
     Message,
     MessageDraft,
+    Property,
     UsageEventType,
 )
 from shared.db import queue
@@ -100,6 +101,28 @@ async def _try_book(
             return None
         doctor = matches[0]
 
+    # Only resolved when the model actually named one - most verticals with
+    # scheduling have no property_listings capability at all, and book_property
+    # is correctly absent for every one of them. A name that fails to match
+    # a real, active listing aborts the booking rather than proceeding
+    # unlinked - the same "an unmatched name means do not trust the rest of
+    # this either" rule book_doctor already follows.
+    property_id: uuid.UUID | None = None
+    if proposal.book_property:
+        properties = (
+            await db.execute(
+                select(Property).where(
+                    Property.business_id == business.id, Property.active == True  # noqa: E712
+                )
+            )
+        ).scalars().all()
+        wanted_property = proposal.book_property.strip().lower()
+        property_matches = [p for p in properties if p.title.strip().lower() == wanted_property]
+        if not property_matches:
+            logger.warning("book_property %r matched no active listing", proposal.book_property)
+            return None
+        property_id = property_matches[0].id
+
     # open_slots() is re-run here, not trusted from whenever the context was
     # built - it is the single source of truth for "still free", and this
     # doubles as the check that the model did not invent a time.
@@ -120,6 +143,7 @@ async def _try_book(
             slot=slot,
             intake_channel=IntakeChannel.whatsapp,
             source_message_ids=[message.id],
+            property_id=property_id,
         )
     except SlotUnavailable:
         return None

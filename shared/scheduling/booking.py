@@ -37,6 +37,7 @@ async def book(
     intake_channel: IntakeChannel,
     source_message_ids: list[uuid.UUID] | None = None,
     notes: str | None = None,
+    property_id: uuid.UUID | None = None,
 ) -> Appointment:
     """
     Hold a slot for a customer.
@@ -62,6 +63,7 @@ async def book(
         business_id=business_id,
         doctor_id=doctor_id,
         customer_id=customer.id,
+        property_id=property_id,
         starts_at=slot.starts_at,
         ends_at=slot.ends_at,
         status=AppointmentStatus.confirmed,

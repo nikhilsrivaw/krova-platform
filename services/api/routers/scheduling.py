@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import Appointment, AvailabilityRule, Doctor
+from shared.db.models import Appointment, AvailabilityRule, Customer, Doctor, IntakeChannel
 from shared.scheduling import availability as scheduling_availability
+from shared.scheduling import booking as scheduling_booking
+from shared.scheduling.booking import SlotUnavailable
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -199,11 +201,24 @@ class AppointmentOut(BaseModel):
     doctor_id: str
     doctor_name: str
     customer_id: str
+    property_id: str | None
     starts_at: datetime
     ends_at: datetime
     status: str
     intake_channel: str
     notes: str | None
+
+
+def _appointment_out(a: Appointment, doctor_name: str) -> AppointmentOut:
+    return AppointmentOut(
+        id=str(a.id), doctor_id=str(a.doctor_id), doctor_name=doctor_name,
+        customer_id=str(a.customer_id),
+        property_id=str(a.property_id) if a.property_id else None,
+        starts_at=a.starts_at, ends_at=a.ends_at,
+        status=a.status.value if hasattr(a.status, "value") else str(a.status),
+        intake_channel=a.intake_channel.value if hasattr(a.intake_channel, "value") else str(a.intake_channel),
+        notes=a.notes,
+    )
 
 
 @router.get("/appointments", response_model=list[AppointmentOut])
@@ -229,13 +244,61 @@ async def list_appointments(
         query = query.where(Appointment.starts_at < to_date)
 
     rows = await db.execute(query)
-    return [
-        AppointmentOut(
-            id=str(a.id), doctor_id=str(a.doctor_id), doctor_name=doctor_name,
-            customer_id=str(a.customer_id), starts_at=a.starts_at, ends_at=a.ends_at,
-            status=a.status.value if hasattr(a.status, "value") else str(a.status),
-            intake_channel=a.intake_channel.value if hasattr(a.intake_channel, "value") else str(a.intake_channel),
-            notes=a.notes,
+    return [_appointment_out(a, doctor_name) for a, doctor_name in rows.all()]
+
+
+class AppointmentIn(BaseModel):
+    doctor_id: str
+    customer_id: str
+    starts_at: datetime
+    # Only meaningful for a business with property_listings - which
+    # property this viewing is for. Ignored (left null) otherwise.
+    property_id: str | None = None
+    notes: str | None = None
+
+
+@router.post("/appointments", response_model=AppointmentOut, status_code=status.HTTP_201_CREATED)
+async def create_appointment(
+    body: AppointmentIn, current_user: CurrentUserDep, db: DbDep
+) -> AppointmentOut:
+    """
+    Staff booking a slot directly - a phone call that never went through the
+    voice agent, a walk-in, a viewing arranged in person. The one thing this
+    must never skip even for a human doing the booking: the requested time
+    still has to be a real open slot, the same check WhatsApp and voice
+    booking both go through - a front desk fat-fingering a time is exactly
+    the kind of double-booking this whole engine exists to prevent.
+    """
+    from shared.db.models import Business
+
+    doctor = await _owned_doctor(uuid.UUID(body.doctor_id), current_user.business, db)
+    customer = await db.get(Customer, uuid.UUID(body.customer_id))
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+
+    business = await db.get(Business, current_user.business)
+    day_slots = await scheduling_availability.open_slots(
+        db, business=business, doctor=doctor, on_date=body.starts_at.date()
+    )
+    slot = next((s for s in day_slots if s.starts_at == body.starts_at), None)
+    if slot is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{body.starts_at.isoformat()} is not an open slot for this doctor",
         )
-        for a, doctor_name in rows.all()
-    ]
+
+    try:
+        appointment = await scheduling_booking.book(
+            db,
+            business_id=current_user.business,
+            doctor=doctor,
+            customer=customer,
+            slot=slot,
+            intake_channel=IntakeChannel.manual,
+            notes=body.notes,
+            property_id=uuid.UUID(body.property_id) if body.property_id else None,
+        )
+    except SlotUnavailable:
+        raise HTTPException(status.HTTP_409_CONFLICT, "That slot was just taken")
+
+    return _appointment_out(appointment, doctor.name)

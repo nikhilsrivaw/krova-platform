@@ -96,6 +96,16 @@ REPLY_TOOL = {
                     "was listed."
                 ),
             },
+            "book_property": {
+                "type": "string",
+                "description": (
+                    "Only for a business with property listings: the property's "
+                    "title exactly as given in the business details, when "
+                    "book_slot is a site visit for one specific listed property "
+                    "the customer has confirmed. Omit for every other business, "
+                    "and omit even here if no specific property was confirmed."
+                ),
+            },
         },
         "required": ["action", "reasoning", "confidence"],
     },
@@ -130,8 +140,10 @@ If the business details list real current availability, that list is the \
 only source of truth for booking - never a time you calculate or assume. \
 When the customer has just confirmed one specific time from that list, set \
 book_slot to it exactly (and book_doctor, if more than one doctor was \
-listed) so it actually gets reserved - do this only once they have clearly \
-agreed to a specific slot, not while they are still asking what's available.
+listed, and book_property if this is a property viewing for one specific \
+listed property) so it actually gets reserved - do this only once they \
+have clearly agreed to a specific slot, not while they are still asking \
+what's available.
 
 Use what you know about the customer. If they have an outstanding payment or \
 you promised them something, that is context worth using - naturally, not \
@@ -319,6 +331,10 @@ class Draft:
     # into an actual Appointment (or backing off if the slot lost a race).
     book_slot: str | None = None
     book_doctor: str | None = None
+    # Which property a viewing is for - only meaningful alongside book_slot
+    # for a business with property_listings. Matched by title the same way
+    # book_doctor is matched by name; unset for every other vertical.
+    book_property: str | None = None
 
 
 async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) -> Draft:
@@ -397,6 +413,7 @@ async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) ->
         context_message_ids=agent_context.context_message_ids,
         book_slot=(result.get("book_slot") or "").strip() or None if action == "reply" else None,
         book_doctor=(result.get("book_doctor") or "").strip() or None if action == "reply" else None,
+        book_property=(result.get("book_property") or "").strip() or None if action == "reply" else None,
     )
 
 
