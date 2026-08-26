@@ -39,6 +39,7 @@ from shared.db.models import (
     Doctor,
     KnowledgeItem,
     Message,
+    Order,
 )
 from shared.scheduling import availability as scheduling_availability
 
@@ -46,6 +47,11 @@ from shared.scheduling import availability as scheduling_availability
 # Bounded deliberately - this sits on the same latency-sensitive path as the
 # rest of AgentContext.build(), and each doctor costs its own slot scan.
 MAX_DOCTORS_IN_CONTEXT = 5
+
+# Orders listed per reply, when the business has order_sync. A WISMO
+# question is almost always about the most recent order, occasionally the
+# one before it - never a customer's entire purchase history.
+MAX_ORDERS_IN_CONTEXT = 3
 
 # How much verbatim history to include. Enough for the thread to make sense,
 # not so much that a chatty customer costs a fortune on every reply.
@@ -73,6 +79,9 @@ class AgentContext:
     # vertical has no case_tracking capability, distinct from "has it, no
     # open cases for this customer".
     cases: str | None
+    # Same convention again: rendered text, None when the vertical has no
+    # order_sync capability, distinct from "has it, no orders on record".
+    orders: str | None
 
     customer_name: str | None
     customer_summary: str | None
@@ -144,6 +153,14 @@ class AgentContext:
                 if self.cases
                 else "\nNo case on record for this customer yet. Escalate rather "
                 "than guessing at a status."
+            )
+        if self.orders is not None:
+            lines.append(
+                f"\nTheir recent order(s) - the only source of truth for a "
+                f"'where is my order' question, never a guess:\n{self.orders}"
+                if self.orders
+                else "\nNo order on record for this customer yet. If they say "
+                "they placed one, escalate rather than guessing at a status."
             )
 
         if self.open_commitments:
@@ -257,6 +274,27 @@ async def build(
             case_lines.append(f"- {c.title}{number} - status: {c.status.value}{hearing}")
         cases_text = "\n".join(case_lines)
 
+    orders_text: str | None = None
+    if business and verticals.has_capability(business.vertical, "order_sync"):
+        rows = (
+            await db.execute(
+                select(Order)
+                .where(Order.customer_id == customer_id)
+                .order_by(Order.placed_at.desc())
+                .limit(MAX_ORDERS_IN_CONTEXT)
+            )
+        ).scalars().all()
+        order_lines = []
+        for o in rows:
+            number = f" #{o.order_number}" if o.order_number else ""
+            tracking = f", tracking {o.tracking_number} ({o.carrier})" if o.tracking_number else ""
+            status_value = o.status.value if hasattr(o.status, "value") else str(o.status)
+            order_lines.append(
+                f"- Order{number}, placed {o.placed_at.strftime('%d %b')} - "
+                f"status: {status_value}{tracking}"
+            )
+        orders_text = "\n".join(order_lines)
+
     return AgentContext(
         business_name=business.name if business else "this business",
         vertical=business.vertical if business else "general",
@@ -269,6 +307,7 @@ async def build(
         opening_hours=(dna.opening_hours if dna else {}) or {},
         availability=availability_text,
         cases=cases_text,
+        orders=orders_text,
         knowledge=[
             {
                 "title": k.title,

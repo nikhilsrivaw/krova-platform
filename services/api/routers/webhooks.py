@@ -11,14 +11,20 @@ task, return 200. No database work, no AI, nothing that can block, before the
 response goes out.
 """
 
+import uuid
+
 from fastapi import APIRouter, BackgroundTasks, Header, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
+from sqlalchemy import select
 
 from shared.channels import ingest
 from shared.auth.encryption import decrypt
+from shared.channels.shopify import signature as shopify_signature
+from shared.channels.shopify import webhook as shopify_webhook
 from shared.channels.whatsapp import media, signature, webhook
-from shared.db.models import Channel, Direction, IdentityKind
+from shared.db.models import Channel, Direction, IdentityKind, Order, StoreConnection
 from shared.db.session import AsyncSessionLocal
+from shared.identity import resolver as identity_resolver
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -265,3 +271,142 @@ async def _apply_template_status(value: dict, db) -> None:
     else:
         template.rejection_reason = None
         logger.info("template %r -> %s", template.name, mapped)
+
+
+# ── Shopify (Order Sync) ─────────────────────────────────────────────────
+#
+# One endpoint for every connected store, on every business - Shopify's
+# X-Shopify-Shop-Domain header is how a single URL serves every tenant, the
+# same trick the WhatsApp endpoint plays with phone_number_id. The signature
+# check differs from Meta's for a real reason: v1 connects a store the way
+# a business connects WhatsApp - the owner pastes in a webhook secret they
+# generated in their own Shopify Admin (Settings > Notifications), not an
+# OAuth app install. That means the signing key is per-store, so the store
+# must be looked up before the signature can even be checked - unlike Meta,
+# where one app secret verifies every business's webhook. Everything else
+# keeps the same discipline: raw bytes verified before parsing, work handed
+# to a background task, 200 returned fast either way (a store that gets a
+# non-200 assumes total failure and can disable the webhook after enough
+# retries, same as Meta).
+
+@router.post("/shopify/orders")
+async def receive_shopify_order_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_shopify_hmac_sha256: str | None = Header(default=None),
+    x_shopify_shop_domain: str | None = Header(default=None),
+) -> Response:
+    if not x_shopify_shop_domain:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+    raw_body = await request.body()
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(StoreConnection).where(
+                StoreConnection.platform == "shopify",
+                StoreConnection.store_identifier == x_shopify_shop_domain,
+                StoreConnection.active == True,  # noqa: E712
+            )
+        )
+        connection = result.scalars().first()
+
+        if connection is None:
+            # Not a misconfiguration worth 500-ing over: a store disconnected
+            # while Shopify still has the webhook registered. Ack and drop,
+            # same reasoning as an unknown WhatsApp phone_number_id.
+            logger.warning("shopify webhook for unconnected store %s", x_shopify_shop_domain)
+            return Response(status_code=status.HTTP_200_OK)
+
+        try:
+            shopify_signature.verify(
+                raw_body, x_shopify_hmac_sha256, decrypt(connection.webhook_secret)
+            )
+        except shopify_signature.InvalidSignature:
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+        business_id = connection.business_id
+
+    background_tasks.add_task(_process_shopify_order, raw_body, business_id)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> None:
+    """
+    Upsert one order. Runs after the response has already been sent - never
+    raises, everything is logged instead, same contract as _process_whatsapp.
+    """
+    import json
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("shopify webhook body was not JSON (%d bytes)", len(raw_body))
+        return
+
+    parsed = shopify_webhook.parse_order(payload)
+    if parsed is None:
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            existing = await db.execute(
+                select(Order).where(
+                    Order.business_id == business_id,
+                    Order.source_platform == "shopify",
+                    Order.external_order_id == parsed.external_order_id,
+                )
+            )
+            order = existing.scalars().first()
+
+            # Resolve identity only when there is no customer on this order
+            # yet - never on every webhook. Shopify's later webhooks
+            # (fulfilled, cancelled) do not always repeat every field the
+            # first one had; if update webhooks re-resolved identity from
+            # whatever subset they happen to carry, a phone-resolved
+            # customer on orders/create could get silently replaced by a
+            # brand-new, email-resolved customer on orders/cancelled -
+            # splitting one person's order history across two Customer rows.
+            # Once an order is attached to a customer, that attachment is
+            # the order's identity, full stop.
+            customer_id = order.customer_id if order else None
+            if customer_id is None:
+                if parsed.customer_phone:
+                    resolution = await identity_resolver.resolve(
+                        business_id, IdentityKind.phone, parsed.customer_phone, db,
+                    )
+                    customer_id = resolution.customer.id
+                elif parsed.customer_email:
+                    resolution = await identity_resolver.resolve(
+                        business_id, IdentityKind.email, parsed.customer_email, db,
+                    )
+                    customer_id = resolution.customer.id
+
+            if order is None:
+                order = Order(
+                    business_id=business_id,
+                    customer_id=customer_id,
+                    source_platform="shopify",
+                    external_order_id=parsed.external_order_id,
+                    placed_at=parsed.placed_at,
+                )
+                db.add(order)
+            elif order.customer_id is None and customer_id is not None:
+                order.customer_id = customer_id
+
+            order.order_number = parsed.order_number
+            order.status = parsed.status
+            order.items = parsed.items
+            order.total_paise = parsed.total_paise
+            order.tracking_number = parsed.tracking_number
+            order.carrier = parsed.carrier
+            order.raw_payload = parsed.raw
+
+            await db.commit()
+            logger.info(
+                "shopify order %s business=%s status=%s",
+                parsed.external_order_id, business_id, parsed.status,
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("failed to process shopify order webhook")

@@ -41,7 +41,7 @@ from shared.db.models.intelligence import (
 from shared.db.models.draft import DraftAction, DraftStatus, MessageDraft
 from shared.db.models.job import Job, JobStatus
 from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSource
-from shared.db.models.order import Order, OrderStatus
+from shared.db.models.order import Order, OrderStatus, StoreConnection
 from shared.db.models.scheduling import (
     Appointment,
     AppointmentStatus,
@@ -103,6 +103,7 @@ __all__ = [
     "Order",
     "OrderStatus",
     "RefreshToken",
+    "StoreConnection",
     "TemplateCategory",
     "TemplateStatus",
     "UsageEvent",

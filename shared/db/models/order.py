@@ -16,13 +16,67 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.db.base import Base, TimestampMixin, UUIDMixin
 from shared.db.types import EnumType
+
+
+class StoreConnection(UUIDMixin, TimestampMixin, Base):
+    """
+    One connected store platform - Shopify, WooCommerce, ... - on one business.
+
+    A row, not a bag of keys on the business, for the same reason
+    ChannelConnection is: a business with two stores (a main site and a
+    seasonal one) needs two webhook secrets, not one column overwritten by
+    whichever was configured last.
+
+    webhook_secret is what verifies an inbound webhook actually came from
+    the platform, not what authenticates outbound calls to it - Order Sync
+    only ever receives, per its own design note, so there is no API token
+    to store here yet.
+    """
+
+    __tablename__ = "store_connections"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # "shopify" | "woocommerce" - lowercase, matches Order.source_platform.
+    platform: Mapped[str] = mapped_column(String(30), nullable=False)
+    # The store's own identifier for itself - a Shopify *.myshopify.com
+    # domain, a WooCommerce site URL. Shown to the owner so a confused
+    # dashboard reads "yourstore.myshopify.com is connected", not a UUID.
+    store_identifier: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Encrypted at rest, same as ChannelConnection.access_token. Never
+    # logged, never returned by the API.
+    webhook_secret: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "business_id", "platform", "store_identifier",
+            name="uq_store_connection_per_business",
+        ),
+        Index("idx_store_connections_business", "business_id"),
+        # The webhook receiver's actual query: which business owns this
+        # store, given only what Shopify's request tells us (platform +
+        # its own shop domain) - business_id is not known yet at that point,
+        # so the lookup cannot lead with it the way the unique constraint's
+        # index does.
+        Index("idx_store_connections_lookup", "platform", "store_identifier"),
+    )
 
 
 class OrderStatus(str, enum.Enum):

@@ -30,6 +30,7 @@ from services.api.routers import (
     migration,
     messages,
     onboarding,
+    orders,
     scheduling,
     signals,
     templates,
@@ -126,6 +127,7 @@ app.include_router(analytics.router, prefix=API_PREFIX)
 app.include_router(migration.router, prefix=API_PREFIX)
 app.include_router(voice_provisioning.router, prefix=API_PREFIX)
 app.include_router(scheduling.router, prefix=API_PREFIX)
+app.include_router(orders.router, prefix=API_PREFIX)
 app.include_router(cases.router, prefix=API_PREFIX)
 app.include_router(signals.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)
