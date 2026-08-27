@@ -50,6 +50,11 @@ class InboundMessage:
     text: str | None
     occurred_at: datetime
     media: dict[str, Any] = field(default_factory=dict)
+    # Present only when this is the first message after a Click-to-WhatsApp
+    # ad click - Meta never repeats it on later messages from the same
+    # person, so this is the one chance to capture it. None the rest of the
+    # time, which is the normal case.
+    referral: dict[str, Any] | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -199,6 +204,7 @@ def parse(payload: dict) -> ParsedWebhook:
                             text=text,
                             occurred_at=_timestamp(message.get("timestamp")),
                             media=media,
+                            referral=message.get("referral"),
                             raw=message,
                         )
                     )

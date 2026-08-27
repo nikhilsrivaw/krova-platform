@@ -199,6 +199,35 @@ async def list_channels(current_user: CurrentUserDep, db: DbDep) -> list[dict]:
     ]
 
 
+class AdTrackingIn(BaseModel):
+    # The Business Manager Dataset that receives conversion events for
+    # Click-to-WhatsApp ads - not something Krova can supply, the business's
+    # own ad account owns it. Pass null to stop sending conversion events.
+    dataset_id: str | None = None
+
+
+@router.post("/whatsapp/ad-tracking")
+async def set_ad_tracking(body: AdTrackingIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.whatsapp,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
+    )
+    connection = result.scalars().first()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Connect a WhatsApp number first"
+        )
+    connection.extra = {**(connection.extra or {}), "dataset_id": body.dataset_id}
+    logger.info(
+        "ad tracking dataset_id set business=%s configured=%s",
+        current_user.business, bool(body.dataset_id),
+    )
+    return {"dataset_id": body.dataset_id}
+
+
 @router.delete("/whatsapp", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_whatsapp(current_user: CurrentUserDep, db: DbDep) -> None:
     """

@@ -21,8 +21,17 @@ from shared.channels import ingest
 from shared.auth.encryption import decrypt
 from shared.channels.shopify import signature as shopify_signature
 from shared.channels.shopify import webhook as shopify_webhook
-from shared.channels.whatsapp import media, signature, webhook
-from shared.db.models import Channel, Direction, IdentityKind, Order, StoreConnection
+from shared.channels.whatsapp import conversions, media, signature, webhook
+from shared.db.models import (
+    Channel,
+    ChannelConnection,
+    ConnectionStatus,
+    Customer,
+    Direction,
+    IdentityKind,
+    Order,
+    StoreConnection,
+)
 from shared.db.session import AsyncSessionLocal
 from shared.identity import resolver as identity_resolver
 from shared.utils.logging import get_logger
@@ -145,6 +154,7 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                     media=media_info,
                     raw=message.raw,
                     connection_id=connection.id,
+                    referral=message.referral,
                     db=db,
                 )
                 if result.created:
@@ -358,6 +368,7 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
                 )
             )
             order = existing.scalars().first()
+            was_already_paid = order is not None and order.status.value == "paid"
 
             # Resolve identity only when there is no customer on this order
             # yet - never on every webhook. Shopify's later webhooks
@@ -402,6 +413,9 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
             order.carrier = parsed.carrier
             order.raw_payload = parsed.raw
 
+            just_became_paid = parsed.status == "paid" and not was_already_paid
+            fire_conversion_for = (customer_id, order.total_paise) if just_became_paid else None
+
             await db.commit()
             logger.info(
                 "shopify order %s business=%s status=%s",
@@ -410,3 +424,47 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
         except Exception:
             await db.rollback()
             logger.exception("failed to process shopify order webhook")
+            return
+
+    # Outside the transaction, and only after it actually committed - never
+    # count a conversion for a database write that did not happen. A
+    # failure here is logged and swallowed: Meta not receiving one ad
+    # attribution event must never turn into retrying (and re-billing) an
+    # otherwise-successful order webhook.
+    if fire_conversion_for is not None:
+        await _fire_purchase_conversion(business_id, *fire_conversion_for)
+
+
+async def _fire_purchase_conversion(
+    business_id: uuid.UUID, customer_id: uuid.UUID | None, total_paise: int | None
+) -> None:
+    if customer_id is None:
+        return
+    async with AsyncSessionLocal() as db:
+        customer = await db.get(Customer, customer_id)
+        if customer is None or not customer.ctwa_clid:
+            return
+        connection = (
+            await db.execute(
+                select(ChannelConnection).where(
+                    ChannelConnection.business_id == business_id,
+                    ChannelConnection.channel == Channel.whatsapp,
+                    ChannelConnection.status == ConnectionStatus.active,
+                )
+            )
+        ).scalars().first()
+        if connection is None or not connection.access_token:
+            return
+        dataset_id = (connection.extra or {}).get("dataset_id")
+        try:
+            result = await conversions.send_conversion_for_customer(
+                dataset_id=dataset_id,
+                access_token=decrypt(connection.access_token),
+                customer_ctwa_clid=customer.ctwa_clid,
+                event_name="Purchase",
+                value_paise=total_paise,
+            )
+            if result.sent:
+                logger.info("purchase conversion sent business=%s customer=%s", business_id, customer_id)
+        except conversions.ConversionEventError:
+            logger.warning("purchase conversion failed business=%s customer=%s", business_id, customer_id)

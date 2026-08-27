@@ -87,12 +87,17 @@ async def ingest(
     media: dict[str, Any] | None = None,
     raw: dict[str, Any] | None = None,
     enqueue_analysis: bool = True,
+    referral: dict[str, Any] | None = None,
 ) -> Ingested:
     """
     Store one message, attributing it to a customer.
 
     Idempotent on (business_id, external_id): Meta retries deliveries, and a
     duplicate row here means answering the same customer twice.
+
+    `referral` is Click-to-WhatsApp ad metadata, present only on the first
+    message after someone taps an ad - captured onto the customer once and
+    never overwritten, since Meta never repeats it on later messages.
     """
     if external_id:
         existing = await db.execute(
@@ -117,6 +122,16 @@ async def ingest(
         return Ingested(message=None, customer=None, created=False, reason=str(exc))
 
     customer = resolution.customer
+
+    if referral and referral.get("ctwa_clid") and customer.ctwa_clid is None:
+        customer.ctwa_clid = referral.get("ctwa_clid")
+        customer.ctwa_source_id = referral.get("source_id")
+        customer.ctwa_headline = referral.get("headline")
+        customer.ctwa_captured_at = datetime.now(timezone.utc)
+        logger.info(
+            "ctwa attribution captured customer=%s source_id=%s",
+            customer.id, customer.ctwa_source_id,
+        )
 
     message = Message(
         business_id=business_id,

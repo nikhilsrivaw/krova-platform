@@ -196,6 +196,19 @@ class Customer(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Click-to-WhatsApp ad attribution. Meta only sends this on the very
+    # first inbound message after the click - it never repeats on later
+    # messages from the same person - so it is captured once here, first-
+    # touch, and never overwritten. Without a durable home for it, the one
+    # thing that links this customer back to the ad spend that brought them
+    # in is gone within a single conversation.
+    ctwa_clid: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ctwa_source_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ctwa_headline: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ctwa_captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Set by the owner. The agent must never touch a customer marked private -
     # this is what makes "that thread is personal" enforceable rather than a
     # promise, and it is why we can read a mixed Instagram inbox at all.
