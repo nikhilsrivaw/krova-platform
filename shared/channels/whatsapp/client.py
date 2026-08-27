@@ -21,7 +21,7 @@ Errors are Meta's, and they are specific. 131047 means the window closed.
 can act on is most of the value.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -71,6 +71,14 @@ class SendResult:
     external_id: str      # wamid - matches the status webhooks that follow
     recipient_wa_id: str
     status: str
+
+
+@dataclass(slots=True)
+class CarouselSendCard:
+    """One card's fill-in-the-blanks for one recipient, at send time."""
+
+    media_id: str                 # from media_upload.upload_for_carousel_card
+    body_params: list[str] = field(default_factory=list)
 
 
 def within_service_window(last_inbound_at: datetime | None) -> bool:
@@ -179,6 +187,7 @@ class WhatsAppClient:
         language: str = "en",
         *,
         body_params: list[str] | None = None,
+        carousel_cards: list["CarouselSendCard"] | None = None,
     ) -> SendResult:
         """
         Send an approved template. Works regardless of the window.
@@ -186,6 +195,10 @@ class WhatsAppClient:
         This is the only way to reach someone who has not written in 24 hours -
         and the category chosen when the template was approved is what it
         costs. Utility is cheap; marketing is not.
+
+        `carousel_cards` fills a carousel template's per-card variables and
+        images, in the same card order the template was approved with -
+        Meta matches cards by card_index, not by name.
         """
         components: list[dict[str, Any]] = []
         if body_params:
@@ -195,6 +208,36 @@ class WhatsAppClient:
                     "parameters": [{"type": "text", "text": p} for p in body_params],
                 }
             )
+        if carousel_cards:
+            components.append({
+                "type": "carousel",
+                "cards": [
+                    {
+                        "card_index": index,
+                        "components": [
+                            comp
+                            for comp in [
+                                {
+                                    "type": "header",
+                                    "parameters": [{"type": "image", "image": {"id": card.media_id}}],
+                                },
+                                (
+                                    {
+                                        "type": "body",
+                                        "parameters": [
+                                            {"type": "text", "text": p} for p in card.body_params
+                                        ],
+                                    }
+                                    if card.body_params
+                                    else None
+                                ),
+                            ]
+                            if comp is not None
+                        ],
+                    }
+                    for index, card in enumerate(carousel_cards)
+                ],
+            })
 
         template: dict[str, Any] = {
             "name": template_name,

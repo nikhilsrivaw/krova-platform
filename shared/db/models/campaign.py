@@ -85,6 +85,13 @@ class Campaign(UUIDMixin, TimestampMixin, Base):
     # each person sees their own figures.
     variable_mapping: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
+    # Present only for a carousel template: one entry per card, in template
+    # order - {"media_id": "...", "variable_mapping": [...]}. The media_id is
+    # fixed (a business's own photo, uploaded once); the variable mapping
+    # works exactly like variable_mapping above, just scoped to one card's
+    # text instead of the message body.
+    carousel_cards: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
     status: Mapped[CampaignStatus] = mapped_column(
         EnumType(CampaignStatus, 20), nullable=False, default=CampaignStatus.draft
     )

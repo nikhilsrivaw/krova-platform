@@ -15,14 +15,18 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.ai import carousel_draft
 from shared.auth.encryption import decrypt
+from shared.channels.whatsapp import media_upload
 from shared.channels.whatsapp import templates as meta
 from shared.db.models import (
+    Business,
+    BusinessDNA,
     Channel,
     ChannelConnection,
     ConnectionStatus,
@@ -48,6 +52,18 @@ class ButtonIn(BaseModel):
     phone_number: str | None = None
 
 
+class CarouselCardIn(BaseModel):
+    header_handle: str = Field(min_length=1)
+    # Not sent to Meta on create - Meta only wants header_handle for review.
+    # Stashed on the template's `extra` so a campaign built against this
+    # template later knows which live media to send, without asking someone
+    # to re-upload or remember a raw Meta id.
+    media_id: str = Field(min_length=1)
+    body: str = Field(min_length=1, max_length=160)
+    buttons: list[ButtonIn] = Field(default_factory=list, max_length=2)
+    examples: dict[str, str] = Field(default_factory=dict)
+
+
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     category: Literal["UTILITY", "MARKETING", "AUTHENTICATION"]
@@ -57,6 +73,10 @@ class TemplateIn(BaseModel):
     footer: str | None = Field(default=None, max_length=60)
     buttons: list[ButtonIn] = Field(default_factory=list)
     examples: dict[str, str] = Field(default_factory=dict)
+    # 2-10 cards makes this a carousel template instead of a normal one -
+    # header_text/footer/buttons above are ignored when this is set, since
+    # a carousel puts all of that on each card.
+    carousel_cards: list[CarouselCardIn] = Field(default_factory=list, max_length=10)
 
 
 class TemplateOut(BaseModel):
@@ -74,11 +94,16 @@ class TemplateOut(BaseModel):
     submitted_at: str | None
     reviewed_at: str | None
     edits_remaining: int | None
+    is_carousel: bool
+    card_count: int
+    carousel_media_ids: list[str]
 
 
 def _out(t: MessageTemplate) -> TemplateOut:
     status_value = t.status.value if hasattr(t.status, "value") else str(t.status)
     components = t.components if isinstance(t.components, list) else []
+    carousel = next((c for c in components if c.get("type") == "CAROUSEL"), None)
+    card_count = len(carousel.get("cards", [])) if carousel else 0
     remaining: int | None = None
     if status_value == TemplateStatus.approved.value:
         recent = (
@@ -104,6 +129,9 @@ def _out(t: MessageTemplate) -> TemplateOut:
         submitted_at=t.submitted_at.isoformat() if t.submitted_at else None,
         reviewed_at=t.reviewed_at.isoformat() if t.reviewed_at else None,
         edits_remaining=remaining,
+        is_carousel=carousel is not None,
+        card_count=card_count,
+        carousel_media_ids=list((t.extra or {}).get("carousel_media_ids") or []),
     )
 
 
@@ -144,6 +172,90 @@ def _draft(body: TemplateIn) -> meta.TemplateDraft:
             for b in body.buttons
         ],
         examples=body.examples,
+        carousel_cards=[
+            meta.CarouselCard(
+                header_handle=c.header_handle,
+                body=c.body,
+                buttons=[
+                    meta.Button(type=b.type, text=b.text, url=b.url, phone_number=b.phone_number)
+                    for b in c.buttons
+                ],
+                examples=c.examples,
+            )
+            for c in body.carousel_cards
+        ],
+    )
+
+
+class CarouselImageOut(BaseModel):
+    header_handle: str
+    media_id: str
+
+
+@router.post("/carousel/image", response_model=CarouselImageOut)
+async def upload_carousel_image(
+    current_user: CurrentUserDep, db: DbDep, file: UploadFile = File(...),
+) -> CarouselImageOut:
+    """
+    Upload one card's picture, once, to both of Meta's endpoints - the
+    handle a reviewer needs to see it and the media_id an approved send
+    will later use. See media_upload.py for why both exist.
+    """
+    connection, _ = await _whatsapp(current_user.business, db)
+    raw = await file.read()
+
+    try:
+        uploaded = await media_upload.upload_for_carousel_card(
+            raw,
+            file.content_type or "",
+            file.filename or "card.jpg",
+            access_token=decrypt(connection.access_token),
+            phone_number_id=connection.external_account_id,
+        )
+    except media_upload.UploadError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return CarouselImageOut(header_handle=uploaded.header_handle, media_id=uploaded.media_id)
+
+
+class CarouselDraftIn(BaseModel):
+    brief: str = Field(min_length=1, max_length=500)
+    card_count: int = Field(default=4, ge=2, le=10)
+
+
+class CarouselDraftCardOut(BaseModel):
+    body: str
+    button_label: str
+
+
+class CarouselDraftOut(BaseModel):
+    cards: list[CarouselDraftCardOut]
+
+
+@router.post("/carousel/draft", response_model=CarouselDraftOut)
+async def draft_carousel_cards(
+    body: CarouselDraftIn, current_user: CurrentUserDep, db: DbDep,
+) -> CarouselDraftOut:
+    """
+    A starting point for the cards' text, from a one-line brief. Nothing
+    here is submitted to Meta - it fills the builder for a human to edit.
+    """
+    business = await db.get(Business, current_user.business)
+    dna = await db.get(BusinessDNA, current_user.business)
+    context_parts = [f"{business.name} ({business.vertical})" if business else "A business"]
+    if dna and dna.summary:
+        context_parts.append(dna.summary)
+
+    result = await carousel_draft.draft(
+        brief=body.brief, card_count=body.card_count, business_context="\n".join(context_parts),
+    )
+    if not result.cards:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not draft cards right now - try again, or write them by hand.",
+        )
+    return CarouselDraftOut(
+        cards=[CarouselDraftCardOut(body=c.body, button_label=c.button_label) for c in result.cards]
     )
 
 
@@ -207,6 +319,10 @@ async def create_template(
         components=draft.to_components(),
         body_text=body.body,
         submitted_at=now,
+        extra=(
+            {"carousel_media_ids": [c.media_id for c in body.carousel_cards]}
+            if body.carousel_cards else {}
+        ),
     )
     db.add(template)
     await db.flush()

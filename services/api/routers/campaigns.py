@@ -23,7 +23,7 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.campaigns import audience as audience_module
 from shared.channels import ingest
-from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
+from shared.channels.whatsapp.client import CarouselSendCard, WhatsAppClient, WhatsAppError
 from shared.db.models import (
     Audience,
     Campaign,
@@ -60,6 +60,11 @@ def _audience_label(audience: Audience, params: dict) -> str:
     return AUDIENCE_LABELS.get(audience, _value(audience))
 
 
+class CampaignCardIn(BaseModel):
+    media_id: str = Field(min_length=1)
+    variable_mapping: list[str] = Field(default_factory=list)
+
+
 class CampaignIn(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     audience: Literal[
@@ -71,6 +76,9 @@ class CampaignIn(BaseModel):
     # Which of the recipient's own values fill the template's variables, in
     # order: ["customer_name", "amount", "due_date"]
     variable_mapping: list[str] = Field(default_factory=list)
+    # Present only when template_name is a carousel template - one entry per
+    # card, same order the template was approved with.
+    carousel_cards: list[CampaignCardIn] = Field(default_factory=list)
 
 
 class RecipientPreview(BaseModel):
@@ -276,6 +284,10 @@ async def create_campaign(
         template_name=body.template_name,
         template_language=body.template_language,
         variable_mapping=body.variable_mapping,
+        carousel_cards=[
+            {"media_id": c.media_id, "variable_mapping": c.variable_mapping}
+            for c in body.carousel_cards
+        ],
         category=_value(template.category),
         created_by_user_id=current_user.id,
         status=CampaignStatus.draft,
@@ -343,6 +355,13 @@ async def send_campaign(
             continue
 
         variables = [recipient.values.get(k, "") for k in campaign.variable_mapping]
+        carousel_cards = [
+            CarouselSendCard(
+                media_id=card["media_id"],
+                body_params=[recipient.values.get(k, "") for k in card.get("variable_mapping", [])],
+            )
+            for card in campaign.carousel_cards
+        ]
 
         try:
             outcome = await client.send_template(
@@ -350,6 +369,7 @@ async def send_campaign(
                 campaign.template_name,
                 campaign.template_language,
                 body_params=variables or None,
+                carousel_cards=carousel_cards or None,
             )
         except WhatsAppError as exc:
             failed += 1

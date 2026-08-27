@@ -44,6 +44,15 @@ MAX_HEADER_TEXT = 60
 MAX_FOOTER = 60
 MAX_BUTTONS = 10
 
+# A carousel's own ceilings - separate from the flat template ones above
+# because Meta enforces them separately. Every card is capped tighter than a
+# normal body (160, not 1024) because it has to read at a glance in a
+# horizontally-scrolling strip, not as a paragraph.
+MIN_CAROUSEL_CARDS = 2
+MAX_CAROUSEL_CARDS = 10
+MAX_CARD_BODY = 160
+MAX_CARD_BUTTONS = 2
+
 _VARIABLE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 _INVALID_NAME_CHARS = re.compile(r"[^a-z0-9_]+")
 
@@ -118,6 +127,55 @@ class Button:
 
 
 @dataclass(slots=True)
+class CarouselCard:
+    """
+    One card in a carousel - its own picture, its own two lines, its own
+    buttons. Meta requires every card in a carousel to carry the same button
+    types and count, so a mismatched card is refused as a whole-template
+    error, not a per-card one - checked here before it ever reaches Meta.
+    """
+
+    header_handle: str          # from media_upload.upload_for_carousel_card
+    body: str
+    buttons: list[Button] = field(default_factory=list)
+    examples: dict[str, str] = field(default_factory=dict)
+
+    def _sample(self, variable: str) -> str:
+        supplied = (self.examples.get(variable) or "").strip()
+        return supplied or variable.replace("_", " ").title()
+
+    def to_component(self) -> dict[str, Any]:
+        card_components: list[dict[str, Any]] = [
+            {
+                "type": "HEADER",
+                "format": "IMAGE",
+                "example": {"header_handle": [self.header_handle]},
+            }
+        ]
+
+        body: dict[str, Any] = {"type": "BODY", "text": self.body}
+        body_vars = variables_in(self.body)
+        if body_vars:
+            if parameter_format(body_vars) == "POSITIONAL":
+                body["example"] = {"body_text": [[self._sample(v) for v in body_vars]]}
+            else:
+                body["example"] = {
+                    "body_text_named_params": [
+                        {"param_name": v, "example": self._sample(v)} for v in body_vars
+                    ]
+                }
+        card_components.append(body)
+
+        if self.buttons:
+            card_components.append({
+                "type": "BUTTONS",
+                "buttons": [TemplateDraft._button(b) for b in self.buttons],
+            })
+
+        return {"components": card_components}
+
+
+@dataclass(slots=True)
 class TemplateDraft:
     """What a client wrote, before it becomes Meta's JSON."""
 
@@ -131,12 +189,26 @@ class TemplateDraft:
     # Sample values per variable name. Missing ones get a placeholder, because
     # Meta refuses the template outright without them.
     examples: dict[str, str] = field(default_factory=dict)
+    # 2-10 cards, or empty for a normal (non-carousel) template. A carousel
+    # template has no header/footer/buttons of its own - Meta puts all of
+    # that inside each card instead.
+    carousel_cards: list[CarouselCard] = field(default_factory=list)
 
     def validate(self) -> None:
         if not self.body or not self.body.strip():
             raise TemplateError("The message body cannot be empty")
         if len(self.body) > MAX_BODY:
             raise TemplateError(f"The body must be under {MAX_BODY} characters")
+
+        if self.carousel_cards:
+            if self.header_text or self.footer or self.buttons:
+                raise TemplateError(
+                    "A carousel template puts its header, footer and buttons on "
+                    "each card, not on the message itself"
+                )
+            self._validate_carousel()
+            return
+
         if self.header_text and len(self.header_text) > MAX_HEADER_TEXT:
             raise TemplateError(f"The header must be under {MAX_HEADER_TEXT} characters")
         if self.footer and len(self.footer) > MAX_FOOTER:
@@ -145,6 +217,30 @@ class TemplateDraft:
             raise TemplateError(f"A template can have at most {MAX_BUTTONS} buttons")
         if len(variables_in(self.header_text or "")) > 1:
             raise TemplateError("A header can contain at most one variable")
+
+    def _validate_carousel(self) -> None:
+        count = len(self.carousel_cards)
+        if count < MIN_CAROUSEL_CARDS or count > MAX_CAROUSEL_CARDS:
+            raise TemplateError(
+                f"A carousel needs between {MIN_CAROUSEL_CARDS} and {MAX_CAROUSEL_CARDS} cards"
+            )
+        for card in self.carousel_cards:
+            if not card.body or not card.body.strip():
+                raise TemplateError("Every carousel card needs its own text")
+            if len(card.body) > MAX_CARD_BODY:
+                raise TemplateError(f"A carousel card's text must be under {MAX_CARD_BODY} characters")
+            if not card.header_handle:
+                raise TemplateError("Every carousel card needs an uploaded image")
+            if len(card.buttons) > MAX_CARD_BUTTONS:
+                raise TemplateError(f"A carousel card can have at most {MAX_CARD_BUTTONS} buttons")
+
+        # Meta rejects a carousel whose cards don't all carry the same button
+        # shape - catching that here reads far better than Meta's own error.
+        shapes = {tuple(b.type for b in card.buttons) for card in self.carousel_cards}
+        if len(shapes) > 1:
+            raise TemplateError(
+                "Every card in a carousel must have the same number and type of buttons"
+            )
 
     def to_components(self) -> list[dict[str, Any]]:
         """
@@ -194,6 +290,15 @@ class TemplateDraft:
                     ]
                 }
         components.append(body)
+
+        if self.carousel_cards:
+            # No header/footer/buttons on the message itself - validate()
+            # already refused a draft that mixed the two shapes.
+            components.append({
+                "type": "CAROUSEL",
+                "cards": [c.to_component() for c in self.carousel_cards],
+            })
+            return components
 
         if self.footer:
             components.append({"type": "FOOTER", "text": self.footer})

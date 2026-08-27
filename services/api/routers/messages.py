@@ -21,6 +21,7 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels import ingest
 from shared.channels.whatsapp.client import (
+    CarouselSendCard,
     WhatsAppClient,
     WhatsAppError,
     within_service_window,
@@ -50,6 +51,11 @@ class SendText(BaseModel):
     body: str = Field(min_length=1, max_length=4096)
 
 
+class SendCarouselCard(BaseModel):
+    media_id: str
+    variables: list[str] = Field(default_factory=list)
+
+
 class SendTemplate(BaseModel):
     to: str
     template_name: str
@@ -58,6 +64,9 @@ class SendTemplate(BaseModel):
         default_factory=list,
         description="Values for the template's {{placeholders}}, in order",
     )
+    # Present only when template_name is a carousel template - one entry per
+    # card, in the same order the template was approved with.
+    carousel_cards: list[SendCarouselCard] = Field(default_factory=list)
 
 
 class SendResult(BaseModel):
@@ -259,7 +268,12 @@ async def send_template(
     client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
     try:
         sent = await client.send_template(
-            to, body.template_name, body.language, body_params=body.variables or None
+            to, body.template_name, body.language,
+            body_params=body.variables or None,
+            carousel_cards=[
+                CarouselSendCard(media_id=c.media_id, body_params=c.variables)
+                for c in body.carousel_cards
+            ] or None,
         )
     except WhatsAppError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
