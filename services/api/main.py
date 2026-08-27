@@ -24,6 +24,7 @@ from services.api.routers import (
     cases,
     channels,
     conversations,
+    crm,
     knowledge,
     dashboard,
     flows,
@@ -124,6 +125,7 @@ app.include_router(templates.router, prefix=API_PREFIX)
 app.include_router(account.router, prefix=API_PREFIX)
 app.include_router(messages.router, prefix=API_PREFIX)
 app.include_router(conversations.router, prefix=API_PREFIX)
+app.include_router(crm.router, prefix=API_PREFIX)
 app.include_router(approvals.router, prefix=API_PREFIX)
 app.include_router(knowledge.router, prefix=API_PREFIX)
 app.include_router(campaigns.router, prefix=API_PREFIX)

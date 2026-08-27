@@ -44,6 +44,7 @@ class Audience(str, enum.Enum):
     overdue = "overdue"                    # ...and past due
     we_promised = "we_promised"            # open we_owe - what the business owes
     gone_quiet = "gone_quiet"              # no contact in N days
+    by_tag = "by_tag"                      # a CRM tag, confirmed or suggested-and-confirmed
     all_customers = "all_customers"        # the blunt instrument, still available
 
 

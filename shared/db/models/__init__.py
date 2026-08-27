@@ -10,6 +10,7 @@ from shared.db.models.campaign import (
     CampaignRecipient,
     CampaignStatus,
 )
+from shared.db.models.crm import CustomerNote, CustomerTag, TagStatus
 from shared.db.models.channel import (
     Call,
     Channel,
@@ -90,6 +91,9 @@ __all__ = [
     "Customer",
     "CustomerIdentity",
     "CustomerIntelligence",
+    "CustomerNote",
+    "CustomerTag",
+    "TagStatus",
     "Department",
     "Direction",
     "Doctor",

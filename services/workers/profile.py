@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.ai import compression
 from shared.ai.client import AIError
 from shared.billing import usage
+from shared.crm import tagging
 from shared.db import queue
 from shared.db.models import (
     Business,
@@ -157,6 +158,15 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
     existing.preferred_channel = preferred
     existing.source_message_ids = profile.source_message_ids
     existing.computed_at = datetime.now(timezone.utc)
+
+    suggested = await tagging.apply_suggestions(
+        customer_id, customer.business_id, existing, db
+    )
+    if suggested:
+        logger.info(
+            "suggested %s tag(s) for customer=%s from the refreshed profile",
+            suggested, customer_id,
+        )
 
     logger.info(
         "profile compressed customer=%s score=%s from %s messages cost=%sp",

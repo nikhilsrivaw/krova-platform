@@ -48,14 +48,22 @@ AUDIENCE_LABELS = {
     Audience.overdue: "Everyone whose payment is overdue",
     Audience.we_promised: "Everyone you promised something to",
     Audience.gone_quiet: "Everyone who has gone quiet",
+    Audience.by_tag: "Everyone with a chosen CRM tag",
     Audience.all_customers: "Every customer",
 }
+
+
+def _audience_label(audience: Audience, params: dict) -> str:
+    if audience == Audience.by_tag:
+        tag = (params or {}).get("tag")
+        return f"Tagged '{tag}'" if tag else AUDIENCE_LABELS[Audience.by_tag]
+    return AUDIENCE_LABELS.get(audience, _value(audience))
 
 
 class CampaignIn(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     audience: Literal[
-        "owes_money", "overdue", "we_promised", "gone_quiet", "all_customers"
+        "owes_money", "overdue", "we_promised", "gone_quiet", "by_tag", "all_customers"
     ]
     audience_params: dict = Field(default_factory=dict)
     template_name: str
@@ -163,7 +171,7 @@ async def list_audiences(current_user: CurrentUserDep) -> list[dict]:
         {
             "value": a.value,
             "label": AUDIENCE_LABELS[a],
-            "needs_params": a == Audience.gone_quiet,
+            "needs_params": a in (Audience.gone_quiet, Audience.by_tag),
         }
         for a in Audience
     ]
@@ -225,7 +233,7 @@ async def preview(
 
     return CampaignPreview(
         audience=body.audience,
-        audience_label=AUDIENCE_LABELS[Audience(body.audience)],
+        audience_label=_audience_label(Audience(body.audience), body.audience_params),
         will_reach=result.count,
         will_skip=len(result.skipped),
         skipped_reasons=result.skipped[:10],
@@ -412,7 +420,7 @@ def _out(c: Campaign) -> CampaignOut:
         id=str(c.id),
         name=c.name,
         audience=_value(c.audience),
-        audience_label=AUDIENCE_LABELS.get(c.audience, _value(c.audience)),
+        audience_label=_audience_label(c.audience, c.audience_params),
         status=_value(c.status),
         template_name=c.template_name,
         category=c.category,

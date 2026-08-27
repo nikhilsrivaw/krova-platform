@@ -33,7 +33,10 @@ from shared.db.models import (
     CommitmentStatus,
     Customer,
     CustomerIdentity,
+    CustomerIntelligence,
+    CustomerTag,
     Message,
+    TagStatus,
 )
 from shared.identity import importer
 
@@ -292,7 +295,11 @@ async def resolve_commitment(
 async def list_customers(
     current_user: CurrentUserDep, db: DbDep, limit: int = Query(default=50, le=200)
 ) -> list[dict]:
-    """Everyone this business talks to, most recent first."""
+    """
+    Everyone this business talks to, most recent first - with the compressed
+    profile the nightly worker already computed, so the list carries a real
+    health score and summary rather than the client inventing a placeholder.
+    """
     result = await db.execute(
         select(Customer)
         .where(Customer.business_id == current_user.business)
@@ -300,6 +307,29 @@ async def list_customers(
         .limit(limit)
     )
     customers = list(result.scalars().all())
+    if not customers:
+        return []
+
+    ids = [c.id for c in customers]
+
+    intelligence = dict(
+        (row.customer_id, row)
+        for row in (
+            await db.execute(
+                select(CustomerIntelligence).where(CustomerIntelligence.customer_id.in_(ids))
+            )
+        ).scalars().all()
+    )
+
+    tags_by_customer: dict[uuid.UUID, list[str]] = {}
+    for customer_id, label in (
+        await db.execute(
+            select(CustomerTag.customer_id, CustomerTag.label).where(
+                CustomerTag.customer_id.in_(ids), CustomerTag.status == TagStatus.confirmed,
+            )
+        )
+    ).all():
+        tags_by_customer.setdefault(customer_id, []).append(label)
 
     out = []
     for c in customers:
@@ -312,6 +342,7 @@ async def list_customers(
                 Commitment.status == CommitmentStatus.open,
             )
         )
+        intel = intelligence.get(c.id)
         out.append(
             {
                 "id": str(c.id),
@@ -328,6 +359,13 @@ async def list_customers(
                 ),
                 "open_commitments": int(open_count.scalar_one()),
                 "is_private": c.is_private,
+                "stage": c.stage,
+                "deal_value_paise": c.deal_value_paise,
+                "tags": tags_by_customer.get(c.id, []),
+                "health_score": intel.health_score if intel else None,
+                "outstanding_paise": intel.outstanding_paise if intel else 0,
+                "summary": intel.summary if intel else None,
+                "preferred_channel": intel.preferred_channel if intel else None,
             }
         )
     return out

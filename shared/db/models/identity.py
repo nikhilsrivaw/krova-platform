@@ -24,6 +24,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -217,6 +218,20 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+
+    # A business's own funnel step ("New", "Qualified", "Won"), free text and
+    # set by hand. Unlike everything in customer_tags this is never inferred -
+    # the words a business uses for its own pipeline are theirs to define, in
+    # Business.settings["pipeline_stages"].
+    stage: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
+    # What this relationship is worth if it closes, set by hand at the stage
+    # it is currently in. Deliberately separate from Commitment: a commitment
+    # is a promise already made ("I'll pay ₹5,000 Friday"), read from a real
+    # message. A deal value is a business's own forecast before any promise
+    # exists - "this lead is worth about ₹40,000 to me" - which is exactly
+    # the one thing here nothing in a conversation could tell us.
+    deal_value_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     identities: Mapped[list["CustomerIdentity"]] = relationship(
         back_populates="customer", cascade="all, delete-orphan"

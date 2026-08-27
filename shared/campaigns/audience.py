@@ -30,7 +30,9 @@ from shared.db.models import (
     CommitmentStatus,
     Customer,
     CustomerIdentity,
+    CustomerTag,
     IdentityKind,
+    TagStatus,
 )
 
 
@@ -100,6 +102,16 @@ async def resolve(
     elif audience == Audience.gone_quiet:
         days = int(params.get("days", 30))
         conditions.append(Customer.last_contact_at < now - timedelta(days=days))
+    elif audience == Audience.by_tag:
+        label = (params.get("tag") or "").strip().lower()
+        if not label:
+            return AudienceResult(recipients=[], skipped=[], total_amount_paise=0)
+        tagged = select(CustomerTag.customer_id).where(
+            CustomerTag.business_id == business_id,
+            CustomerTag.label == label,
+            CustomerTag.status == TagStatus.confirmed,
+        )
+        conditions.append(Customer.id.in_(tagged))
 
     if commitment_filter is not None:
         matching = select(Commitment.customer_id).where(
