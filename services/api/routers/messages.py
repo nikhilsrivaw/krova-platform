@@ -203,6 +203,7 @@ async def send_text(
         occurred_at=datetime.now(timezone.utc),
         connection_id=connection.id,
         enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
         db=db,
     )
 
@@ -284,6 +285,7 @@ async def send_template(
         connection_id=connection.id,
         raw={"template": body.template_name, "variables": body.variables},
         enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
         db=db,
     )
 
@@ -343,6 +345,7 @@ async def _record_outbound(
         media=media,
         raw=raw,
         enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
         db=db,
     )
 

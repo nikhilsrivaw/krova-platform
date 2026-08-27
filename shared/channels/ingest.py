@@ -88,6 +88,7 @@ async def ingest(
     raw: dict[str, Any] | None = None,
     enqueue_analysis: bool = True,
     referral: dict[str, Any] | None = None,
+    sent_by_user_id: uuid.UUID | None = None,
 ) -> Ingested:
     """
     Store one message, attributing it to a customer.
@@ -98,6 +99,11 @@ async def ingest(
     `referral` is Click-to-WhatsApp ad metadata, present only on the first
     message after someone taps an ad - captured onto the customer once and
     never overwritten, since Meta never repeats it on later messages.
+
+    `sent_by_user_id` is who actually sent this, when a person did - pass it
+    from any endpoint a human explicitly triggered (a manual reply, an
+    approved draft). Leave it unset for anything automated: a campaign send,
+    an unreviewed AI reply, a backfilled or inbound message.
     """
     if external_id:
         existing = await db.execute(
@@ -146,6 +152,7 @@ async def ingest(
         occurred_at=occurred_at,
         raw_payload=raw or {},
         created_at=datetime.now(timezone.utc),
+        sent_by_user_id=sent_by_user_id,
     )
     db.add(message)
 

@@ -27,6 +27,7 @@ from sqlalchemy import case, func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.db.models import (
+    BusinessMember,
     Commitment,
     CommitmentDirection,
     CommitmentStatus,
@@ -36,6 +37,7 @@ from shared.db.models import (
     DraftStatus,
     Message,
     MessageDraft,
+    User,
 )
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -86,6 +88,24 @@ class AgentPerformance(BaseModel):
     edit_rate: float | None
     note: str
     top_gaps: list[dict]
+
+
+class TeamMemberPerformance(BaseModel):
+    user_id: str
+    full_name: str | None
+    email: str
+    messages_sent: int
+    # How many of those sends were a genuine reply to a preceding inbound
+    # message - a bulk-sent template with nobody waiting on it doesn't count.
+    replies_counted: int
+    avg_first_response_minutes: float | None
+    commitments_resolved: int
+    avg_resolution_hours: float | None
+
+
+class TeamPerformance(BaseModel):
+    days: int
+    members: list[TeamMemberPerformance]
 
 
 def _money(paise: int) -> str:
@@ -357,6 +377,113 @@ async def agent_performance(
             for g, n in sorted(gap_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
         ],
     )
+
+
+@router.get("/team", response_model=TeamPerformance)
+async def team_performance(
+    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+) -> TeamPerformance:
+    """
+    How the humans on this business's team are actually doing - not the AI.
+
+    First-response time only counts a send that a specific team member sent
+    (Message.sent_by_user_id) and that was a genuine reply to a customer who
+    was waiting - a campaign blast or an unreviewed AI send never attributes
+    to anyone here, on purpose. Resolution time is scoped to Commitments only:
+    Case has no closed_at, and guessing one from updated_at would present a
+    number this product's whole premise is built to never present - a fact
+    with nothing behind it.
+    """
+    business_id = current_user.business
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    members = (
+        await db.execute(
+            select(BusinessMember.user_id, User.full_name, User.email)
+            .join(User, User.id == BusinessMember.user_id)
+            .where(BusinessMember.business_id == business_id, User.is_active == True)  # noqa: E712
+        )
+    ).all()
+
+    rows = (
+        await db.execute(
+            select(
+                Message.customer_id, Message.direction, Message.occurred_at,
+                Message.sent_by_user_id,
+            )
+            .where(Message.business_id == business_id, Message.occurred_at >= since)
+            .order_by(Message.customer_id, Message.occurred_at)
+        )
+    ).all()
+
+    sends_by_user: dict = {}
+    response_seconds_by_user: dict = {}
+    pending_inbound_at = None
+    current_customer = None
+
+    for customer_id, direction, occurred_at, sent_by in rows:
+        if customer_id != current_customer:
+            current_customer = customer_id
+            pending_inbound_at = None
+
+        if direction == Direction.inbound:
+            if pending_inbound_at is None:
+                pending_inbound_at = occurred_at
+            continue
+
+        # Outbound.
+        if sent_by is not None:
+            sends_by_user[sent_by] = sends_by_user.get(sent_by, 0) + 1
+            if pending_inbound_at is not None:
+                delta = (occurred_at - pending_inbound_at).total_seconds()
+                response_seconds_by_user.setdefault(sent_by, []).append(delta)
+        # Any outbound reply ends the customer's wait, whoever or whatever sent it.
+        pending_inbound_at = None
+
+    commitment_rows = (
+        await db.execute(
+            select(
+                Commitment.confirmed_by_user_id, Commitment.created_at, Commitment.resolved_at,
+            )
+            .where(
+                Commitment.business_id == business_id,
+                Commitment.confirmed_by_user_id.isnot(None),
+                Commitment.resolved_at.isnot(None),
+                Commitment.resolved_at >= since,
+            )
+        )
+    ).all()
+
+    resolution_hours_by_user: dict = {}
+    for user_id, created_at, resolved_at in commitment_rows:
+        hours = (resolved_at - created_at).total_seconds() / 3600
+        resolution_hours_by_user.setdefault(user_id, []).append(hours)
+
+    out = []
+    for user_id, full_name, email in members:
+        response_times = response_seconds_by_user.get(user_id, [])
+        resolution_times = resolution_hours_by_user.get(user_id, [])
+        out.append(
+            TeamMemberPerformance(
+                user_id=str(user_id),
+                full_name=full_name,
+                email=email,
+                messages_sent=sends_by_user.get(user_id, 0),
+                replies_counted=len(response_times),
+                avg_first_response_minutes=(
+                    round(sum(response_times) / len(response_times) / 60, 1)
+                    if response_times else None
+                ),
+                commitments_resolved=len(resolution_times),
+                avg_resolution_hours=(
+                    round(sum(resolution_times) / len(resolution_times), 1)
+                    if resolution_times else None
+                ),
+            )
+        )
+
+    out.sort(key=lambda m: m.messages_sent, reverse=True)
+    return TeamPerformance(days=days, members=out)
 
 
 @router.get("/overview")

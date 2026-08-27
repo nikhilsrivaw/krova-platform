@@ -271,6 +271,7 @@ async def send_flow(
         raw={"flow_id": flow.meta_flow_id, "screen": body.screen, "flow_token": flow_token},
         media={"kind": "flow_open", "flow_name": flow.name},
         enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
         db=db,
     )
 

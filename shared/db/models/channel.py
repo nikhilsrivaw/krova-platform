@@ -194,11 +194,21 @@ class Message(UUIDMixin, Base):
         DateTime(timezone=True), nullable=False
     )
 
+    # Who actually sent this, when a person did. Null for every inbound
+    # message, for anything the AI sent unreviewed, and for a bulk campaign
+    # send - only set when a specific team member is the reason this exists,
+    # which is what makes per-agent response-time analytics honest rather
+    # than attributing automated sends to whoever happened to be logged in.
+    sent_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     __table_args__ = (
         UniqueConstraint("business_id", "external_id", name="uq_message_external_id"),
         Index("idx_messages_timeline", "business_id", "customer_id", "occurred_at"),
         Index("idx_messages_unanalysed", "business_id", "analysed_at"),
         Index("idx_messages_channel", "business_id", "channel", "occurred_at"),
+        Index("idx_messages_sent_by", "business_id", "sent_by_user_id"),
     )
 
 

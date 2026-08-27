@@ -253,6 +253,7 @@ async def approve(
         occurred_at=now,
         connection_id=connection.id,
         enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
         db=db,
     )
 
