@@ -404,6 +404,61 @@ class WhatsAppClient:
         )
         return self._result(payload)
 
+    async def send_flow_message(
+        self,
+        to: str,
+        body: str,
+        *,
+        flow_id: str,
+        flow_token: str,
+        flow_cta: str,
+        screen: str,
+        data: dict[str, Any] | None = None,
+        draft: bool = False,
+    ) -> SendResult:
+        """
+        Open a WhatsApp Flow - a structured form that renders natively in
+        the chat, rather than a link out to a web form the customer has to
+        leave WhatsApp to fill in.
+
+        flow_token is ours to generate, one per send: it is the only thing
+        WhatsApp hands back unchanged when the customer finishes, so it is
+        what a completion is matched back to (see FlowSendLog). screen names
+        the entry screen to open, its id exactly as it appears in the
+        published Flow JSON - Meta rejects a navigate action with no screen.
+        `draft=True` sends an unpublished flow for testing, which Meta only
+        delivers to accounts marked as testers on the app.
+
+        Only delivers inside the 24-hour window, same as buttons and lists -
+        Meta does not allow a flow as a template component.
+        """
+        parameters: dict[str, Any] = {
+            "flow_message_version": "3",
+            "flow_token": flow_token,
+            "flow_id": flow_id,
+            "flow_cta": flow_cta,
+            "flow_action": "navigate",
+            "flow_action_payload": {"screen": screen, "data": data or {}},
+        }
+        if draft:
+            parameters["mode"] = "draft"
+
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": {
+                    "type": "flow",
+                    "body": {"text": body},
+                    "action": {"name": "flow", "parameters": parameters},
+                },
+            },
+        )
+        return self._result(payload)
+
     async def mark_read(self, message_id: str) -> None:
         """
         Show the customer their message was seen.

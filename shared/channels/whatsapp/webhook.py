@@ -200,6 +200,32 @@ def _extract_text(message: dict) -> tuple[str | None, dict]:
                 if key in interactive:
                     reply = interactive[key] or {}
                     return reply.get("title") or reply.get("id"), media
+            if "nfm_reply" in interactive:
+                # A completed WhatsApp Flow. response_json arrives as a JSON
+                # *string*, not an object - Meta's one inconsistency in an
+                # otherwise all-object payload, and worth decoding here so
+                # every downstream reader gets real fields, not a string to
+                # re-parse.
+                reply = interactive["nfm_reply"] or {}
+                import json as _json
+
+                try:
+                    fields = _json.loads(reply.get("response_json") or "{}")
+                except (TypeError, ValueError):
+                    fields = {}
+                media = {
+                    "kind": "flow_reply",
+                    "flow_name": reply.get("name"),
+                    # WhatsApp echoes the flow_token we sent back inside
+                    # response_json itself once the flow's terminal screen
+                    # completes - that is the join key to FlowSendLog, not
+                    # anything in the envelope around it.
+                    "flow_token": fields.get("flow_token"),
+                    "fields": {k: v for k, v in fields.items() if k != "flow_token"},
+                }
+                readable = media["fields"]
+                summary = ", ".join(f"{k}: {v}" for k, v in readable.items()) if readable else None
+                return (f"Completed a form: {summary}" if summary else "Completed a form"), media
             return None, media
 
         case "location":

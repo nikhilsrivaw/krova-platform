@@ -39,6 +39,7 @@ from shared.db.models.intelligence import (
     Insight,
 )
 from shared.db.models.draft import DraftAction, DraftStatus, MessageDraft
+from shared.db.models.flow import FlowSendLog, FlowStatus, WhatsAppFlow
 from shared.db.models.job import Job, JobStatus
 from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSource
 from shared.db.models.order import Order, OrderStatus, StoreConnection
@@ -90,6 +91,8 @@ __all__ = [
     "Department",
     "Direction",
     "Doctor",
+    "FlowSendLog",
+    "FlowStatus",
     "IdentityKind",
     "IntakeChannel",
     "Insight",
@@ -115,4 +118,5 @@ __all__ = [
     "User",
     "VoiceProvisioning",
     "VoiceProvisioningStatus",
+    "WhatsAppFlow",
 ]

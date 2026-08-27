@@ -28,6 +28,7 @@ from shared.db.models import (
     ConnectionStatus,
     Customer,
     Direction,
+    FlowSendLog,
     IdentityKind,
     Order,
     OrderStatus,
@@ -169,6 +170,10 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                             connection.business_id, result.customer.id,
                             media_info.get("order") or {}, message.external_id, message.occurred_at, db,
                         )
+                    if media_info.get("kind") == "flow_reply" and media_info.get("flow_token"):
+                        await _mark_flow_completed(
+                            connection.business_id, media_info["flow_token"], message.occurred_at, db,
+                        )
 
             for update in parsed.statuses:
                 await _apply_status(update, db)
@@ -246,6 +251,32 @@ async def _record_native_order(
         "whatsapp native order recorded business=%s customer=%s items=%d",
         business_id, customer_id, len(parsed.items),
     )
+
+
+async def _mark_flow_completed(
+    business_id: uuid.UUID, flow_token: str, occurred_at, db,
+) -> None:
+    """
+    Match a finished flow back to the send that opened it.
+
+    Silent no-op if the token is unknown - a flow_token we never issued
+    (someone replaying a webhook, a flow sent before this feature existed)
+    is not an error worth raising over, just nothing to update.
+    """
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(FlowSendLog).where(
+            FlowSendLog.business_id == business_id,
+            FlowSendLog.flow_token == flow_token,
+        )
+    )
+    send_log = result.scalars().first()
+    if send_log is None:
+        logger.info("flow completion for unknown token business=%s", business_id)
+        return
+    send_log.completed_at = occurred_at
+    logger.info("flow completed business=%s token=%s", business_id, flow_token)
 
 
 # Meta's event values, mapped to what we store. Anything unrecognised leaves
