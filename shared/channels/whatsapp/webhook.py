@@ -77,6 +77,71 @@ class StatusUpdate:
 
 
 @dataclass(slots=True)
+class NativeOrderItem:
+    product_retailer_id: str
+    quantity: int
+    price_paise: int | None
+
+
+@dataclass(slots=True)
+class NativeOrder:
+    """
+    A cart the customer built and submitted from the business's own Meta
+    catalog, inside WhatsApp itself - not synced in from Shopify, this
+    happened entirely within the chat. Deliberately shaped to map onto the
+    same Order model shopify's parser fills in
+    (shared/channels/shopify/webhook.py) - one order table, whichever
+    channel it came from, rather than a second one only for chat-native
+    orders.
+    """
+
+    catalog_id: str | None
+    note: str | None
+    items: list[NativeOrderItem]
+    total_paise: int | None
+
+
+def _paise_from_decimal_string(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        from decimal import Decimal
+
+        return int((Decimal(str(value)) * 100).to_integral_value())
+    except Exception:
+        return None
+
+
+def parse_native_order(order_data: dict) -> NativeOrder:
+    """Turn the raw `order` object WhatsApp sends into something Order-shaped."""
+    items = []
+    total = 0
+    any_price = False
+    for raw_item in order_data.get("product_items") or []:
+        price = _paise_from_decimal_string(raw_item.get("item_price"))
+        try:
+            quantity = int(raw_item.get("quantity", 1))
+        except (TypeError, ValueError):
+            quantity = 1
+        if price is not None:
+            total += price * quantity
+            any_price = True
+        items.append(
+            NativeOrderItem(
+                product_retailer_id=str(raw_item.get("product_retailer_id", "")),
+                quantity=quantity,
+                price_paise=price,
+            )
+        )
+    return NativeOrder(
+        catalog_id=order_data.get("catalog_id"),
+        note=order_data.get("text") or None,
+        items=items,
+        total_paise=total if any_price else None,
+    )
+
+
+@dataclass(slots=True)
 class ParsedWebhook:
     messages: list[InboundMessage] = field(default_factory=list)
     statuses: list[StatusUpdate] = field(default_factory=list)

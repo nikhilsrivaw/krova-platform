@@ -150,3 +150,31 @@ async def get_order(order_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
     if order is None or order.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Order not found")
     return _order_out(order)
+
+
+class OrderPatch(BaseModel):
+    status: OrderStatus | None = None
+    tracking_number: str | None = None
+    carrier: str | None = None
+
+
+@router.patch("/{order_id}", response_model=OrderOut)
+async def update_order(order_id: uuid.UUID, body: OrderPatch, current_user: CurrentUserDep, db: DbDep) -> OrderOut:
+    """
+    A human moving an order forward - the only way a WhatsApp-native order
+    (source_platform="whatsapp") ever changes status at all, since Meta
+    sends no separate payment or fulfillment webhook for one the way
+    Shopify does. Also usable on a synced Shopify order for a manual
+    correction, though the webhook is that one's real source of truth.
+    """
+    order = await db.get(Order, order_id)
+    if order is None or order.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Order not found")
+    if body.status is not None:
+        order.status = body.status
+    if body.tracking_number is not None:
+        order.tracking_number = body.tracking_number
+    if body.carrier is not None:
+        order.carrier = body.carrier
+    await db.flush()
+    return _order_out(order)

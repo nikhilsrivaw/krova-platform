@@ -30,6 +30,7 @@ from shared.db.models import (
     Direction,
     IdentityKind,
     Order,
+    OrderStatus,
     StoreConnection,
 )
 from shared.db.session import AsyncSessionLocal
@@ -163,6 +164,11 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                         connection.business_id,
                         result.customer.id if result.customer else None,
                     )
+                    if media_info.get("kind") == "order" and result.customer is not None:
+                        await _record_native_order(
+                            connection.business_id, result.customer.id,
+                            media_info.get("order") or {}, message.external_id, message.occurred_at, db,
+                        )
 
             for update in parsed.statuses:
                 await _apply_status(update, db)
@@ -201,6 +207,45 @@ async def _apply_status(update: webhook.StatusUpdate, db) -> None:
             update.recipient_phone,
             update.errors,
         )
+
+
+async def _record_native_order(
+    business_id: uuid.UUID, customer_id: uuid.UUID, order_data: dict,
+    message_id: str, occurred_at, db,
+) -> None:
+    """
+    A customer submitted a cart from the business's own Meta catalog,
+    entirely inside WhatsApp - reuse the same Order table Shopify orders
+    land in (source_platform="whatsapp" instead of "shopify") rather than a
+    second table only for chat-native orders. Everywhere that already reads
+    Order (the orders API, shared/ai/context.py's WISMO answers) picks this
+    up with zero extra code.
+
+    Status starts at "pending" and stays there until a human moves it -
+    unlike Shopify, Meta gives no separate payment/fulfillment webhook for
+    a chat-native order, so nothing here can honestly claim it's paid.
+    """
+    parsed = webhook.parse_native_order(order_data)
+    order = Order(
+        business_id=business_id,
+        customer_id=customer_id,
+        source_platform="whatsapp",
+        external_order_id=message_id,  # the wamid - unique per business already
+        status=OrderStatus.pending,
+        items=[
+            {"product_retailer_id": i.product_retailer_id, "quantity": i.quantity, "price_paise": i.price_paise}
+            for i in parsed.items
+        ],
+        total_paise=parsed.total_paise,
+        placed_at=occurred_at,
+        raw_payload=order_data,
+    )
+    db.add(order)
+    await db.flush()
+    logger.info(
+        "whatsapp native order recorded business=%s customer=%s items=%d",
+        business_id, customer_id, len(parsed.items),
+    )
 
 
 # Meta's event values, mapped to what we store. Anything unrecognised leaves

@@ -313,6 +313,97 @@ class WhatsAppClient:
         )
         return self._result(payload)
 
+    async def send_single_product_message(
+        self, to: str, catalog_id: str, product_retailer_id: str, *, body: str | None = None
+    ) -> SendResult:
+        """
+        Show one product with its real price and image, pulled live from the
+        business's own Meta catalog - never a price or description this
+        product invents, the same discipline as every other price this
+        codebase quotes. product_retailer_id is the SKU as listed in that
+        catalog, the business's own identifier, not Krova's.
+        """
+        interactive: dict[str, Any] = {
+            "type": "product",
+            "action": {"catalog_id": catalog_id, "product_retailer_id": product_retailer_id},
+        }
+        if body:
+            interactive["body"] = {"text": body}
+
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": interactive,
+            },
+        )
+        return self._result(payload)
+
+    async def send_multi_product_message(
+        self,
+        to: str,
+        catalog_id: str,
+        header: str,
+        body: str,
+        sections: list[tuple[str, list[str]]],
+    ) -> SendResult:
+        """
+        Show several products at once, grouped into named sections - up to
+        30 items total across sections, per Meta's limit. Each section is
+        (section_title, [product_retailer_id, ...]).
+        """
+        total_items = sum(len(ids) for _, ids in sections)
+        if not 1 <= total_items <= 30:
+            raise ValueError(f"WhatsApp allows 1-30 products total across sections, got {total_items}")
+
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": {
+                    "type": "product_list",
+                    "header": {"type": "text", "text": header},
+                    "body": {"text": body},
+                    "action": {
+                        "catalog_id": catalog_id,
+                        "sections": [
+                            {
+                                "title": section_title,
+                                "product_items": [{"product_retailer_id": pid} for pid in product_ids],
+                            }
+                            for section_title, product_ids in sections
+                        ],
+                    },
+                },
+            },
+        )
+        return self._result(payload)
+
+    async def send_catalog_message(self, to: str, body: str) -> SendResult:
+        """
+        Show the business's whole catalog as a browsable thumbnail - the
+        entry point when a customer asks "what do you have" rather than
+        about one specific item. Whichever catalog is attached to this
+        WABA in Meta Commerce Manager; there is nothing more to pass.
+        """
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": {"type": "catalog_message", "body": {"text": body}},
+            },
+        )
+        return self._result(payload)
+
     async def mark_read(self, message_id: str) -> None:
         """
         Show the customer their message was seen.
