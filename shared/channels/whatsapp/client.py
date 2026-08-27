@@ -215,6 +215,104 @@ class WhatsAppClient:
         )
         return self._result(payload)
 
+    async def send_interactive_buttons(
+        self, to: str, body: str, buttons: list[tuple[str, str]]
+    ) -> SendResult:
+        """
+        Send up to 3 tappable reply buttons - "Confirm" / "Reschedule"
+        instead of asking the customer to type a reply and hoping the AI
+        parses it consistently. Each item in `buttons` is (id, title): id is
+        what comes back in the webhook's button_reply when tapped (already
+        parsed by webhook.py's "button_reply" branch, which had nowhere to
+        send from before this), title is what the customer sees.
+
+        Only delivers inside the 24-hour window, same as send_text - Meta
+        does not allow interactive messages as templates.
+        """
+        if not 1 <= len(buttons) <= 3:
+            raise ValueError(f"WhatsApp allows 1-3 buttons, got {len(buttons)}")
+        for button_id, title in buttons:
+            if len(title) > 20:
+                raise ValueError(f"Button title over 20 characters: {title!r}")
+            if len(button_id) > 256:
+                raise ValueError(f"Button id over 256 characters: {button_id!r}")
+
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": body},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply", "reply": {"id": bid, "title": title}}
+                            for bid, title in buttons
+                        ]
+                    },
+                },
+            },
+        )
+        return self._result(payload)
+
+    async def send_interactive_list(
+        self,
+        to: str,
+        body: str,
+        button_label: str,
+        sections: list[tuple[str, list[tuple[str, str, str | None]]]],
+    ) -> SendResult:
+        """
+        Send a tappable picker - up to 10 rows total, grouped into named
+        sections. Each section is (section_title, rows), each row is
+        (id, title, description). Meant for exactly the choices this
+        product already computes for real (open appointment slots, a
+        clinic's departments) rather than free text the AI has to parse
+        back into one of a fixed set of options.
+
+        Only delivers inside the 24-hour window, same as buttons.
+        """
+        total_rows = sum(len(rows) for _, rows in sections)
+        if not 1 <= total_rows <= 10:
+            raise ValueError(f"WhatsApp allows 1-10 rows total across all sections, got {total_rows}")
+        if len(button_label) > 20:
+            raise ValueError(f"List button label over 20 characters: {button_label!r}")
+
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": {
+                    "type": "list",
+                    "body": {"text": body},
+                    "action": {
+                        "button": button_label,
+                        "sections": [
+                            {
+                                "title": section_title,
+                                "rows": [
+                                    {
+                                        "id": row_id,
+                                        "title": row_title,
+                                        **({"description": desc} if desc else {}),
+                                    }
+                                    for row_id, row_title, desc in rows
+                                ],
+                            }
+                            for section_title, rows in sections
+                        ],
+                    },
+                },
+            },
+        )
+        return self._result(payload)
+
     async def mark_read(self, message_id: str) -> None:
         """
         Show the customer their message was seen.
