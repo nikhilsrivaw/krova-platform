@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import Case, CaseStatus, Customer
+from shared.db.models import BusinessMember, Case, CaseStatus, Customer
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,6 +42,12 @@ class CasePatch(BaseModel):
     status: CaseStatus | None = None
     next_hearing_at: datetime | None = None
     notes: str | None = None
+    # A plain None here means "don't touch the assignment" (the same
+    # convention every other field on this patch already uses) - unassign
+    # is the explicit way to actually clear it, since "assign to nobody"
+    # would otherwise be indistinguishable from "not provided".
+    assigned_to_user_id: str | None = None
+    unassign: bool = False
 
 
 class CaseOut(BaseModel):
@@ -54,6 +60,7 @@ class CaseOut(BaseModel):
     status: str
     next_hearing_at: datetime | None
     notes: str | None
+    assigned_to_user_id: str | None
 
 
 def _out(c: Case) -> CaseOut:
@@ -62,6 +69,7 @@ def _out(c: Case) -> CaseOut:
         case_number=c.case_number, opposing_party=c.opposing_party, court=c.court,
         status=c.status.value if hasattr(c.status, "value") else str(c.status),
         next_hearing_at=c.next_hearing_at, notes=c.notes,
+        assigned_to_user_id=str(c.assigned_to_user_id) if c.assigned_to_user_id else None,
     )
 
 
@@ -116,6 +124,21 @@ async def update_case(case_id: uuid.UUID, body: CasePatch, current_user: Current
         value = getattr(body, field)
         if value is not None:
             setattr(case, field, value)
+
+    if body.unassign:
+        case.assigned_to_user_id = None
+    elif body.assigned_to_user_id is not None:
+        target_id = uuid.UUID(body.assigned_to_user_id)
+        member = await db.execute(
+            select(BusinessMember).where(
+                BusinessMember.business_id == current_user.business,
+                BusinessMember.user_id == target_id,
+            )
+        )
+        if member.scalar_one_or_none() is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "That person is not on this team")
+        case.assigned_to_user_id = target_id
+
     await db.flush()
     return _out(case)
 

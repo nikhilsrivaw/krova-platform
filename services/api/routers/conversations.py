@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.channels.whatsapp.client import SERVICE_WINDOW, within_service_window
 from shared.db.models import (
+    BusinessMember,
     Commitment,
     CommitmentStatus,
     Customer,
@@ -50,6 +51,7 @@ class ConversationSummary(BaseModel):
     window_open: bool
     window_closes_at: str | None
     is_private: bool
+    assigned_to_user_id: str | None
 
 
 class ThreadMessage(BaseModel):
@@ -70,6 +72,7 @@ class Thread(BaseModel):
     window_open: bool
     window_closes_at: str | None
     is_private: bool
+    assigned_to_user_id: str | None
     messages: list[ThreadMessage]
     commitments: list[dict]
 
@@ -196,6 +199,9 @@ async def list_conversations(
                 window_open=open_now,
                 window_closes_at=closes,
                 is_private=customer.is_private,
+                assigned_to_user_id=(
+                    str(customer.assigned_to_user_id) if customer.assigned_to_user_id else None
+                ),
             )
         )
 
@@ -249,6 +255,9 @@ async def get_thread(
         window_open=open_now,
         window_closes_at=closes,
         is_private=customer.is_private,
+        assigned_to_user_id=(
+            str(customer.assigned_to_user_id) if customer.assigned_to_user_id else None
+        ),
         messages=[
             ThreadMessage(
                 id=str(m.id),
@@ -295,3 +304,43 @@ async def set_private(
         )
     customer.is_private = private
     return {"customer_id": str(customer.id), "is_private": private}
+
+
+@router.post("/{customer_id}/assign")
+async def assign_conversation(
+    customer_id: uuid.UUID,
+    current_user: CurrentUserDep,
+    db: DbDep,
+    user_id: str | None = None,
+) -> dict:
+    """
+    Assign a conversation to a teammate, or clear it with user_id omitted.
+
+    The target must actually be on this business's team - assigning to an
+    arbitrary user_id would silently create a reference nothing else in the
+    product can resolve, and would leak who else uses Krova.
+    """
+    customer = await db.get(Customer, customer_id)
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
+
+    if user_id is None:
+        customer.assigned_to_user_id = None
+        return {"customer_id": str(customer.id), "assigned_to_user_id": None}
+
+    target_id = uuid.UUID(user_id)
+    member = await db.execute(
+        select(BusinessMember).where(
+            BusinessMember.business_id == current_user.business,
+            BusinessMember.user_id == target_id,
+        )
+    )
+    if member.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="That person is not on this team"
+        )
+
+    customer.assigned_to_user_id = target_id
+    return {"customer_id": str(customer.id), "assigned_to_user_id": str(target_id)}

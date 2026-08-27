@@ -34,6 +34,7 @@ from services.api.routers import (
     properties,
     scheduling,
     signals,
+    team,
     templates,
     voice_provisioning,
     webhooks,
@@ -132,6 +133,7 @@ app.include_router(orders.router, prefix=API_PREFIX)
 app.include_router(properties.router, prefix=API_PREFIX)
 app.include_router(cases.router, prefix=API_PREFIX)
 app.include_router(signals.router, prefix=API_PREFIX)
+app.include_router(team.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)
 
 # Webhooks sit at the root, not under the API prefix: the URL is
