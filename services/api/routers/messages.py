@@ -301,3 +301,197 @@ async def send_template(
         used_template=True,
         window_open=within_service_window(last_inbound),
     )
+
+
+# ── Interactive and catalog sends ────────────────────────────────────────
+#
+# Same 24-hour-window rule as send_text - Meta does not allow any of these
+# as a template component, so there is nothing to check beyond the window.
+
+
+async def _open_connection_and_window(to_raw: str, current_user: CurrentUserDep, db: DbDep):
+    try:
+        to = normalise_phone(to_raw)
+    except InvalidIdentifier as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    connection = await _connection(current_user.business, db)
+    _, last_inbound = await _last_inbound(current_user.business, to, db)
+    if not within_service_window(last_inbound):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The 24-hour window has closed. Use an approved template to reach this person.",
+        )
+    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+    return to, connection, client
+
+
+async def _record_outbound(
+    current_user: CurrentUserDep, db: DbDep, connection: ChannelConnection,
+    to: str, text: str, external_id: str, media: dict, raw: dict,
+) -> None:
+    await ingest.ingest(
+        business_id=current_user.business,
+        channel=Channel.whatsapp,
+        direction=Direction.outbound,
+        identity_kind=IdentityKind.phone,
+        identity_value=to,
+        external_id=external_id,
+        text=text,
+        occurred_at=datetime.now(timezone.utc),
+        connection_id=connection.id,
+        media=media,
+        raw=raw,
+        enqueue_analysis=False,
+        db=db,
+    )
+
+
+class ButtonOption(BaseModel):
+    id: str = Field(max_length=256)
+    title: str = Field(max_length=20)
+
+
+class SendButtons(BaseModel):
+    to: str
+    body: str = Field(min_length=1, max_length=1024)
+    buttons: list[ButtonOption] = Field(min_length=1, max_length=3)
+
+
+@router.post("/interactive-buttons", response_model=SendResult)
+async def send_interactive_buttons(
+    body: SendButtons, current_user: CurrentUserDep, db: DbDep
+) -> SendResult:
+    """Send up to 3 tappable reply buttons instead of free text to parse back."""
+    to, connection, client = await _open_connection_and_window(body.to, current_user, db)
+    try:
+        result = await client.send_interactive_buttons(
+            to, body.body, [(b.id, b.title) for b in body.buttons]
+        )
+    except (WhatsAppError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _record_outbound(
+        current_user, db, connection, to, body.body, result.external_id,
+        media={"kind": "interactive_buttons", "buttons": [b.model_dump() for b in body.buttons]},
+        raw={"buttons": [b.model_dump() for b in body.buttons]},
+    )
+    return SendResult(sent=True, message_id=result.external_id, channel="whatsapp", used_template=False, window_open=True)
+
+
+class ListRow(BaseModel):
+    id: str
+    title: str = Field(max_length=24)
+    description: str | None = None
+
+
+class ListSection(BaseModel):
+    title: str
+    rows: list[ListRow] = Field(min_length=1)
+
+
+class SendList(BaseModel):
+    to: str
+    body: str = Field(min_length=1, max_length=1024)
+    button_label: str = Field(max_length=20)
+    sections: list[ListSection] = Field(min_length=1)
+
+
+@router.post("/interactive-list", response_model=SendResult)
+async def send_interactive_list(
+    body: SendList, current_user: CurrentUserDep, db: DbDep
+) -> SendResult:
+    """Send a tappable picker - up to 10 rows total across named sections."""
+    to, connection, client = await _open_connection_and_window(body.to, current_user, db)
+    sections = [
+        (s.title, [(r.id, r.title, r.description) for r in s.rows]) for s in body.sections
+    ]
+    try:
+        result = await client.send_interactive_list(to, body.body, body.button_label, sections)
+    except (WhatsAppError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _record_outbound(
+        current_user, db, connection, to, body.body, result.external_id,
+        media={"kind": "interactive_list", "sections": [s.model_dump() for s in body.sections]},
+        raw={"sections": [s.model_dump() for s in body.sections]},
+    )
+    return SendResult(sent=True, message_id=result.external_id, channel="whatsapp", used_template=False, window_open=True)
+
+
+class SendProduct(BaseModel):
+    to: str
+    catalog_id: str
+    product_retailer_id: str
+    body: str | None = Field(default=None, max_length=1024)
+
+
+@router.post("/product", response_model=SendResult)
+async def send_product(body: SendProduct, current_user: CurrentUserDep, db: DbDep) -> SendResult:
+    """Show one product with its real price and image, from the business's own catalog."""
+    to, connection, client = await _open_connection_and_window(body.to, current_user, db)
+    try:
+        result = await client.send_single_product_message(
+            to, body.catalog_id, body.product_retailer_id, body=body.body
+        )
+    except WhatsAppError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _record_outbound(
+        current_user, db, connection, to, body.body or "Sent a product", result.external_id,
+        media={"kind": "product", "catalog_id": body.catalog_id, "product_retailer_id": body.product_retailer_id},
+        raw={"catalog_id": body.catalog_id, "product_retailer_id": body.product_retailer_id},
+    )
+    return SendResult(sent=True, message_id=result.external_id, channel="whatsapp", used_template=False, window_open=True)
+
+
+class ProductSection(BaseModel):
+    title: str
+    product_retailer_ids: list[str] = Field(min_length=1)
+
+
+class SendProducts(BaseModel):
+    to: str
+    catalog_id: str
+    header: str = Field(max_length=60)
+    body: str = Field(min_length=1, max_length=1024)
+    sections: list[ProductSection] = Field(min_length=1)
+
+
+@router.post("/products", response_model=SendResult)
+async def send_products(body: SendProducts, current_user: CurrentUserDep, db: DbDep) -> SendResult:
+    """Show several products at once, grouped into named sections - up to 30 total."""
+    to, connection, client = await _open_connection_and_window(body.to, current_user, db)
+    sections = [(s.title, s.product_retailer_ids) for s in body.sections]
+    try:
+        result = await client.send_multi_product_message(to, body.catalog_id, body.header, body.body, sections)
+    except (WhatsAppError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _record_outbound(
+        current_user, db, connection, to, body.body, result.external_id,
+        media={"kind": "product_list", "catalog_id": body.catalog_id, "sections": [s.model_dump() for s in body.sections]},
+        raw={"catalog_id": body.catalog_id, "sections": [s.model_dump() for s in body.sections]},
+    )
+    return SendResult(sent=True, message_id=result.external_id, channel="whatsapp", used_template=False, window_open=True)
+
+
+class SendCatalog(BaseModel):
+    to: str
+    body: str = Field(min_length=1, max_length=1024)
+
+
+@router.post("/catalog", response_model=SendResult)
+async def send_catalog(body: SendCatalog, current_user: CurrentUserDep, db: DbDep) -> SendResult:
+    """Show the business's whole catalog as a browsable entry point."""
+    to, connection, client = await _open_connection_and_window(body.to, current_user, db)
+    try:
+        result = await client.send_catalog_message(to, body.body)
+    except WhatsAppError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await _record_outbound(
+        current_user, db, connection, to, body.body, result.external_id,
+        media={"kind": "catalog_message"}, raw={},
+    )
+    return SendResult(sent=True, message_id=result.external_id, channel="whatsapp", used_template=False, window_open=True)
