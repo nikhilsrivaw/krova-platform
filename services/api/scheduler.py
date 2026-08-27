@@ -19,6 +19,10 @@ Nightly analysis, because the cold path is what makes the live agent fast -
 it compresses a customer's history into something the hot path can afford to
 read.
 
+Channel health, because a number's quality rating drops before Meta
+restricts it, and restriction happens well before messages visibly stop -
+by then the drop was days old and nobody was watching for it.
+
 Run inside the API process rather than as a separate service. At this scale
 another deployable costs more in operations than it saves, and each job is
 short. It moves out when there is more than one API instance, because these
@@ -131,6 +135,24 @@ async def send_appointment_reminders() -> None:
         logger.exception("appointment reminder job failed")
 
 
+async def check_channel_health() -> None:
+    """
+    Watch quality rating and sending eligibility instead of only being able
+    to look them up - see shared/channels/whatsapp/health_monitor.py for why
+    this alerts only on a transition, never on every poll.
+    """
+    from shared.channels.whatsapp import health_monitor
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            checked = await health_monitor.check_all(db)
+            await db.commit()
+            logger.info("checked health of %s WhatsApp connection(s)", checked)
+    except Exception:
+        logger.exception("channel health check job failed")
+
+
 async def nightly_analysis() -> None:
     """
     Queue a re-read of every business's recent conversations.
@@ -197,6 +219,14 @@ def build() -> AsyncIOScheduler:
         id="send_appointment_reminders",
         replace_existing=True,
         misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        check_channel_health,
+        IntervalTrigger(hours=4),
+        id="check_channel_health",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     scheduler.add_job(

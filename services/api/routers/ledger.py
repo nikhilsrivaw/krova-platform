@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
@@ -35,6 +35,7 @@ from shared.db.models import (
     CustomerIdentity,
     Message,
 )
+from shared.identity import importer
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -330,6 +331,62 @@ async def list_customers(
             }
         )
     return out
+
+
+class ContactImportRow(BaseModel):
+    phone: str = Field(min_length=1, max_length=32)
+    name: str | None = Field(default=None, max_length=255)
+
+
+class ContactImportIn(BaseModel):
+    contacts: list[ContactImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS_PER_IMPORT)
+
+
+class ContactImportRowOut(BaseModel):
+    row_number: int
+    phone: str
+    outcome: str
+    reason: str | None
+    customer_id: str | None
+
+
+class ContactImportOut(BaseModel):
+    created: int
+    already_existed: int
+    invalid: int
+    rows: list[ContactImportRowOut]
+
+
+@router.post("/customers/import", response_model=ContactImportOut)
+async def import_customers(
+    body: ContactImportIn, current_user: CurrentUserDep, db: DbDep
+) -> ContactImportOut:
+    """
+    Seed the customer list from an existing spreadsheet.
+
+    A business switching from another platform, or with a customer base that
+    has simply never texted this number, has customers to reach on day one -
+    not customers who trickle in over the following weeks as they happen to
+    write first. CSV parsing and column mapping happen in the browser; this
+    takes the already-structured rows.
+    """
+    rows = [
+        importer.ImportRow(row_number=i + 1, phone=c.phone, name=c.name)
+        for i, c in enumerate(body.contacts)
+    ]
+    result = await importer.import_contacts(current_user.business, rows, db)
+    return ContactImportOut(
+        created=result.created,
+        already_existed=result.already_existed,
+        invalid=result.invalid,
+        rows=[
+            ContactImportRowOut(
+                row_number=r.row_number, phone=r.phone, outcome=r.outcome,
+                reason=r.reason, customer_id=r.customer_id,
+            )
+            for r in result.rows
+        ],
+    )
 
 
 async def _owned(
