@@ -6,12 +6,13 @@ import secrets
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Form, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import encrypt
+from shared.channels.instagram import signed_request as instagram_signed_request
 from shared.channels.whatsapp import signup
 from shared.config.settings import settings
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus
@@ -256,3 +257,41 @@ async def disconnect_whatsapp(current_user: CurrentUserDep, db: DbDep) -> None:
             current_user.business,
             connection.external_account_id,
         )
+
+
+@router.post("/instagram/deauthorize")
+async def instagram_deauthorize(db: DbDep, signed_request: str = Form(...)) -> dict:
+    """
+    Meta calls this when a business revokes Krova's access from their own
+    Instagram/Facebook settings - not something a Krova user triggers.
+
+    Authenticated by the signed_request's own HMAC, not a bearer token:
+    whoever is calling this has no Krova session, only Meta's word for it.
+    Marks the connection needs_reauth rather than deleting it outright - the
+    business's history with Krova should survive a revoked token the same
+    way it survives an expired one, until they either reconnect or delete
+    their account outright through the normal flow.
+    """
+    try:
+        payload = instagram_signed_request.parse(signed_request)
+    except instagram_signed_request.InvalidSignedRequest as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    ig_user_id = str(payload.get("user_id") or "")
+    if not ig_user_id:
+        return {"acknowledged": True}
+
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.channel == Channel.instagram,
+            ChannelConnection.external_account_id == ig_user_id,
+        )
+    )
+    for connection in result.scalars().all():
+        connection.access_token = None
+        connection.refresh_token = None
+        connection.status = ConnectionStatus.needs_reauth
+        connection.webhook_subscribed = False
+        logger.info("instagram deauthorized by Meta callback, account=%s", ig_user_id)
+
+    return {"acknowledged": True}
