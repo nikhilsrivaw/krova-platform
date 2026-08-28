@@ -96,6 +96,46 @@ def decode_access_token(token: str) -> dict:
     return claims
 
 
+# ── OAuth connect-flow state ────────────────────────────────────────────────
+# A channel connect flow (Instagram Business Login, and anything similar
+# later) redirects the user's browser away to Meta and back - the callback
+# carries no Krova session, only whatever we round-tripped through Meta's own
+# "state" parameter. A dedicated, short-lived token type, not a reused access
+# token: a leaked connect-state token should not double as a login session,
+# and a login access token should not be replayable here either.
+
+def create_connect_state(business_id: uuid.UUID) -> str:
+    now = _now()
+    payload = {
+        "typ": "connect_state",
+        "biz": str(business_id),
+        "iat": now,
+        "exp": now + timedelta(minutes=15),
+        "jti": secrets.token_urlsafe(8),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_connect_state(token: str) -> uuid.UUID:
+    """Verify a connect-state token and return the business_id it was issued for."""
+    try:
+        claims = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": ["exp", "iat", "biz"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise TokenError("This connection attempt has expired - please try again") from exc
+    except jwt.InvalidTokenError as exc:
+        raise TokenError("Invalid connection state") from exc
+
+    if claims.get("typ") != "connect_state":
+        raise TokenError("Wrong token type")
+
+    return uuid.UUID(claims["biz"])
+
+
 # ── Refresh tokens ───────────────────────────────────────────────────────────
 
 def generate_refresh_token() -> tuple[str, str]:

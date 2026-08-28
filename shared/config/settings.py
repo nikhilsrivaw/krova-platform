@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     # Instagram webhook signature check fail.
     meta_instagram_app_id: str = Field(default="", alias="META_INSTAGRAM_APP_ID")
     meta_instagram_app_secret: str = Field(default="", alias="META_INSTAGRAM_APP_SECRET")
+    # Must match, character for character, what is registered in Meta's
+    # dashboard as this app's OAuth Redirect URI - the token exchange call
+    # is rejected otherwise, and the two are configured completely separately.
+    instagram_redirect_uri: str = Field(default="", alias="INSTAGRAM_REDIRECT_URI")
+
+    # Where a browser lands after the Instagram Business Login round trip -
+    # a page under the actual dashboard, not the API itself, since the API
+    # has nothing to show a human.
+    frontend_base_url: str = Field(default="https://krova.space", alias="FRONTEND_BASE_URL")
 
     # India data residency for a connected number. Kept because we want it,
     # but NOT currently applied: passing data_localization_region to
@@ -125,6 +134,13 @@ class Settings(BaseSettings):
     @property
     def graph_base_url(self) -> str:
         return f"https://graph.facebook.com/{self.meta_api_version}"
+
+    @property
+    def instagram_graph_base_url(self) -> str:
+        # A different host from graph_base_url above, not a typo - "Instagram
+        # API with Instagram Login" runs on its own host, separate from the
+        # main Graph API WhatsApp uses.
+        return f"https://graph.instagram.com/{self.meta_api_version}"
 
 
 @lru_cache

@@ -6,13 +6,19 @@ import secrets
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Form, HTTPException, status
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Form, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.auth import tokens
 from shared.auth.encryption import encrypt
+from shared.auth.tokens import TokenError
 from shared.channels.instagram import signed_request as instagram_signed_request
+from shared.channels.instagram import signup as instagram_signup
 from shared.channels.whatsapp import signup
 from shared.config.settings import settings
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus
@@ -257,6 +263,108 @@ async def disconnect_whatsapp(current_user: CurrentUserDep, db: DbDep) -> None:
             current_user.business,
             connection.external_account_id,
         )
+
+
+class ConnectUrlOut(BaseModel):
+    url: str
+
+
+@router.get("/instagram/connect-url", response_model=ConnectUrlOut)
+async def instagram_connect_url(current_user: CurrentUserDep) -> ConnectUrlOut:
+    """
+    Build the Instagram Business Login URL for this business specifically.
+
+    The `state` parameter is what makes the callback know whose connection
+    this is - the redirect back from Meta carries no Krova session, only
+    whatever we round-trip through Meta's own state passthrough.
+    """
+    if not settings.meta_instagram_app_id or not settings.instagram_redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Instagram connections are not configured on this server",
+        )
+
+    state = tokens.create_connect_state(current_user.business)
+    params = {
+        "force_reauth": "true",
+        "client_id": settings.meta_instagram_app_id,
+        "redirect_uri": settings.instagram_redirect_uri,
+        "response_type": "code",
+        "scope": (
+            "instagram_business_basic,"
+            "instagram_business_manage_messages,"
+            "instagram_business_manage_comments"
+        ),
+        "state": state,
+    }
+    return ConnectUrlOut(url=f"https://www.instagram.com/oauth/authorize?{urlencode(params)}")
+
+
+@router.get("/instagram/callback")
+async def instagram_callback(
+    db: DbDep,
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+) -> RedirectResponse:
+    """
+    Where Meta sends the browser back to after Instagram Business Login.
+
+    No Krova session reaches this endpoint - only Meta's redirect, carrying
+    whatever we put in `state`. Ends by sending the browser on to a page a
+    human can actually read; this endpoint has nothing to show anyone.
+    """
+    settings_url = f"{settings.frontend_base_url}/settings"
+
+    if error or not code or not state:
+        return RedirectResponse(f"{settings_url}?instagram=error")
+
+    try:
+        business_id = tokens.decode_connect_state(state)
+    except TokenError:
+        return RedirectResponse(f"{settings_url}?instagram=expired")
+
+    try:
+        result = await instagram_signup.complete_signup(code)
+    except instagram_signup.SignupError as exc:
+        logger.error("instagram signup failed business=%s: %s", business_id, exc)
+        return RedirectResponse(f"{settings_url}?instagram=error")
+
+    existing = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == business_id,
+            ChannelConnection.channel == Channel.instagram,
+            ChannelConnection.external_account_id == result.ig_user_id,
+        )
+    )
+    connection = existing.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+
+    if connection is None:
+        connection = ChannelConnection(
+            business_id=business_id,
+            channel=Channel.instagram,
+            external_account_id=result.ig_user_id,
+            connected_at=now,
+        )
+        db.add(connection)
+
+    connection.display_name = result.username
+    connection.external_handle = f"@{result.username}" if result.username else None
+    connection.access_token = encrypt(result.access_token)
+    connection.token_issued_at = now
+    connection.token_expires_at = result.token_expires_at
+    connection.token_refresh_failed_at = None
+    connection.status = ConnectionStatus.active
+    connection.webhook_subscribed = result.webhook_subscribed
+    connection.extra = {**(connection.extra or {}), "account_type": result.account_type}
+
+    logger.info(
+        "instagram connected business=%s account=%s username=%s expires=%s",
+        business_id, result.ig_user_id, result.username, result.token_expires_at,
+    )
+
+    return RedirectResponse(f"{settings_url}?instagram=connected")
 
 
 @router.post("/instagram/deauthorize")
