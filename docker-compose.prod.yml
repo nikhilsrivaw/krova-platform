@@ -1,19 +1,43 @@
-# The EC2 test deploy: the API behind Caddy, which handles HTTPS
-# automatically via Let's Encrypt - no manual certbot/nginx config.
+# The EC2 test deploy: Postgres + the API + Caddy, all one unit so nothing
+# has to be wired together across separate compose files. Caddy handles
+# HTTPS automatically via Let's Encrypt - no manual certbot/nginx config.
 #
 # Usage on the instance:
-#   1. Edit Caddyfile - replace YOUR_EC2_PUBLIC_IP with the instance's real IP
-#   2. Create a .env file here with DATABASE_URL / JWT_SECRET / ENCRYPTION_KEY /
+#   1. Edit Caddyfile - set it to your real domain (e.g. api.krova.space)
+#   2. Create a .env file here with JWT_SECRET / ENCRYPTION_KEY /
 #      META_INSTAGRAM_APP_ID / META_INSTAGRAM_APP_SECRET / META_WEBHOOK_VERIFY_TOKEN
+#      (DATABASE_URL is set below already, pointing at the postgres service -
+#      no need to add it to .env)
 #   3. docker compose -f docker-compose.prod.yml up -d --build
 
 services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: krova-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: krova
+      POSTGRES_PASSWORD: krova_prod_test
+      POSTGRES_DB: krova
+    volumes:
+      - krova_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U krova -d krova"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   app:
     build: .
     container_name: krova-api
     restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     expose:
       - "8000"
 
@@ -32,5 +56,6 @@ services:
       - app
 
 volumes:
+  krova_pgdata:
   caddy_data:
   caddy_config:
