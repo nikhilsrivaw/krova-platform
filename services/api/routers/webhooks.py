@@ -19,6 +19,8 @@ from sqlalchemy import select
 
 from shared.channels import ingest
 from shared.auth.encryption import decrypt
+from shared.channels.instagram import signature as instagram_signature
+from shared.channels.instagram import webhook as instagram_webhook
 from shared.channels.shopify import signature as shopify_signature
 from shared.channels.shopify import webhook as shopify_webhook
 from shared.channels.whatsapp import conversions, media, signature, webhook
@@ -87,6 +89,115 @@ async def receive_whatsapp_webhook(
 
     background_tasks.add_task(_process_whatsapp, raw_body)
     return Response(status_code=status.HTTP_200_OK)
+
+
+@router.get("/instagram", response_class=PlainTextResponse)
+async def verify_instagram_webhook(
+    hub_mode: str | None = Query(default=None, alias="hub.mode"),
+    hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
+    hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
+) -> Response:
+    """Meta's subscription handshake for the Instagram webhook - same shape as WhatsApp's."""
+    if not instagram_signature.verify_subscription(hub_mode, hub_verify_token):
+        logger.warning("instagram webhook verification rejected (mode=%r)", hub_mode)
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    logger.info("instagram webhook subscription verified")
+    return PlainTextResponse(content=hub_challenge or "")
+
+
+@router.post("/instagram")
+async def receive_instagram_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str | None = Header(default=None),
+) -> Response:
+    """Inbound DMs and comments, signed with the Instagram app's own secret."""
+    raw_body = await request.body()
+
+    try:
+        instagram_signature.verify(raw_body, x_hub_signature_256)
+    except instagram_signature.InvalidSignature:
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    background_tasks.add_task(_process_instagram, raw_body)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_instagram(raw_body: bytes) -> None:
+    """Store what arrived. Runs after the response has already been sent."""
+    import json
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("instagram webhook body was not JSON (%d bytes)", len(raw_body))
+        return
+
+    parsed = instagram_webhook.parse(payload)
+    if not parsed:
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            for message in parsed.messages:
+                connection = await ingest.find_connection(
+                    Channel.instagram, message.ig_account_id, db
+                )
+                if connection is None:
+                    # No business has connected this Instagram account yet -
+                    # expected until the connect flow exists, not an error.
+                    logger.info(
+                        "instagram DM for unconnected account %s - dropped",
+                        message.ig_account_id,
+                    )
+                    continue
+
+                await ingest.ingest(
+                    business_id=connection.business_id,
+                    channel=Channel.instagram,
+                    direction=Direction.inbound,
+                    identity_kind=IdentityKind.instagram,
+                    identity_value=message.from_ig_id,
+                    external_id=message.external_id,
+                    text=message.text,
+                    occurred_at=message.occurred_at,
+                    raw=message.raw,
+                    connection_id=connection.id,
+                    db=db,
+                )
+
+            for comment in parsed.comments:
+                connection = await ingest.find_connection(
+                    Channel.instagram, comment.ig_account_id, db
+                )
+                if connection is None:
+                    logger.info(
+                        "instagram comment for unconnected account %s - dropped",
+                        comment.ig_account_id,
+                    )
+                    continue
+
+                await ingest.ingest(
+                    business_id=connection.business_id,
+                    channel=Channel.instagram,
+                    direction=Direction.inbound,
+                    identity_kind=IdentityKind.instagram,
+                    identity_value=comment.from_ig_id,
+                    external_id=comment.external_id,
+                    text=comment.text,
+                    occurred_at=comment.occurred_at,
+                    display_name=comment.from_username,
+                    media={"kind": "comment", "media_id": comment.media_id},
+                    raw=comment.raw,
+                    connection_id=connection.id,
+                    db=db,
+                )
+
+            await db.commit()
+        except Exception:
+            logger.exception("instagram webhook processing failed")
+            await db.rollback()
 
 
 async def _process_whatsapp(raw_body: bytes) -> None:

@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     # Facebook Login for Business -> Configurations.
     meta_config_id: str = Field(default="", alias="META_CONFIG_ID")
 
+    # "Instagram API with Instagram Login" issues its own separate app
+    # identity - its own id and secret, distinct from meta_app_id/secret
+    # above. A webhook for Instagram messaging/comments is signed with
+    # THIS secret, not the main app's - conflating the two would make every
+    # Instagram webhook signature check fail.
+    meta_instagram_app_id: str = Field(default="", alias="META_INSTAGRAM_APP_ID")
+    meta_instagram_app_secret: str = Field(default="", alias="META_INSTAGRAM_APP_SECRET")
+
     # India data residency for a connected number. Kept because we want it,
     # but NOT currently applied: passing data_localization_region to
     # /register is rejected on v21.0+, and local storage can now only be
