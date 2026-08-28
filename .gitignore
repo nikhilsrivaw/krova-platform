@@ -8,3 +8,5 @@ venv/
 .pytest_cache/
 .ruff_cache/
 *.log
+*.pem
+*.ppk
