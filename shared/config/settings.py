@@ -117,6 +117,20 @@ class Settings(BaseSettings):
     plivo_auth_token: str = Field(default="", alias="PLIVO_AUTH_TOKEN")
     sarvam_api_key: str = Field(default="", alias="SARVAM_API_KEY")
 
+    # Comma-separated. Empty in production by default was the bug this
+    # replaced - it silently blocked every browser request to the API with
+    # no origin allowed at all, discovered only once something was actually
+    # deployed for the first time.
+    cors_allowed_origins_raw: str = Field(
+        default="https://krova.space,https://www.krova.space", alias="CORS_ALLOWED_ORIGINS"
+    )
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        if self.is_development:
+            return ["http://localhost:3000"]
+        return [o.strip() for o in self.cors_allowed_origins_raw.split(",") if o.strip()]
+
     # ── Limits ───────────────────────────────────────────────────────────────
     api_rate_limit_per_minute: int = Field(default=120, alias="API_RATE_LIMIT_PER_MINUTE")
     webhook_rate_limit_per_minute: int = Field(
