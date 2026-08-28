@@ -6,6 +6,9 @@ python-multipart==0.0.20
 # ── Config ───────────────────────────────────────────────────────────────────
 pydantic==2.11.7
 pydantic-settings==2.10.1
+# EmailStr fields need this - present locally as a transitive dependency of
+# something else, which is exactly how it went missing here unnoticed.
+email-validator==2.2.0
 
 # ── Database ─────────────────────────────────────────────────────────────────
 sqlalchemy[asyncio]==2.0.43

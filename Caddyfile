@@ -1,0 +1,7 @@
+# Replace YOUR_EC2_PUBLIC_IP below with the instance's actual public IP once
+# it's launched - nip.io resolves "<ip>.nip.io" to that IP automatically, so
+# this gets a real, working HTTPS domain with zero DNS setup. Caddy issues
+# and renews the Let's Encrypt certificate for it on its own.
+YOUR_EC2_PUBLIC_IP.nip.io {
+    reverse_proxy app:8000
+}

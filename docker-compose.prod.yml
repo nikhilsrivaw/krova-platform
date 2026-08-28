@@ -1,0 +1,36 @@
+# The EC2 test deploy: the API behind Caddy, which handles HTTPS
+# automatically via Let's Encrypt - no manual certbot/nginx config.
+#
+# Usage on the instance:
+#   1. Edit Caddyfile - replace YOUR_EC2_PUBLIC_IP with the instance's real IP
+#   2. Create a .env file here with DATABASE_URL / JWT_SECRET / ENCRYPTION_KEY /
+#      META_INSTAGRAM_APP_ID / META_INSTAGRAM_APP_SECRET / META_WEBHOOK_VERIFY_TOKEN
+#   3. docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  app:
+    build: .
+    container_name: krova-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: krova-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:
