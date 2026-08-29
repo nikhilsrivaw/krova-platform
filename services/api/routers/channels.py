@@ -375,8 +375,18 @@ async def instagram_fb_connect_url(current_user: CurrentUserDep) -> ConnectUrlOu
     older, Page-based path, as an alternative to instagram_connect_url
     above. Same connect-state mechanism, same reasoning - see that
     endpoint's docstring.
+
+    Facebook Login for Business does not take a raw scope= param the way
+    plain Facebook Login does - the permission set has to be pre-built as a
+    Configuration in the dashboard and referenced by config_id, or Meta
+    rejects the requested permissions as "Invalid Scopes" even when they're
+    spelled correctly.
     """
-    if not settings.meta_app_id or not settings.instagram_fb_redirect_uri:
+    if (
+        not settings.meta_app_id
+        or not settings.instagram_fb_redirect_uri
+        or not settings.instagram_fb_config_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Instagram (Facebook Login) connections are not configured on this server",
@@ -387,10 +397,7 @@ async def instagram_fb_connect_url(current_user: CurrentUserDep) -> ConnectUrlOu
         "client_id": settings.meta_app_id,
         "redirect_uri": settings.instagram_fb_redirect_uri,
         "response_type": "code",
-        "scope": (
-            "instagram_basic,instagram_manage_messages,"
-            "pages_show_list,pages_read_engagement,business_management"
-        ),
+        "config_id": settings.instagram_fb_config_id,
         "state": state,
     }
     return ConnectUrlOut(

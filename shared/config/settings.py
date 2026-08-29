@@ -66,8 +66,17 @@ class Settings(BaseSettings):
     meta_webhook_verify_token: str = Field(default="", alias="META_WEBHOOK_VERIFY_TOKEN")
     # Embedded Signup requires v25.0 or later.
     meta_api_version: str = Field(default="v25.0", alias="META_API_VERSION")
-    # Facebook Login for Business -> Configurations.
+    # Facebook Login for Business -> Configurations. WhatsApp's Embedded
+    # Signup configuration - its own permission set, distinct from the
+    # Instagram one below.
     meta_config_id: str = Field(default="", alias="META_CONFIG_ID")
+    # A separate Facebook Login for Business Configuration for Instagram
+    # messaging - instagram_basic/instagram_manage_messages/pages_show_list/
+    # etc. Facebook Login for Business does not accept a raw scope= param;
+    # the permission set has to be pre-built as a Configuration in the
+    # dashboard and referenced by this id instead, or Meta rejects the
+    # requested scopes as invalid even when they're spelled correctly.
+    instagram_fb_config_id: str = Field(default="", alias="INSTAGRAM_FB_CONFIG_ID")
 
     # "Instagram API with Instagram Login" issues its own separate app
     # identity - its own id and secret, distinct from meta_app_id/secret
