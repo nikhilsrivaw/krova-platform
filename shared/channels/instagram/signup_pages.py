@@ -189,16 +189,18 @@ async def complete_signup(code: str) -> PageSignupResult:
                 },
             )
             record("GET", "/debug_token", debug_res)
-            granular = (
-                debug_res.json().get("data", {}).get("granular_scopes", [])
-                if debug_res.status_code == 200
-                else []
+            debug_body = debug_res.json() if debug_res.status_code == 200 else {}
+            granular = debug_body.get("data", {}).get("granular_scopes", [])
+            logger.info(
+                "instagram (fb login) debug_token status=%s granular_scopes=%s raw=%s",
+                debug_res.status_code, granular, debug_res.text[:500],
             )
             granted_ig_ids: list[str] = []
             for entry in granular:
                 if entry.get("scope") == "instagram_manage_comments":
                     granted_ig_ids = [str(t) for t in (entry.get("target_ids") or [])]
                     break
+            logger.info("instagram (fb login) candidate ig ids from granular scopes: %s", granted_ig_ids)
 
             for candidate_ig_id in granted_ig_ids:
                 for pg in pages:
@@ -207,6 +209,10 @@ async def complete_signup(code: str) -> PageSignupResult:
                         params={"fields": "username", "access_token": pg["access_token"]},
                     )
                     record("GET", f"/{candidate_ig_id} (via granular scope)", user_res)
+                    logger.info(
+                        "instagram (fb login) probe ig=%s page=%s status=%s body=%s",
+                        candidate_ig_id, pg["id"], user_res.status_code, user_res.text[:300],
+                    )
                     if user_res.status_code == 200:
                         chosen_page = pg
                         ig_account_id = candidate_ig_id
