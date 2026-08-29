@@ -202,23 +202,40 @@ async def complete_signup(code: str) -> PageSignupResult:
                     break
             logger.info("instagram (fb login) candidate ig ids from granular scopes: %s", granted_ig_ids)
 
+            # instagram_manage_comments was granted to the long-lived USER
+            # token (that's the input_token debug_token just inspected) -
+            # a Page access token derived from /me/accounts only carries the
+            # page-scoped permissions (pages_show_list, pages_messaging,
+            # etc), not this one, which is why probing with pg["access_token"]
+            # comes back "missing permissions" even for the right id.
             for candidate_ig_id in granted_ig_ids:
-                for pg in pages:
-                    user_res = await client.get(
-                        f"{base}/{candidate_ig_id}",
-                        params={"fields": "username", "access_token": pg["access_token"]},
+                probe_res = await client.get(
+                    f"{base}/{candidate_ig_id}",
+                    params={"fields": "username", "access_token": user_token},
+                )
+                record("GET", f"/{candidate_ig_id} (via granular scope, user token)", probe_res)
+                logger.info(
+                    "instagram (fb login) probe ig=%s status=%s body=%s",
+                    candidate_ig_id, probe_res.status_code, probe_res.text[:300],
+                )
+                if probe_res.status_code == 200:
+                    ig_account_id = candidate_ig_id
+                    ig_username = probe_res.json().get("username")
+                    # The Page granted alongside this Instagram account in the
+                    # same OAuth grant - matched via pages_show_list's own
+                    # granular target, falling back to the only Page shared
+                    # if that scope wasn't present for some reason.
+                    page_ids = next(
+                        (
+                            [str(t) for t in (e.get("target_ids") or [])]
+                            for e in granular
+                            if e.get("scope") == "pages_show_list"
+                        ),
+                        [],
                     )
-                    record("GET", f"/{candidate_ig_id} (via granular scope)", user_res)
-                    logger.info(
-                        "instagram (fb login) probe ig=%s page=%s status=%s body=%s",
-                        candidate_ig_id, pg["id"], user_res.status_code, user_res.text[:300],
+                    chosen_page = next(
+                        (pg for pg in pages if pg["id"] in page_ids), pages[0]
                     )
-                    if user_res.status_code == 200:
-                        chosen_page = pg
-                        ig_account_id = candidate_ig_id
-                        ig_username = user_res.json().get("username")
-                        break
-                if chosen_page is not None:
                     break
 
         if chosen_page is None:
