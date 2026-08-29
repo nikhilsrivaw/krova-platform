@@ -20,6 +20,7 @@ from sqlalchemy import select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels import ingest
+from shared.channels.instagram.client import InstagramClient, InstagramSendError
 from shared.channels.whatsapp.client import (
     CarouselSendCard,
     WhatsAppClient,
@@ -512,3 +513,64 @@ async def send_catalog(body: SendCatalog, current_user: CurrentUserDep, db: DbDe
         media={"kind": "catalog_message"}, raw={},
     )
     return SendResult(sent=True, message_id=result.external_id, channel="whatsapp", used_template=False, window_open=True)
+
+
+# ── Instagram ────────────────────────────────────────────────────────────
+#
+# One send endpoint, no window check - Meta enforces the 24-hour window
+# server-side and rejects the call if it's closed, and there is no local way
+# to check it ourselves yet (see client.py's docstring). `to` is the
+# recipient's Instagram-scoped id (IGSID), not a username - Meta's Send API
+# does not accept usernames.
+
+
+class SendInstagramText(BaseModel):
+    to: str = Field(description="Recipient's Instagram-scoped id (IGSID)")
+    body: str = Field(min_length=1, max_length=1000)
+
+
+@router.post("/instagram/text", response_model=SendResult)
+async def send_instagram_text(
+    body: SendInstagramText, current_user: CurrentUserDep, db: DbDep
+) -> SendResult:
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.instagram,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
+    )
+    connection = result.scalars().first()
+    if connection is None or not connection.access_token:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Connect Instagram first"
+        )
+
+    client = InstagramClient(decrypt(connection.access_token), connection.external_account_id)
+    try:
+        sent = await client.send_text(body.to, body.body)
+    except InstagramSendError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await ingest.ingest(
+        business_id=current_user.business,
+        channel=Channel.instagram,
+        direction=Direction.outbound,
+        identity_kind=IdentityKind.instagram,
+        identity_value=body.to,
+        external_id=sent.external_id or None,
+        text=body.body,
+        occurred_at=datetime.now(timezone.utc),
+        connection_id=connection.id,
+        enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
+        db=db,
+    )
+
+    return SendResult(
+        sent=True,
+        message_id=sent.external_id,
+        channel="instagram",
+        used_template=False,
+        window_open=True,
+    )
