@@ -134,22 +134,36 @@ async def complete_signup(code: str) -> PageSignupResult:
                 "No Facebook Page was shared during login. Please try again and select a Page."
             )
 
-        # 4 - find the first Page with an Instagram Professional account linked
+        # 4 - find the first Page with an Instagram Professional account linked.
+        # Three different fields can carry this depending on how the link was
+        # made - instagram_business_account only covers the original
+        # "Instagram business conversion flow"; a link made or switched from
+        # Instagram's own Page setting (as most businesses do today) shows up
+        # under connected_instagram_account instead, and a legacy Page-backed
+        # IG account under connected_page_backed_instagram_account. Checking
+        # only the first of these silently misses the other two.
+        ig_fields = (
+            "instagram_business_account{id,username},"
+            "connected_instagram_account{id,username},"
+            "connected_page_backed_instagram_account{id,username}"
+        )
         chosen_page = None
         ig_account_id = None
         ig_username = None
         for pg in pages:
             ig_res = await client.get(
                 f"{base}/{pg['id']}",
-                params={
-                    "fields": "instagram_business_account{id,username}",
-                    "access_token": pg["access_token"],
-                },
+                params={"fields": ig_fields, "access_token": pg["access_token"]},
             )
-            record("GET", f"/{pg['id']} (instagram_business_account)", ig_res)
+            record("GET", f"/{pg['id']} (instagram account fields)", ig_res)
             if ig_res.status_code != 200:
                 continue
-            ig_data = ig_res.json().get("instagram_business_account")
+            body = ig_res.json()
+            ig_data = (
+                body.get("instagram_business_account")
+                or body.get("connected_instagram_account")
+                or body.get("connected_page_backed_instagram_account")
+            )
             if ig_data:
                 chosen_page = pg
                 ig_account_id = ig_data.get("id")
