@@ -171,6 +171,51 @@ async def complete_signup(code: str) -> PageSignupResult:
                 break
 
         if chosen_page is None:
+            # The Page-node fields above can lag Meta's own consent screen by
+            # a long margin - seen in practice: a Page-Instagram link fully
+            # confirmed on every Meta surface (Instagram's own settings, the
+            # Page's own settings, the OAuth consent screen's asset picker)
+            # while instagram_business_account/connected_instagram_account/
+            # connected_page_backed_instagram_account all still returned
+            # nothing, for hours. debug_token's granular_scopes is the
+            # authoritative record of what this specific OAuth grant actually
+            # covered, independent of that lag - fall back to it before
+            # giving up.
+            debug_res = await client.get(
+                f"{base}/debug_token",
+                params={
+                    "input_token": user_token,
+                    "access_token": f"{settings.meta_app_id}|{settings.meta_app_secret}",
+                },
+            )
+            record("GET", "/debug_token", debug_res)
+            granular = (
+                debug_res.json().get("data", {}).get("granular_scopes", [])
+                if debug_res.status_code == 200
+                else []
+            )
+            granted_ig_ids: list[str] = []
+            for entry in granular:
+                if entry.get("scope") == "instagram_manage_comments":
+                    granted_ig_ids = [str(t) for t in (entry.get("target_ids") or [])]
+                    break
+
+            for candidate_ig_id in granted_ig_ids:
+                for pg in pages:
+                    user_res = await client.get(
+                        f"{base}/{candidate_ig_id}",
+                        params={"fields": "username", "access_token": pg["access_token"]},
+                    )
+                    record("GET", f"/{candidate_ig_id} (via granular scope)", user_res)
+                    if user_res.status_code == 200:
+                        chosen_page = pg
+                        ig_account_id = candidate_ig_id
+                        ig_username = user_res.json().get("username")
+                        break
+                if chosen_page is not None:
+                    break
+
+        if chosen_page is None:
             raise SignupError(
                 "None of the Facebook Pages shared have an Instagram Professional "
                 "account linked. Link one in Instagram's own settings, then try again."
