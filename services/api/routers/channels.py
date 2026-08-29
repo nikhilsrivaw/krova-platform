@@ -19,6 +19,7 @@ from shared.auth.encryption import encrypt
 from shared.auth.tokens import TokenError
 from shared.channels.instagram import signed_request as instagram_signed_request
 from shared.channels.instagram import signup as instagram_signup
+from shared.channels.instagram import signup_pages as instagram_signup_pages
 from shared.channels.whatsapp import signup
 from shared.config.settings import settings
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus
@@ -362,6 +363,106 @@ async def instagram_callback(
     logger.info(
         "instagram connected business=%s account=%s username=%s expires=%s",
         business_id, result.ig_user_id, result.username, result.token_expires_at,
+    )
+
+    return RedirectResponse(f"{settings_url}?instagram=connected")
+
+
+@router.get("/instagram/fb-connect-url", response_model=ConnectUrlOut)
+async def instagram_fb_connect_url(current_user: CurrentUserDep) -> ConnectUrlOut:
+    """
+    The Facebook-Login-for-Business route into Instagram messaging - the
+    older, Page-based path, as an alternative to instagram_connect_url
+    above. Same connect-state mechanism, same reasoning - see that
+    endpoint's docstring.
+    """
+    if not settings.meta_app_id or not settings.instagram_fb_redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Instagram (Facebook Login) connections are not configured on this server",
+        )
+
+    state = tokens.create_connect_state(current_user.business)
+    params = {
+        "client_id": settings.meta_app_id,
+        "redirect_uri": settings.instagram_fb_redirect_uri,
+        "response_type": "code",
+        "scope": (
+            "instagram_basic,instagram_manage_messages,"
+            "pages_show_list,pages_read_engagement,business_management"
+        ),
+        "state": state,
+    }
+    return ConnectUrlOut(
+        url=f"https://www.facebook.com/{settings.meta_api_version}/dialog/oauth?{urlencode(params)}"
+    )
+
+
+@router.get("/instagram/fb-callback")
+async def instagram_fb_callback(
+    db: DbDep,
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+) -> RedirectResponse:
+    """Where Meta sends the browser back to after the Facebook Login route. Mirrors instagram_callback."""
+    settings_url = f"{settings.frontend_base_url}/settings"
+
+    if error or not code or not state:
+        return RedirectResponse(f"{settings_url}?instagram=error")
+
+    try:
+        business_id = tokens.decode_connect_state(state)
+    except TokenError:
+        return RedirectResponse(f"{settings_url}?instagram=expired")
+
+    try:
+        result = await instagram_signup_pages.complete_signup(code)
+    except instagram_signup_pages.SignupError as exc:
+        logger.error("instagram (fb login) signup failed business=%s: %s", business_id, exc)
+        return RedirectResponse(f"{settings_url}?instagram=error")
+
+    # Keyed on the Page id, not the Instagram business account id - see
+    # signup_pages.py's module docstring on why that is the id a webhook's
+    # entry.id is expected to carry for this route.
+    existing = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == business_id,
+            ChannelConnection.channel == Channel.instagram,
+            ChannelConnection.external_account_id == result.page_id,
+        )
+    )
+    connection = existing.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+
+    if connection is None:
+        connection = ChannelConnection(
+            business_id=business_id,
+            channel=Channel.instagram,
+            external_account_id=result.page_id,
+            connected_at=now,
+        )
+        db.add(connection)
+
+    connection.display_name = result.ig_username or result.page_name
+    connection.external_handle = f"@{result.ig_username}" if result.ig_username else result.page_name
+    connection.access_token = encrypt(result.page_access_token)
+    connection.token_issued_at = now
+    connection.token_expires_at = result.token_expires_at
+    connection.token_refresh_failed_at = None
+    connection.status = ConnectionStatus.active
+    connection.webhook_subscribed = result.webhook_subscribed
+    connection.extra = {
+        **(connection.extra or {}),
+        "page_id": result.page_id,
+        "page_name": result.page_name,
+        "ig_business_account_id": result.ig_business_account_id,
+        "route": "facebook_login",
+    }
+
+    logger.info(
+        "instagram connected (fb login) business=%s page=%s ig_account=%s username=%s",
+        business_id, result.page_id, result.ig_business_account_id, result.ig_username,
     )
 
     return RedirectResponse(f"{settings_url}?instagram=connected")

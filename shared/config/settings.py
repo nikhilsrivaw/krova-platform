@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # dashboard as this app's OAuth Redirect URI - the token exchange call
     # is rejected otherwise, and the two are configured completely separately.
     instagram_redirect_uri: str = Field(default="", alias="INSTAGRAM_REDIRECT_URI")
+    # Separate from the one above - this flow goes through the main app's
+    # Facebook Login for Business, a different OAuth dialog entirely, and
+    # Meta requires its own registered redirect URI matching exactly.
+    instagram_fb_redirect_uri: str = Field(default="", alias="INSTAGRAM_FB_REDIRECT_URI")
 
     # Where a browser lands after the Instagram Business Login round trip -
     # a page under the actual dashboard, not the API itself, since the API

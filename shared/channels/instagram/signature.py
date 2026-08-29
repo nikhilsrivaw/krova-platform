@@ -2,12 +2,15 @@
 Webhook signature verification for Instagram.
 
 Same HMAC-SHA256-over-the-raw-body scheme as WhatsApp's - see
-shared/channels/whatsapp/signature.py for the full reasoning. The one thing
-that differs, and the reason this isn't just a re-export: "Instagram API
-with Instagram Login" issues its own separate app id and secret, distinct
-from the main Meta app used for WhatsApp. A webhook for Instagram messages
-or comments is signed with THAT secret - verifying against
-meta_app_secret would make every legitimate Instagram webhook fail.
+shared/channels/whatsapp/signature.py for the full reasoning.
+
+Two different secrets are accepted here, on purpose, because two different
+integration paths can both deliver to this same callback URL: "Instagram
+API with Instagram Login" signs with its own separate app secret
+(meta_instagram_app_secret), while Instagram messaging via Facebook Login
+for Business signs with the main app's secret (meta_app_secret) - the same
+one WhatsApp already uses. Trying both rather than picking one keeps this
+endpoint working regardless of which path a given webhook came through.
 """
 
 import hashlib
@@ -25,23 +28,25 @@ class InvalidSignature(Exception):
     """The request did not come from Meta, or was altered on the way."""
 
 
-def verify(raw_body: bytes, signature_header: str | None) -> None:
-    """Check an Instagram webhook signature. Raises InvalidSignature on any failure."""
-    if not settings.meta_instagram_app_secret:
-        raise InvalidSignature("META_INSTAGRAM_APP_SECRET is not configured")
+def _matches(secret: str, raw_body: bytes, received: str) -> bool:
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, received)
 
+
+def verify(raw_body: bytes, signature_header: str | None) -> None:
+    """Check an Instagram webhook signature against either valid secret. Raises on failure."""
     if not signature_header or not signature_header.startswith(_PREFIX):
         logger.warning("instagram webhook rejected: missing or malformed signature header")
         raise InvalidSignature("Signature missing or malformed")
 
     received = signature_header[len(_PREFIX) :]
-    expected = hmac.new(
-        settings.meta_instagram_app_secret.encode(), raw_body, hashlib.sha256
-    ).hexdigest()
 
-    if not hmac.compare_digest(expected, received):
-        logger.warning("instagram webhook rejected: signature mismatch - possible spoof attempt")
-        raise InvalidSignature("Signature does not match")
+    for secret in (settings.meta_app_secret, settings.meta_instagram_app_secret):
+        if secret and _matches(secret, raw_body, received):
+            return
+
+    logger.warning("instagram webhook rejected: signature mismatch - possible spoof attempt")
+    raise InvalidSignature("Signature does not match")
 
 
 def verify_subscription(mode: str | None, token: str | None) -> bool:
