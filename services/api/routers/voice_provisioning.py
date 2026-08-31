@@ -535,3 +535,132 @@ async def call_logs(
         )
         for c in rows
     ]
+
+
+# ── agent speech & greeting ──────────────────────────────────────────────
+#
+# What shared/channels/voice/tenant.py's resolve() reads back on every real
+# call - greeting, language, language_mode and speaker were already read
+# from ChannelConnection.extra with sane defaults, but nothing ever wrote a
+# non-default value and no endpoint existed to change them. These two
+# endpoints are that missing write path.
+
+# Sarvam bulbul:v3's real, published speaker catalogue - never invented.
+MALE_SPEAKERS = [
+    "shubh", "aditya", "rahul", "rohan", "amit", "dev", "ratan", "varun",
+    "manan", "sumit", "kabir", "aayan", "ashutosh", "advait", "anand",
+    "tarun", "sunny", "mani", "gokul", "vijay", "mohit", "rehan", "soham",
+]
+FEMALE_SPEAKERS = [
+    "ritu", "priya", "neha", "pooja", "simran", "kavya", "ishita", "shreya",
+    "roopa", "tanya", "shruti", "suhani", "kavitha", "rupali",
+]
+VALID_SPEAKERS = set(MALE_SPEAKERS) | set(FEMALE_SPEAKERS)
+VALID_LANGUAGE_MODES = {"adaptive", "fixed"}
+# Scoped to what a business can actually pick for `language` - Sarvam
+# supports more Indian languages, but adaptive mode already auto-detects
+# whatever a caller speaks; a fixed choice is only meaningful for the two
+# this product is actually built for.
+VALID_LANGUAGES = {"en-IN", "hi-IN"}
+
+
+async def _voice_connection(business_id: uuid.UUID, db: DbDep) -> ChannelConnection:
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == business_id,
+            ChannelConnection.channel == Channel.voice,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
+    )
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Connect a voice number first: buy one under Phone Numbers",
+        )
+    return connection
+
+
+class AgentSettingsOut(BaseModel):
+    greeting: str
+    language: str
+    language_mode: str
+    speaker: str
+    male_speakers: list[str]
+    female_speakers: list[str]
+
+
+def _agent_settings_out(connection: ChannelConnection, business_name: str) -> AgentSettingsOut:
+    extra = connection.extra or {}
+    return AgentSettingsOut(
+        greeting=extra.get("greeting")
+        or f"Hello, thank you for calling {business_name}. How can I help you?",
+        language=extra.get("language", "en-IN"),
+        language_mode=extra.get("language_mode", "adaptive"),
+        speaker=extra.get("speaker", "shubh"),
+        male_speakers=MALE_SPEAKERS,
+        female_speakers=FEMALE_SPEAKERS,
+    )
+
+
+@router.get("/agent-settings", response_model=AgentSettingsOut)
+async def get_agent_settings(current_user: CurrentUserDep, db: DbDep) -> AgentSettingsOut:
+    connection = await _voice_connection(current_user.business, db)
+    business = await db.get(Business, current_user.business)
+    return _agent_settings_out(connection, business.name if business else "your business")
+
+
+class AgentSettingsIn(BaseModel):
+    greeting: str | None = None
+    language: str | None = None
+    language_mode: str | None = None
+    speaker: str | None = None
+
+
+@router.patch("/agent-settings", response_model=AgentSettingsOut)
+async def update_agent_settings(
+    body: AgentSettingsIn, current_user: CurrentUserDep, db: DbDep
+) -> AgentSettingsOut:
+    """
+    Every field is optional and only what's sent gets changed - a business
+    picking just a voice shouldn't have to resend its own greeting text to
+    avoid losing it.
+    """
+    connection = await _voice_connection(current_user.business, db)
+
+    if body.language is not None and body.language not in VALID_LANGUAGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"language must be one of {sorted(VALID_LANGUAGES)}",
+        )
+    if body.language_mode is not None and body.language_mode not in VALID_LANGUAGE_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"language_mode must be one of {sorted(VALID_LANGUAGE_MODES)}",
+        )
+    if body.speaker is not None and body.speaker not in VALID_SPEAKERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unrecognised speaker - see male_speakers/female_speakers on GET for the real list",
+        )
+
+    extra = dict(connection.extra or {})
+    if body.greeting is not None:
+        extra["greeting"] = body.greeting.strip()
+    if body.language is not None:
+        extra["language"] = body.language
+    if body.language_mode is not None:
+        extra["language_mode"] = body.language_mode
+    if body.speaker is not None:
+        extra["speaker"] = body.speaker
+    connection.extra = extra
+    await db.commit()
+
+    logger.info(
+        "voice agent settings updated business=%s fields=%s",
+        current_user.business,
+        [k for k, v in body.model_dump().items() if v is not None],
+    )
+
+    business = await db.get(Business, current_user.business)
+    return _agent_settings_out(connection, business.name if business else "your business")

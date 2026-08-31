@@ -330,13 +330,19 @@ async def stream(websocket: WebSocket) -> None:
         # yet, over the connection's static configured language - a caller
         # code-mixing Hindi and English gets a reply spoken the same way,
         # not forced into whichever language_code the business happened to
-        # be set up with.
-        language = (pipeline.detected_language if pipeline else None) or (
-            route.language if route else "en-IN"
-        )
+        # be set up with. A business can override this adaptive behaviour by
+        # setting language_mode to "fixed" - e.g. a Hindi-only agent that
+        # always replies in Hindi regardless of what a caller mixes in.
+        if route and route.language_mode == "fixed":
+            language = route.language
+        else:
+            language = (pipeline.detected_language if pipeline else None) or (
+                route.language if route else "en-IN"
+            )
+        speaker = route.speaker if route else "shubh"
 
         async with ws:
-            await ws.send(sarvam.tts_start_config(language=language))
+            await ws.send(sarvam.tts_start_config(language=language, speaker=speaker))
 
             audio_q: asyncio.Queue = asyncio.Queue()
             state = {"flushes_sent": 0, "finals_received": 0, "sender_done": False}

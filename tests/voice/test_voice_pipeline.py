@@ -128,6 +128,8 @@ async def main():
             connection_id=connection.id,
             greeting="Hello, thanks for calling Sharma Dental.",
             language="en-IN",
+            language_mode="adaptive",
+            speaker="shubh",
         )
 
         caller = FakeCaller()
@@ -197,7 +199,7 @@ async def main():
 
         route2 = VoiceRoute(
             business_id=biz2.id, business_name=biz2.name, connection_id=conn2.id,
-            greeting="Hello.", language="en-IN",
+            greeting="Hello.", language="en-IN", language_mode="adaptive", speaker="shubh",
         )
 
         # A speak() slow enough that the test can barge in before it finishes,

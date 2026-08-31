@@ -23,6 +23,14 @@ class VoiceRoute:
     connection_id: uuid.UUID
     greeting: str
     language: str  # Sarvam language_code, e.g. "hi-IN", "en-IN"
+    # "adaptive" (default) replies in whatever the caller spoke, per-turn -
+    # see relay.py's own comment on why that was the original design. "fixed"
+    # overrides that and always replies in `language`, for a business that
+    # wants e.g. a Hindi-only agent regardless of what a caller mixes in.
+    language_mode: str
+    # One of Sarvam bulbul:v3's real speaker names (e.g. "shubh", "priya") -
+    # never invented, always checked against Sarvam's own published list.
+    speaker: str
 
 
 async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
@@ -62,4 +70,6 @@ async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
         greeting=extra.get("greeting")
         or f"Hello, thank you for calling {business.name}. How can I help you?",
         language=extra.get("language", "en-IN"),
+        language_mode=extra.get("language_mode", "adaptive"),
+        speaker=extra.get("speaker", "shubh"),
     )
