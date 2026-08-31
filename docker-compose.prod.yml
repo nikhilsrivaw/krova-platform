@@ -41,6 +41,60 @@ services:
     expose:
       - "8000"
 
+  # Background job workers - each is meant to run as its own long-lived
+  # process (services/*/worker_runner.py's run_worker_process, an infinite
+  # claim-work-repeat loop), not something the API process does inline. Left
+  # out of this compose file entirely at first: the API alone looked
+  # complete (it serves every route, including sending replies a human
+  # approves), so jobs quietly piled up in the `jobs` table - drafts,
+  # analysis, profile compression - with nothing ever claiming them. No
+  # error anywhere, because an unconsumed queue does not look broken, it
+  # looks idle.
+  #
+  # -m services.workers.X, not services/workers/X.py: the module form runs
+  # with /app (this container's WORKDIR) on sys.path, so `from shared...`
+  # resolves; the script form only adds the script's own directory
+  # (/app/services/workers) and fails with ModuleNotFoundError - confirmed
+  # directly, not assumed, before writing this.
+  worker-respond:
+    build: .
+    container_name: krova-worker-respond
+    restart: unless-stopped
+    command: ["python", "-m", "services.workers.respond"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker-analyse:
+    build: .
+    container_name: krova-worker-analyse
+    restart: unless-stopped
+    command: ["python", "-m", "services.workers.analyse"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker-profile:
+    build: .
+    container_name: krova-worker-profile
+    restart: unless-stopped
+    command: ["python", "-m", "services.workers.profile"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   caddy:
     image: caddy:2-alpine
     container_name: krova-caddy
