@@ -37,7 +37,17 @@ from shared.ai import context as agent_context
 from shared.billing import usage
 from shared.channels import ingest
 from shared.channels.voice.tenant import VoiceRoute
-from shared.db.models import Call, Channel, Direction, IdentityKind, UsageEventType
+from shared.db.models import (
+    Business,
+    Call,
+    Channel,
+    Customer,
+    Direction,
+    IdentityKind,
+    IntakeChannel,
+    UsageEventType,
+)
+from shared.scheduling import booking as scheduling_booking
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -100,6 +110,10 @@ class CallPipeline:
     detected_language: str | None = None
     _reply_task: asyncio.Task | None = field(default=None, repr=False)
     _spoken_chars: int = 0
+    # The caller's own turn, for source_message_ids on a booking made from
+    # it - an AI-mediated booking must cite the conversation that
+    # authorised it, the same rule book.py enforces for every channel.
+    _last_inbound_message_id: uuid.UUID | None = None
 
     async def start(self) -> None:
         """Greet the caller. The first thing anyone hears on the call."""
@@ -259,6 +273,52 @@ class CallPipeline:
             await self._say_stream(_single_chunk(spoken), record=True)
             return
 
+        if first.book_slot:
+            business = await self.db.get(Business, self.route.business_id)
+            customer = await self.db.get(Customer, self.customer_id)
+            appointment = None
+            if business is not None and customer is not None and self._last_inbound_message_id is not None:
+                appointment = await scheduling_booking.try_book_from_agent(
+                    self.db,
+                    book_slot=first.book_slot,
+                    book_doctor=first.book_doctor,
+                    book_property=first.book_property,
+                    business=business,
+                    customer=customer,
+                    intake_channel=IntakeChannel.voice,
+                    source_message_ids=[self._last_inbound_message_id],
+                )
+            if appointment is None:
+                # The reply already generated for this turn most likely
+                # assumes success ("you're all set for 3pm!") - speaking it
+                # would be exactly the invented-fact problem the whole agent
+                # exists to avoid, same reasoning respond.py's own booking
+                # path follows for text. Drain the rest of the stream
+                # unspoken and say something honest instead.
+                async for _ in events:
+                    pass
+                logger.info(
+                    "voice booking failed call=%s book_slot=%s, speaking fallback instead",
+                    self.provider_call_id, first.book_slot,
+                )
+                if self.call_row_id is not None:
+                    call_row = await self.db.get(Call, self.call_row_id)
+                    if call_row is not None:
+                        call_row.escalated = True
+                        call_row.escalation_reason = f"Could not book {first.book_slot}"
+                await self._say_stream(
+                    _single_chunk(
+                        "I wasn't able to lock in that exact time - let me "
+                        "have someone confirm the details with you."
+                    ),
+                    record=True,
+                )
+                return
+            logger.info(
+                "voice booking succeeded call=%s appointment=%s",
+                self.provider_call_id, appointment.id,
+            )
+
         reply_cost = {"paise": 0}
 
         async def reply_text_chunks():
@@ -376,6 +436,8 @@ class CallPipeline:
             )
             if result.customer is not None:
                 self.customer_id = result.customer.id
+            if direction == Direction.inbound and result.message is not None:
+                self._last_inbound_message_id = result.message.id
             await self.db.commit()
         except Exception:
             logger.exception("failed to store call turn - continuing the call")

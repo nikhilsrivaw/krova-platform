@@ -168,9 +168,15 @@ exactly this format, nothing else, no markdown, no preamble:
 
 The first line is exactly one word: REPLY, ESCALATE, or NOACTION.
 
-If REPLY: a blank line, then the spoken reply itself - one short, natural \
-sentence, the way a person would actually say it out loud, not written \
-prose. Nothing after it.
+If REPLY: optionally, one or more lines of BOOK_SLOT=<ISO 8601 datetime>, \
+BOOK_DOCTOR=<name>, BOOK_PROPERTY=<name> - following the exact same \
+booking rule already given above (only when the caller has just confirmed \
+one specific time you offered them, BOOK_DOCTOR only when more than one \
+doctor was listed, BOOK_PROPERTY only for one specific listed property \
+viewing) - then a blank line (always, whether or not you wrote any BOOK_ \
+lines), then the spoken reply itself - one short, natural sentence, the \
+way a person would actually say it out loud, not written prose. Nothing \
+after it.
 
 If ESCALATE: a blank line, then one short phrase naming exactly what you \
 did not know (five words or fewer) - not a sentence, just the missing \
@@ -201,6 +207,12 @@ _SENTENCE_END = (". ", "! ", "? ", ".\n", "!\n", "?\n")
 @dataclass(slots=True)
 class ReplyStart:
     action: str  # "reply" | "escalate" | "no_action"
+    # Only ever set alongside action == "reply" - see SYSTEM_STREAM's own
+    # booking rule, the same one REPLY_TOOL's book_slot/book_doctor/
+    # book_property follow for the text-channel path.
+    book_slot: str | None = None
+    book_doctor: str | None = None
+    book_property: str | None = None
 
 
 @dataclass(slots=True)
@@ -260,6 +272,14 @@ async def stream_reply(agent_context: ctx.AgentContext):
     action: str | None = None
     gap_parts: list[str] = []
     sentence_buffer = ""
+    # Only meaningful once action == "reply": whether the BOOK_* header
+    # block (zero or more lines) has been fully read and its blank-line
+    # terminator seen, so the sentence-splitting loop below knows it is
+    # reading the actual spoken reply rather than still-arriving header.
+    header_done = False
+    book_slot: str | None = None
+    book_doctor: str | None = None
+    book_property: str | None = None
 
     async for delta in stream:
         buffer += delta
@@ -273,15 +293,42 @@ async def stream_reply(agent_context: ctx.AgentContext):
                 logger.warning("stream_reply got unrecognised action %r, escalating", word)
                 word = "ESCALATE"
             action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}[word]
-            yield ReplyStart(action=action)
-            # Whatever arrived after the action line and its blank line is
-            # the start of the real content - route it the same way the
-            # rest of the stream will be routed from here on.
-            content = rest.lstrip("\n")
-            if action == "reply":
-                sentence_buffer = content
-            elif action == "escalate" and content:
-                gap_parts.append(content)
+
+            if action != "reply":
+                # No booking header for these - same as before this existed.
+                yield ReplyStart(action=action)
+                content = rest.lstrip("\n")
+                if action == "escalate" and content:
+                    gap_parts.append(content)
+                continue
+
+            # action == "reply": there may be BOOK_* header lines before the
+            # blank line that starts the real spoken content, and how many
+            # (zero to three) is not known in advance - so ReplyStart is not
+            # yielded yet. Keep accumulating into `buffer` (now just `rest`,
+            # what came after the action line) until the header's blank-line
+            # terminator shows up, handled by the block below - which this
+            # same iteration falls through into.
+            buffer = rest
+
+        if action == "reply" and not header_done:
+            if "\n\n" not in buffer:
+                continue
+            header, _, message_start = buffer.partition("\n\n")
+            for line in header.splitlines():
+                line = line.strip()
+                if line.startswith("BOOK_SLOT="):
+                    book_slot = line[len("BOOK_SLOT="):].strip() or None
+                elif line.startswith("BOOK_DOCTOR="):
+                    book_doctor = line[len("BOOK_DOCTOR="):].strip() or None
+                elif line.startswith("BOOK_PROPERTY="):
+                    book_property = line[len("BOOK_PROPERTY="):].strip() or None
+            header_done = True
+            yield ReplyStart(
+                action=action, book_slot=book_slot, book_doctor=book_doctor,
+                book_property=book_property,
+            )
+            sentence_buffer = message_start.lstrip("\n")
             continue
 
         if action == "reply":
@@ -300,6 +347,19 @@ async def stream_reply(agent_context: ctx.AgentContext):
                     yield ReplyChunk(text=piece)
         elif action == "escalate":
             gap_parts.append(delta)
+
+    if action == "reply" and not header_done:
+        # The stream ended before the header's blank-line terminator ever
+        # arrived - a very short reply with no booking, most likely, since
+        # the prompt asks for the blank line unconditionally. Whatever is in
+        # `buffer` is the entire reply; treat it as the message rather than
+        # silently losing it (mirroring the existing action-less fallback
+        # below for the same class of truncated-stream problem).
+        yield ReplyStart(action="reply")
+        text = buffer.lstrip("\n").strip()
+        if text:
+            yield ReplyChunk(text=text)
+        header_done = True
 
     if action is None:
         # The stream ended before a single newline ever arrived - a very

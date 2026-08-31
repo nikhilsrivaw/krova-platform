@@ -40,15 +40,12 @@ from shared.db.models import (
     Job,
     Message,
     MessageDraft,
-    Property,
     UsageEventType,
 )
 from shared.db import queue
 from shared.db.worker_runner import run_worker_process
-from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import booking as scheduling_booking
 from shared.scheduling import notify
-from shared.scheduling.booking import SlotUnavailable
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,87 +64,22 @@ async def _try_book(
     """
     Turn a model's booking decision into a real Appointment.
 
-    Returns the Appointment if it actually happened, so the caller can send
-    a confirmation - None covers every way this can go wrong (an
-    unparseable time, a doctor name that does not match, the slot having
-    been taken in the gap between the model reading its context and this
-    running), and the caller's job is the same regardless of which: do not
-    send a confirmation for a booking that did not happen.
+    Thin wrapper over shared/scheduling/booking.py's try_book_from_agent -
+    the actual matching/booking logic is shared with a live call's booking
+    path now (pipeline.py), not duplicated here. This wrapper exists only
+    to unpack a Draft and supply this path's own intake_channel/
+    source_message_ids.
     """
-    if not proposal.book_slot:
-        return None
-
-    try:
-        requested = datetime.fromisoformat(proposal.book_slot)
-    except ValueError:
-        logger.warning("agent returned unparseable book_slot %r", proposal.book_slot)
-        return None
-
-    doctors = (
-        await db.execute(
-            select(Doctor).where(Doctor.business_id == business.id, Doctor.active == True)  # noqa: E712
-        )
-    ).scalars().all()
-    if not doctors:
-        return None
-    doctor = doctors[0]
-    if len(doctors) > 1:
-        if not proposal.book_doctor:
-            logger.warning("book_slot set with no book_doctor across %d doctors", len(doctors))
-            return None
-        wanted = proposal.book_doctor.strip().lower()
-        matches = [d for d in doctors if d.name.strip().lower() == wanted]
-        if not matches:
-            logger.warning("book_doctor %r matched no active doctor", proposal.book_doctor)
-            return None
-        doctor = matches[0]
-
-    # Only resolved when the model actually named one - most verticals with
-    # scheduling have no property_listings capability at all, and book_property
-    # is correctly absent for every one of them. A name that fails to match
-    # a real, active listing aborts the booking rather than proceeding
-    # unlinked - the same "an unmatched name means do not trust the rest of
-    # this either" rule book_doctor already follows.
-    property_id: uuid.UUID | None = None
-    if proposal.book_property:
-        properties = (
-            await db.execute(
-                select(Property).where(
-                    Property.business_id == business.id, Property.active == True  # noqa: E712
-                )
-            )
-        ).scalars().all()
-        wanted_property = proposal.book_property.strip().lower()
-        property_matches = [p for p in properties if p.title.strip().lower() == wanted_property]
-        if not property_matches:
-            logger.warning("book_property %r matched no active listing", proposal.book_property)
-            return None
-        property_id = property_matches[0].id
-
-    # open_slots() is re-run here, not trusted from whenever the context was
-    # built - it is the single source of truth for "still free", and this
-    # doubles as the check that the model did not invent a time.
-    same_day = await scheduling_availability.open_slots(
-        db, business=business, doctor=doctor, on_date=requested.date()
+    return await scheduling_booking.try_book_from_agent(
+        db,
+        book_slot=proposal.book_slot,
+        book_doctor=proposal.book_doctor,
+        book_property=proposal.book_property,
+        business=business,
+        customer=customer,
+        intake_channel=IntakeChannel.whatsapp,
+        source_message_ids=[message.id],
     )
-    slot = next((s for s in same_day if s.starts_at == requested), None)
-    if slot is None:
-        logger.info("book_slot %s no longer open for doctor=%s", proposal.book_slot, doctor.id)
-        return None
-
-    try:
-        return await scheduling_booking.book(
-            db,
-            business_id=business.id,
-            doctor=doctor,
-            customer=customer,
-            slot=slot,
-            intake_channel=IntakeChannel.whatsapp,
-            source_message_ids=[message.id],
-            property_id=property_id,
-        )
-    except SlotUnavailable:
-        return None
 
 
 async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageDraft | None:
