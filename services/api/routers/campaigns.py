@@ -11,6 +11,7 @@ destroyed. Quality falls, Meta lowers the sending limit, and a business that
 was reaching 250 people a day is suddenly reaching 50 with no idea why.
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -42,6 +43,11 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
+
+# 4 messages/second - comfortably under Meta's 80/s hard throughput limit,
+# while still visibly paced rather than bursted. See send_campaign's own
+# comment at the call site for why pacing matters even under the hard limit.
+SEND_PACE_SECONDS = 0.25
 
 AUDIENCE_LABELS = {
     Audience.owes_money: "Everyone who owes you money",
@@ -362,6 +368,15 @@ async def send_campaign(
             )
             for card in campaign.carousel_cards
         ]
+
+        # Paced, not bursted. Meta's hard throughput limit (80 msg/s default)
+        # is not the risk for a business-sized campaign - quality rating is:
+        # a tight burst of business-initiated messages reads as spam-like to
+        # Meta's algorithms even well under the daily tier cap, the same
+        # reasoning this module's own docstring warns about. Every BSP
+        # (Wati, AiSensy, Gupshup) paces broadcast sends for this reason,
+        # even though Meta publishes no exact recommended rate.
+        await asyncio.sleep(SEND_PACE_SECONDS)
 
         try:
             outcome = await client.send_template(
