@@ -130,7 +130,16 @@ class CallPipeline:
         if not text.strip():
             return
 
-        if language:
+        # Only a final transcript's language is trusted - a partial can
+        # report a different, unsettled guess before more audio arrives
+        # (e.g. flickering en-IN then correcting to hi-IN as a Hindi
+        # sentence continues), and unlike partial text (explicitly never
+        # used to drive a reply, per this docstring), detected_language
+        # DOES drive which language the reply is spoken in - so trusting a
+        # partial guess here was the one place that rule wasn't actually
+        # being followed, and a plausible source of a reply coming back in
+        # the wrong language mid-call.
+        if language and is_final:
             self.detected_language = language
 
         if self._reply_task is not None and not self._reply_task.done():
