@@ -28,11 +28,58 @@ autonomy for their own account, not KROVA deciding for them - the default
 stays `draft` (human review), and `act` requires the owner to deliberately
 choose it in Settings.
 
-**Not yet tested live** - built and pushed, but never exercised against a
-real inbound message + `act` mode on the production deployment. Next
-session should flip a test business to Act Mode, send a real WhatsApp
-message in, and confirm it actually auto-sends and appears correctly in
-Conversations (not just that the code path runs without erroring).
+**CONFIRMED WORKING LIVE - 2026-08-31.** Tested end to end on production
+against "Krova Demo" (business_id 1863fab8-28ef-405e-88e8-e9f98180659f):
+real inbound WhatsApp message -> real webhook delivery -> real Claude call
+-> draft created -> auto-send guard correctly evaluated. First test message
+was gibberish ("sfvxvxcvxcvxcvxcv"), agent correctly chose `no_action` -
+no draft row at all, proving the agent doesn't force an answer onto
+nonsense. Second test asked about business hours (no real hours configured
+in this demo business's profile), agent correctly chose `escalate` rather
+than invent an answer - draft created with status `pending`, NOT auto-sent,
+exactly matching the `autonomy == "act" and proposal.action == "reply"`
+guard in respond.py. This is the harder, more convincing proof than a
+clean auto-send would have been: it shows act mode respects the agent's
+own judgment rather than blindly firing everything.
+
+Still not seen: an actual `reply`+auto-send happening (needs a question the
+agent can confidently answer from real business profile data, which this
+demo business doesn't have filled in). Next step to see the full happy
+path: add real business details in Settings' Business Profile, then send
+a message the agent can confidently answer.
+
+Two unrelated, real bugs were found and fixed to get to this point, not
+part of the original toggle work:
+1. **No worker process ever ran on this deployment** -
+   `services/workers/{respond,analyse,profile}.py` are designed as their
+   own long-lived processes, but `docker-compose.prod.yml` only ran the
+   API server. Every enqueued job (drafts, analysis, profile compression)
+   had been silently piling up since this deployment went up - confirmed
+   via a real backlog (5 analyse_business + 1 compress_customer, both
+   pending). Fixed by adding three dedicated worker containers to
+   `docker-compose.prod.yml`, each `python -m services.workers.X` (the
+   plain script-path form fails with ModuleNotFoundError - confirmed
+   directly, matching an error seen earlier the same night with a
+   one-off diagnostic script).
+2. **Settings could not save anything, ever, on production** -
+   `POST /auth/me` (`update_me` in `services/api/routers/auth.py`, the
+   real endpoint behind "Save Settings" including the autonomy picker)
+   constructed its `MeResponse` without the required `capabilities` field
+   that `GET /auth/me` includes, raising a Pydantic validation error
+   internally on every call - surfaced to the browser as a bare
+   "Failed to fetch" and a 500 in the network tab. Root-caused directly
+   from the production request/response, not guessed. This means no
+   profile edit, vertical change, or autonomy level had ever actually
+   persisted on this deployment before this fix.
+3. **WhatsApp's webhook Callback URL was pointed at a dead ngrok tunnel**
+   (`https://flagstick-eligible-plank.ngrok-free.dev/webhooks/whatsapp`,
+   left over from local dev) instead of
+   `https://api.krova.space/webhooks/whatsapp` - Meta was successfully
+   subscribed and sending every inbound WhatsApp event, just to a URL that
+   no longer existed. No error surfaced anywhere because a webhook with
+   nowhere to land doesn't look broken, it looks quiet - same shape as the
+   Instagram Login mystery earlier this session. Fixed by updating the
+   Callback URL in the WhatsApp use case's own webhook config page.
 
 ## Bulk-send safety (WhatsApp campaigns)
 
@@ -55,14 +102,21 @@ Conversations (not just that the code path runs without erroring).
   to enqueue instead of run inline, frontend polling for status instead of
   waiting on the response.
 
-## Shared inbox polish (WhatChimp gap)
+## Shared inbox polish (WhatChimp gap) - DONE this session
 
-KROVA has the underlying pieces (customer assignment, team performance
-analytics, Approvals queue) but it was never confirmed whether the
-Conversations page has an explicit "claim/assign this conversation to me"
-UI the way a dedicated shared-inbox product does. Needs a direct look at
-the current Conversations page UI (not assumed from memory) before deciding
-whether this is a real gap or already good enough.
+Confirmed by direct look, not memory: the Conversations page already had a
+real per-thread assign-to-teammate dropdown and the backend already
+returned `assigned_to_user_id` on every list item - the actual gap was
+narrower than "no assignment feature," it was that the thread LIST never
+surfaced it: no assignee shown at a glance, no All/Mine/Unassigned filter,
+only visible once a thread was already open.
+
+Added both in `web/app/conversations/page.tsx`: an All/Mine/Unassigned
+filter row (gated behind `teamMembers.length > 1`, matching the existing
+assign-dropdown's own gating) and a small initial-avatar badge per thread
+row when assigned. No backend change needed - the data already existed.
+Not yet visually verified in a live browser (no browser available in this
+session) - worth a quick look once deployed.
 
 ## Instagram - see project_instagram_fb_login_parked.md (Claude's memory)
 
