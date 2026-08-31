@@ -4,6 +4,26 @@ Running list from the 2026-08-29/30 session. Each item is a real gap or
 follow-up identified while wiring up Instagram + WhatsApp on production -
 not yet scoped in detail, just captured so nothing gets lost.
 
+## Voice call booking - DONE 2026-09-01
+
+Live calls could only reply/escalate/no_action - never book, unlike the
+same business's WhatsApp conversations. Added BOOK_SLOT=/BOOK_DOCTOR=/
+BOOK_PROPERTY= as optional header lines in stream_reply's plain-text
+protocol (before the blank line that starts the spoken reply), extracted
+the actual matching/booking logic out of respond.py's `_try_book` into
+`shared/scheduling/booking.py`'s `try_book_from_agent` so both the text
+and voice paths share one implementation, and wired pipeline.py's
+`_reply()` to attempt the booking before speaking - if it fails, the
+model's already-generated reply (which likely assumes success) is never
+spoken, replaced with an honest fallback and logged as an escalation.
+
+Verified: the parsing state machine directly, via a standalone script
+feeding it character-by-character/small-chunk/single-chunk streams plus a
+truncated-stream edge case - all correct, no hang, no crash. **Not yet
+verified live** - needs an actual test call once a real number is bought
+(still pending Plivo's compliance approval) against a business with
+Doctor/Property rows and real availability configured.
+
 ## Data-grounded video generation - NEW DIRECTION, decided 2026-09-01, not started
 
 See [[project_vision.md]] pillar 8 (Claude's memory) for the full strategic
