@@ -4,6 +4,48 @@ Running list from the 2026-08-29/30 session. Each item is a real gap or
 follow-up identified while wiring up Instagram + WhatsApp on production -
 not yet scoped in detail, just captured so nothing gets lost.
 
+## Data-grounded video generation - NEW DIRECTION, decided 2026-09-01, not started
+
+See [[project_vision.md]] pillar 8 (Claude's memory) for the full strategic
+framing - this entry is the tactical build note.
+
+Adds AI avatar video generation as a new KROVA segment, targeted at
+real estate, e-commerce, and startup verticals specifically (NOT clinics/
+hospitals - see the ASCI compliance finding below). The differentiator is
+NOT the video API chosen - it's auto-drafting the video script from the
+business's own real data (a new listing, a new product, a real update),
+human-reviewed before generating/publishing, same pattern as every other
+draft in the product.
+
+**Vendor decision - not finalized:**
+- HeyGen: confirmed real, self-serve, pay-as-you-go API (~$1/min standard,
+  ~$4/min premium avatar tier). No confirmed Hindi support checked yet -
+  verify against HeyGen's own docs before committing.
+- D-ID: confirmed 119 languages including Hindi, positioned as more
+  developer/API-first and cheaper at entry ($5.90/mo low tier). Exact
+  standalone API per-minute rate NOT verified - their pricing page is
+  JS-rendered and two direct fetch attempts both failed to extract real
+  numbers. Next step: check github.com/d-id or docs.d-id.com directly in
+  a real browser, or sign up for a trial to see authenticated API pricing.
+- Synthesia: best confirmed Hindi lip-sync quality and largest avatar
+  library, but API is Enterprise-only/custom-priced/sales-gated - weak
+  fit for a fast self-serve integration regardless of quality.
+
+**Compliance constraint, already researched, must shape the build:**
+India's ASCI 2026 draft guidelines classify fabricated customer
+testimonials and AI-generated "doctor"/authority figures as High Risk -
+prohibited outright regardless of disclosure. US FTC guidance aligns.
+This rules out: any clinic/hospital vertical use of this feature, and any
+"synthesize a testimonial from real conversation excerpts" idea entirely,
+for every vertical. Safe, legitimate video types: service/product
+explainers, festival/promotional greetings, staff introductions,
+listing/demo showcase videos - synthetic-presenter content that never
+impersonates a real customer's endorsement or a medical authority.
+
+**Not started:** no vendor account created, no API integration, no UI.
+Purely a researched, decided direction - next session should pick a
+vendor (resolve the D-ID pricing gap first) before writing any code.
+
 ## Auto-reply toggle (WhatChimp gap closer) - DONE this session
 
 Turned out to already be 90% built and not require new design: the schema
