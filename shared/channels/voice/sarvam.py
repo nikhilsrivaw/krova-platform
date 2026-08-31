@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlencode
 
+import httpx
+
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
 
@@ -263,3 +265,46 @@ async def stream_audio(ws: WSLike) -> AsyncIterator[bytes]:
         chunk = parse_tts_event(raw)
         if chunk is not None:
             yield chunk
+
+
+PREVIEW_URL = "https://api.sarvam.ai/text-to-speech"
+
+
+class PreviewError(Exception):
+    """Could not generate a voice preview. The message is safe to show a person."""
+
+
+async def generate_preview(*, text: str, speaker: str, language: str) -> str:
+    """
+    One short, non-streaming clip - for a business owner picking a voice in
+    Settings to actually hear it first, not for anything on a live call
+    (that path is the websocket TTS above, chosen for latency this endpoint
+    was never built for). Returns base64-encoded WAV audio, Sarvam's own
+    response shape, so the frontend can play it directly as a data: URI
+    without this needing to decode/re-encode anything.
+    """
+    if not settings.sarvam_api_key:
+        raise PreviewError("Sarvam is not configured on this server")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.post(
+            PREVIEW_URL,
+            headers={"api-subscription-key": settings.sarvam_api_key},
+            json={
+                "text": text,
+                "language_code": language,
+                "speaker": speaker,
+                "model": TTS_MODEL,
+            },
+        )
+    if res.status_code != 200:
+        logger.warning(
+            "sarvam preview failed speaker=%s status=%s body=%s",
+            speaker, res.status_code, res.text[:300],
+        )
+        raise PreviewError(f"Could not generate a preview ({res.status_code})")
+
+    audios = res.json().get("audios") or []
+    if not audios:
+        raise PreviewError("Sarvam returned no audio for this preview")
+    return audios[0]

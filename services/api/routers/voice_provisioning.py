@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
-from shared.channels.voice import compliance, plivo_client
+from shared.channels.voice import compliance, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
 from shared.config.settings import settings
 from shared.db.models import (
@@ -664,3 +664,47 @@ async def update_agent_settings(
 
     business = await db.get(Business, current_user.business)
     return _agent_settings_out(connection, business.name if business else "your business")
+
+
+# 37 real speaker names tell a business owner nothing - this is what lets
+# them actually hear one before picking it. Deliberately not gated behind
+# _voice_connection: choosing a voice is a reasonable thing to explore
+# while still mid-compliance, before any number is bought yet.
+_PREVIEW_TEXT = {
+    "en-IN": "Hello! Thank you for calling. How can I help you today?",
+    "hi-IN": "नमस्ते! कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकता हूं?",
+}
+
+
+class VoicePreviewIn(BaseModel):
+    speaker: str
+    language: str = "en-IN"
+
+
+class VoicePreviewOut(BaseModel):
+    audio_base64: str
+    format: str = "wav"
+
+
+@router.post("/preview-voice", response_model=VoicePreviewOut)
+async def preview_voice(body: VoicePreviewIn, current_user: CurrentUserDep) -> VoicePreviewOut:
+    if body.speaker not in VALID_SPEAKERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unrecognised speaker - see male_speakers/female_speakers on GET /agent-settings",
+        )
+    if body.language not in VALID_LANGUAGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"language must be one of {sorted(VALID_LANGUAGES)}",
+        )
+
+    text = _PREVIEW_TEXT.get(body.language, _PREVIEW_TEXT["en-IN"])
+    try:
+        audio_base64 = await sarvam.generate_preview(
+            text=text, speaker=body.speaker, language=body.language
+        )
+    except sarvam.PreviewError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    return VoicePreviewOut(audio_base64=audio_base64, format="wav")
