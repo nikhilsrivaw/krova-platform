@@ -26,6 +26,7 @@ from shared.ai import agent as agent_module
 from shared.ai import context as agent_context
 from shared.ai.client import AIError
 from shared.billing import usage
+from shared.channels.send_draft import DraftSendError, send_draft
 from shared.channels.whatsapp.client import SERVICE_WINDOW
 from shared.db.models import (
     Appointment,
@@ -287,12 +288,33 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     if proposal.action == "escalate" and proposal.gap:
         await agent_module.record_gap(message.business_id, proposal.gap, db)
 
+    # `act` sends without a person - the whole point of the setting - but
+    # only for a genuine reply. escalate exists precisely because the agent
+    # is unsure what to say; act mode does not override that judgment, it
+    # only skips the human step for replies the agent was confident enough
+    # to propose in the first place. WhatsApp only for now - send_draft
+    # (shared/channels/send_draft.py) has no Instagram path yet, and a
+    # channel != whatsapp draft is left pending for a person either way.
+    if autonomy == "act" and proposal.action == "reply" and channel == "whatsapp":
+        try:
+            await send_draft(draft, message.business_id, db, reviewed_by_user_id=None)
+        except DraftSendError as exc:
+            # Left pending rather than failed - a person can still approve
+            # it manually, which is strictly better than losing the reply
+            # because act mode's extra send attempt didn't work this time.
+            logger.warning(
+                "act-mode auto-send failed for draft=%s, left pending: %s",
+                draft.id, exc,
+            )
+
     logger.info(
-        "drafted %s for business=%s customer=%s confidence=%.2f",
+        "drafted %s for business=%s customer=%s confidence=%.2f autonomy=%s status=%s",
         proposal.action,
         message.business_id,
         message.customer_id,
         proposal.confidence,
+        autonomy,
+        draft.status.value,
     )
     return draft
 

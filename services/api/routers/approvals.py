@@ -26,19 +26,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.auth.encryption import decrypt
-from shared.channels import ingest
-from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
+from shared.channels.send_draft import DraftSendError, send_draft
 from shared.db.models import (
     Business,
-    Channel,
-    ChannelConnection,
-    ConnectionStatus,
     Customer,
-    CustomerIdentity,
     Direction,
     DraftStatus,
-    IdentityKind,
     Message,
     MessageDraft,
 )
@@ -200,67 +193,12 @@ async def approve(
     if body.body is not None and body.body.strip() != (draft.body or "").strip():
         draft.edited_body = body.body.strip()
 
-    text = draft.final_body
-    if not text:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="There is nothing to send. Write a reply or reject this.",
-        )
-
-    phone = await db.execute(
-        select(CustomerIdentity.value).where(
-            CustomerIdentity.customer_id == draft.customer_id,
-            CustomerIdentity.kind == IdentityKind.phone,
-        )
-    )
-    to = phone.scalars().first()
-    if not to:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No phone number on file for this customer",
-        )
-
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == current_user.business,
-                ChannelConnection.channel == Channel.whatsapp,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
-    if connection is None or not connection.access_token:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="WhatsApp is not connected"
-        )
-
-    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
     try:
-        sent = await client.send_text(to, text)
-    except WhatsAppError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-
-    stored = await ingest.ingest(
-        business_id=current_user.business,
-        channel=Channel.whatsapp,
-        direction=Direction.outbound,
-        identity_kind=IdentityKind.phone,
-        identity_value=to,
-        external_id=sent.external_id,
-        text=text,
-        occurred_at=now,
-        connection_id=connection.id,
-        enqueue_analysis=False,
-        sent_by_user_id=current_user.id,
-        db=db,
-    )
-
-    draft.status = DraftStatus.sent
-    draft.reviewed_by_user_id = current_user.id
-    draft.reviewed_at = now
-    draft.sent_message_id = stored.message.id if stored.message else None
+        await send_draft(
+            draft, current_user.business, db, reviewed_by_user_id=current_user.id
+        )
+    except DraftSendError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     logger.info(
         "draft approved and sent business=%s draft=%s edited=%s",
