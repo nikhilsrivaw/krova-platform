@@ -150,6 +150,15 @@ class Settings(BaseSettings):
         default=1000, alias="WEBHOOK_RATE_LIMIT_PER_MINUTE"
     )
 
+    # ── Platform operator ─────────────────────────────────────────────────────
+    # Gates the handful of cross-business admin endpoints (140/160-series
+    # number request queue) that exist for Krova's own operator, not any
+    # business. A single email check rather than a new cross-tenant role
+    # system - appropriate while there is exactly one such operator and
+    # this is used at low volume. Empty by default, which is what makes
+    # every admin-gated endpoint refuse everyone until this is set.
+    platform_admin_email: str = Field(default="", alias="PLATFORM_ADMIN_EMAIL")
+
     @property
     def is_development(self) -> bool:
         return self.environment == "development"

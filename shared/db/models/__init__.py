@@ -50,6 +50,7 @@ from shared.db.models.draft import DraftAction, DraftStatus, MessageDraft
 from shared.db.models.flow import FlowSendLog, FlowStatus, WhatsAppFlow
 from shared.db.models.job import Job, JobStatus
 from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSource
+from shared.db.models.number_request import NumberRequest, NumberRequestStatus, NumberRequestType
 from shared.db.models.order import Order, OrderStatus, StoreConnection
 from shared.db.models.property import ListingType, Property, PropertyStatus
 from shared.db.models.scheduling import (
@@ -119,6 +120,9 @@ __all__ = [
     "JobStatus",
     "ListingType",
     "Message",
+    "NumberRequest",
+    "NumberRequestStatus",
+    "NumberRequestType",
     "MessageDraft",
     "MessageTemplate",
     "Order",

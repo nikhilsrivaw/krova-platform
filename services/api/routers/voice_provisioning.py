@@ -33,6 +33,9 @@ from shared.db.models import (
     Customer,
     CustomerIdentity,
     IdentityKind,
+    NumberRequest,
+    NumberRequestStatus,
+    NumberRequestType,
     VoiceProvisioning,
     VoiceProvisioningStatus,
 )
@@ -792,3 +795,146 @@ async def preview_voice(body: VoicePreviewIn, current_user: CurrentUserDep) -> V
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     return VoicePreviewOut(audio_base64=audio_base64, format="wav")
+
+
+# ── 140/160-series number requests ──────────────────────────────────────
+#
+# Neither is Plivo's normal self-serve inventory the way a regular local
+# number is (confirmed: nothing listed under 160 in Plivo's own number
+# search) - getting one needs direct coordination with Plivo, which
+# nobody can automate. This is a request/queue, not a purchase flow.
+#
+# Deliberately no per-request approval gate: a business submits, it lands
+# here, and the platform operator works through pending requests in
+# batches whenever real Plivo coordination happens - not gated by a
+# review step per submission (confirmed with Nikhil directly, twice).
+# bfsi_declaration is self-certified and never validated against
+# request_type here - the real eligibility check happens with Plivo
+# during actual provisioning, not in this code.
+
+VALID_NUMBER_REQUEST_TYPES = {t.value for t in NumberRequestType}
+
+
+def _is_platform_admin(current_user: CurrentUserDep) -> bool:
+    return bool(settings.platform_admin_email) and current_user.email == settings.platform_admin_email
+
+
+def _require_platform_admin(current_user: CurrentUserDep) -> None:
+    if not _is_platform_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised")
+
+
+class NumberRequestIn(BaseModel):
+    request_type: str
+    justification: str
+    bfsi_declaration: bool = False
+
+
+class NumberRequestOut(BaseModel):
+    id: str
+    business_id: str
+    request_type: str
+    justification: str
+    bfsi_declaration: bool
+    status: str
+    admin_notes: str | None
+    provisioned_number: str | None
+    created_at: str
+
+
+def _number_request_out(row: NumberRequest) -> NumberRequestOut:
+    return NumberRequestOut(
+        id=str(row.id),
+        business_id=str(row.business_id),
+        request_type=row.request_type.value if hasattr(row.request_type, "value") else row.request_type,
+        justification=row.justification,
+        bfsi_declaration=row.bfsi_declaration,
+        status=row.status.value if hasattr(row.status, "value") else row.status,
+        admin_notes=row.admin_notes,
+        provisioned_number=row.provisioned_number,
+        created_at=row.created_at.isoformat(),
+    )
+
+
+@router.post("/number-requests", response_model=NumberRequestOut, status_code=status.HTTP_201_CREATED)
+async def create_number_request(
+    body: NumberRequestIn, current_user: CurrentUserDep, db: DbDep
+) -> NumberRequestOut:
+    if body.request_type not in VALID_NUMBER_REQUEST_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"request_type must be one of {sorted(VALID_NUMBER_REQUEST_TYPES)}",
+        )
+    if not body.justification.strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="justification is required")
+
+    row = NumberRequest(
+        business_id=current_user.business,
+        request_type=NumberRequestType(body.request_type),
+        justification=body.justification.strip(),
+        bfsi_declaration=body.bfsi_declaration,
+        status=NumberRequestStatus.requested,
+        requested_by_user_id=current_user.id,
+    )
+    db.add(row)
+    await db.commit()
+    logger.info(
+        "number request created business=%s type=%s", current_user.business, body.request_type
+    )
+    return _number_request_out(row)
+
+
+@router.get("/number-requests", response_model=list[NumberRequestOut])
+async def list_own_number_requests(current_user: CurrentUserDep, db: DbDep) -> list[NumberRequestOut]:
+    rows = (
+        await db.execute(
+            select(NumberRequest)
+            .where(NumberRequest.business_id == current_user.business)
+            .order_by(NumberRequest.created_at.desc())
+        )
+    ).scalars().all()
+    return [_number_request_out(r) for r in rows]
+
+
+@router.get("/number-requests/all", response_model=list[NumberRequestOut])
+async def list_all_number_requests(current_user: CurrentUserDep, db: DbDep) -> list[NumberRequestOut]:
+    """The platform operator's own queue - every business's requests, not just current_user's."""
+    _require_platform_admin(current_user)
+    rows = (
+        await db.execute(select(NumberRequest).order_by(NumberRequest.created_at.desc()))
+    ).scalars().all()
+    return [_number_request_out(r) for r in rows]
+
+
+class NumberRequestUpdateIn(BaseModel):
+    status: str | None = None
+    admin_notes: str | None = None
+    provisioned_number: str | None = None
+
+
+@router.patch("/number-requests/{request_id}", response_model=NumberRequestOut)
+async def update_number_request(
+    request_id: uuid.UUID, body: NumberRequestUpdateIn, current_user: CurrentUserDep, db: DbDep
+) -> NumberRequestOut:
+    _require_platform_admin(current_user)
+
+    row = await db.get(NumberRequest, request_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such number request")
+
+    if body.status is not None:
+        valid_statuses = {s.value for s in NumberRequestStatus}
+        if body.status not in valid_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"status must be one of {sorted(valid_statuses)}",
+            )
+        row.status = NumberRequestStatus(body.status)
+    if body.admin_notes is not None:
+        row.admin_notes = body.admin_notes
+    if body.provisioned_number is not None:
+        row.provisioned_number = body.provisioned_number
+
+    await db.commit()
+    logger.info("number request updated id=%s by=%s", request_id, current_user.email)
+    return _number_request_out(row)
