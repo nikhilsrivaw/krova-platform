@@ -31,6 +31,18 @@ class VoiceRoute:
     # One of Sarvam bulbul:v3's real speaker names (e.g. "shubh", "priya") -
     # never invented, always checked against Sarvam's own published list.
     speaker: str
+    # E.164 without the leading "+", matching CustomerIdentity's own phone
+    # storage convention - a real person's number to bring onto a call,
+    # either for a warm transfer on escalate or (with copilot_mode) as who
+    # answers every call directly. None means neither feature is in use for
+    # this business, which is the default and preserves today's behaviour
+    # exactly: escalate stays an apology-and-hangup, every call stays
+    # AI-answered.
+    staff_phone_number: str | None
+    # True only when a business has explicitly opted in - never a default.
+    # Meaningless without staff_phone_number also being set; the caller
+    # (answer.py) checks both together.
+    copilot_mode: bool
 
 
 async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
@@ -72,4 +84,6 @@ async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
         language=extra.get("language", "en-IN"),
         language_mode=extra.get("language_mode", "adaptive"),
         speaker=extra.get("speaker", "shubh"),
+        staff_phone_number=extra.get("staff_phone_number") or None,
+        copilot_mode=bool(extra.get("copilot_mode", False)),
     )

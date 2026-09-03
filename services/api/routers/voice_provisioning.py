@@ -23,6 +23,7 @@ from shared.auth.encryption import decrypt, encrypt
 from shared.channels.voice import compliance, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
 from shared.config.settings import settings
+from shared.identity.normalise import InvalidIdentifier, normalise_phone
 from shared.db.models import (
     Business,
     Call,
@@ -588,6 +589,10 @@ class AgentSettingsOut(BaseModel):
     speaker: str
     male_speakers: list[str]
     female_speakers: list[str]
+    # None means neither warm-transfer-on-escalate nor copilot mode is in
+    # use - the default, and what preserves today's behaviour exactly.
+    staff_phone_number: str | None
+    copilot_mode: bool
 
 
 def _agent_settings_out(connection: ChannelConnection, business_name: str) -> AgentSettingsOut:
@@ -600,6 +605,8 @@ def _agent_settings_out(connection: ChannelConnection, business_name: str) -> Ag
         speaker=extra.get("speaker", "shubh"),
         male_speakers=MALE_SPEAKERS,
         female_speakers=FEMALE_SPEAKERS,
+        staff_phone_number=extra.get("staff_phone_number") or None,
+        copilot_mode=bool(extra.get("copilot_mode", False)),
     )
 
 
@@ -615,6 +622,11 @@ class AgentSettingsIn(BaseModel):
     language: str | None = None
     language_mode: str | None = None
     speaker: str | None = None
+    # Send "" to clear a previously-set number - distinct from omitting the
+    # field, which leaves whatever is already saved untouched, same
+    # optional-field convention every other field on this model follows.
+    staff_phone_number: str | None = None
+    copilot_mode: bool | None = None
 
 
 @router.patch("/agent-settings", response_model=AgentSettingsOut)
@@ -644,7 +656,29 @@ async def update_agent_settings(
             detail="Unrecognised speaker - see male_speakers/female_speakers on GET for the real list",
         )
 
+    normalised_staff_number: str | None = None
+    if body.staff_phone_number is not None and body.staff_phone_number.strip():
+        try:
+            normalised_staff_number = normalise_phone(body.staff_phone_number)
+        except InvalidIdentifier as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"staff_phone_number: {exc}",
+            ) from exc
+
     extra = dict(connection.extra or {})
+
+    if body.copilot_mode:
+        # Never let this switch on with nowhere to actually ring - a
+        # half-configured toggle should fail loudly here, not silently do
+        # nothing the next time a call comes in.
+        has_number = normalised_staff_number is not None or bool(extra.get("staff_phone_number"))
+        if not has_number:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Set staff_phone_number before enabling copilot_mode",
+            )
+
     if body.greeting is not None:
         extra["greeting"] = body.greeting.strip()
     if body.language is not None:
@@ -653,6 +687,10 @@ async def update_agent_settings(
         extra["language_mode"] = body.language_mode
     if body.speaker is not None:
         extra["speaker"] = body.speaker
+    if body.staff_phone_number is not None:
+        extra["staff_phone_number"] = normalised_staff_number
+    if body.copilot_mode is not None:
+        extra["copilot_mode"] = body.copilot_mode
     connection.extra = extra
     await db.commit()
 

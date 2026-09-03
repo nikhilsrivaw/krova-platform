@@ -29,18 +29,23 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
+from urllib.parse import urlencode
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import agent as agent_module
 from shared.ai import context as agent_context
+from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels import ingest
+from shared.channels.voice import plivo_client
 from shared.channels.voice.tenant import VoiceRoute
+from shared.config.settings import settings
 from shared.db.models import (
     Business,
     Call,
     Channel,
+    ChannelConnection,
     Customer,
     Direction,
     IdentityKind,
@@ -272,6 +277,21 @@ class CallPipeline:
                 if call_row is not None:
                     call_row.escalated = True
                     call_row.escalation_reason = gap
+
+            # A business that has opted into a warm transfer gets a real
+            # handoff instead of an apology - staff_phone_number is unset
+            # for every business by default, so this is additive: nothing
+            # about today's apologize-and-hangup behaviour changes unless a
+            # business has explicitly configured a number.
+            if self.route.staff_phone_number and await self._try_transfer():
+                await self._say_stream(
+                    _single_chunk(
+                        "Let me connect you to someone who can help with that right now."
+                    ),
+                    record=True,
+                )
+                return
+
             spoken = (
                 f"I don't have {gap} on hand right now, but I'll make sure "
                 "someone follows up with you on that."
@@ -358,6 +378,59 @@ class CallPipeline:
             source_id=self.call_row_id,
             db=self.db,
         )
+
+    async def _try_transfer(self) -> bool:
+        """
+        Ask Plivo to bridge this live call to the business's configured
+        staff number, via its Live Call Modification API.
+
+        Returns False for anything short of Plivo actually accepting the
+        request - the caller's job either way is the same: fall back to
+        the honest "someone will follow up" message rather than claim a
+        transfer that never happened. The request shape here is correct
+        per Plivo's documented Transfer API; the exact timing of when
+        Plivo actually cuts the Stream mid-transfer is not yet confirmed
+        against a real call, since no number is connected in production
+        yet - called before speaking the "connecting you" line specifically
+        so a caller is only ever told a transfer is happening once Plivo
+        has actually accepted the request.
+        """
+        connection = await self.db.get(ChannelConnection, self.route.connection_id)
+        if connection is None or not connection.access_token:
+            logger.warning(
+                "transfer requested call=%s but no voice connection credentials found",
+                self.provider_call_id,
+            )
+            return False
+
+        auth_id = (connection.extra or {}).get("subaccount_auth_id")
+        if not auth_id:
+            logger.warning(
+                "transfer requested call=%s but connection has no subaccount_auth_id",
+                self.provider_call_id,
+            )
+            return False
+
+        aleg_url = (
+            f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?"
+            f"{urlencode({'number': f'+{self.route.staff_phone_number}'})}"
+        )
+        try:
+            await plivo_client.transfer_call(
+                auth_id=auth_id,
+                auth_token=decrypt(connection.access_token),
+                call_uuid=self.provider_call_id,
+                aleg_url=aleg_url,
+            )
+        except plivo_client.PlivoError:
+            logger.exception("call transfer failed call=%s", self.provider_call_id)
+            return False
+
+        logger.info(
+            "call transfer triggered call=%s to=+%s",
+            self.provider_call_id, self.route.staff_phone_number,
+        )
+        return True
 
     async def _say_stream(self, text_chunks, *, record: bool) -> None:
         """

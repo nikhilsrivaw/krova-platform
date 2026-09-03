@@ -47,6 +47,52 @@ def stream_response(
     )
 
 
+def dial_response(number: str) -> str:
+    """
+    Bridge the call to a real phone number - a live warm transfer.
+
+    Fetched by Plivo mid-call, via the Transfer API's aleg_url - never
+    returned from /voice/answer directly, since the call is already
+    answered and streaming by the time a transfer is ever triggered.
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"  <Dial><Number>{escape(number)}</Number></Dial>\n"
+        "</Response>"
+    )
+
+
+def copilot_response(
+    websocket_url: str,
+    staff_number: str,
+    *,
+    status_callback_url: str | None = None,
+) -> str:
+    """
+    Live copilot mode: ring the staff member directly, never the AI's
+    voice - while forking a listen-only copy of the audio to us so the
+    same context-building machinery that drives AI replies can show the
+    human real-time suggestions instead of speaking them. `bidirectional`
+    is deliberately false: KROVA never sends anything back into this call.
+    """
+    stream_attrs = [
+        'bidirectional="false"',
+        'audioTrack="both"',
+        f'contentType="{CONTENT_TYPE}"',
+    ]
+    if status_callback_url:
+        stream_attrs.append(f'statusCallbackUrl="{escape(status_callback_url)}"')
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"  <Stream {' '.join(stream_attrs)}>{escape(websocket_url)}</Stream>\n"
+        f"  <Dial><Number>{escape(staff_number)}</Number></Dial>\n"
+        "</Response>"
+    )
+
+
 def hangup_response(reason: str | None = None) -> str:
     """
     End the call cleanly.

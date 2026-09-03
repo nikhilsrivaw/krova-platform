@@ -202,6 +202,31 @@ async def get_call_cdr(*, auth_id: str, auth_token: str, call_uuid: str) -> dict
     return res.json()
 
 
+async def transfer_call(*, auth_id: str, auth_token: str, call_uuid: str, aleg_url: str) -> None:
+    """
+    Redirect a live call's A-leg to fresh XML fetched from `aleg_url`.
+
+    Plivo's Live Call Modification API - tells an in-progress call to stop
+    doing whatever it's currently doing (here: leave the Stream) and
+    execute new XML instead. This is the warm-transfer mechanism: bridging
+    an AI-answered call to a real human phone when the agent escalates,
+    without hanging up and losing the caller. Works with either the parent
+    account's credentials or a subaccount's, same as get_call_cdr above -
+    whichever owns the number the call is on.
+    """
+    url = f"{BASE_URL}/Account/{auth_id}/Call/{call_uuid}/"
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.post(
+            url,
+            auth=httpx.BasicAuth(auth_id, auth_token),
+            json={"legs": "aleg", "aleg_url": aleg_url},
+        )
+
+    if res.status_code not in (200, 202):
+        logger.warning("plivo call transfer failed: %s %s", res.status_code, res.text)
+        raise PlivoError(f"Could not transfer call {call_uuid}")
+
+
 async def release_number(subaccount: Subaccount, number: str) -> None:
     """
     Give a number back to Plivo - a business that churns or no longer wants

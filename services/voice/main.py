@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from shared.channels.voice import answer, relay
+from shared.channels.voice import answer, copilot, relay
 from shared.config.settings import settings
 from shared.db.session import check_db_connection, get_engine
 from shared.utils.logging import get_logger
@@ -71,6 +71,7 @@ app = FastAPI(
 
 app.include_router(answer.router)
 app.include_router(relay.router)
+app.include_router(copilot.router)
 
 
 @app.get("/health", tags=["ops"])

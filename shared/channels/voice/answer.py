@@ -21,7 +21,12 @@ from shared.channels.voice import compliance
 from shared.channels.voice.call_registry import remember
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.tenant import resolve
-from shared.channels.voice.xml import hangup_response, stream_response
+from shared.channels.voice.xml import (
+    copilot_response,
+    dial_response,
+    hangup_response,
+    stream_response,
+)
 from shared.config.settings import settings
 from shared.db.models import VoiceProvisioning
 from shared.db.session import AsyncSessionLocal
@@ -80,6 +85,21 @@ async def answer(
             from_number=str(from_number or ""),
         )
 
+    # Live copilot mode: a human's phone rings directly, never the AI's
+    # voice - copilot_mode with no staff_phone_number configured is treated
+    # as not-opted-in rather than an error, so a half-finished setting can
+    # never silently ring nobody.
+    if route.copilot_mode and route.staff_phone_number:
+        ws_url = f"{settings.public_base_url.replace('https://', 'wss://')}/voice/copilot-stream"
+        return Response(
+            content=copilot_response(
+                ws_url,
+                f"+{route.staff_phone_number}",
+                status_callback_url=f"{settings.public_base_url}/voice/status",
+            ),
+            media_type="application/xml",
+        )
+
     ws_url = f"{settings.public_base_url.replace('https://', 'wss://')}/voice/stream"
     return Response(
         content=stream_response(
@@ -88,6 +108,41 @@ async def answer(
         ),
         media_type="application/xml",
     )
+
+
+@router.post("/voice/transfer-xml")
+async def transfer_xml(
+    request: Request,
+    number: str,
+    x_plivo_signature_ma_v3: str | None = Header(default=None),
+    x_plivo_signature_v3_nonce: str | None = Header(default=None),
+) -> Response:
+    """
+    Fetched by Plivo mid-call once plivo_client.transfer_call() has asked
+    it to redirect a live call's A-leg here. The destination number
+    travels in the URL's own query string - decided by us the moment the
+    transfer is triggered, not stored anywhere new - so this endpoint
+    needs no lookup at all, just the same signature check every other
+    Plivo webhook here does. Signing over the raw received query string
+    (request.url.query) rather than a rebuilt one means re-encoding the
+    number here can never mismatch what Plivo actually signed.
+    """
+    body = await request.form()
+    params = {k: str(v) for k, v in body.items()}
+
+    try:
+        verify(
+            uri=f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?{request.url.query}",
+            signature=x_plivo_signature_ma_v3,
+            nonce=x_plivo_signature_v3_nonce,
+            method="POST",
+            params=params,
+        )
+    except InvalidSignature:
+        logger.warning("rejected /voice/transfer-xml - bad plivo signature")
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    return Response(content=dial_response(number), media_type="application/xml")
 
 
 @router.post("/voice/status")
