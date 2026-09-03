@@ -97,6 +97,18 @@ async def proxy_voice_transfer_xml(request: Request) -> Response:
     return await _proxy_http(request, f"/voice/transfer-xml{query}")
 
 
+@router.post("/voice/outbound-answer")
+async def proxy_voice_outbound_answer(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/outbound-answer{query}")
+
+
+@router.post("/voice/outbound-hangup")
+async def proxy_voice_outbound_hangup(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/outbound-hangup{query}")
+
+
 @router.websocket("/voice/stream")
 async def proxy_voice_stream(websocket: WebSocket) -> None:
     """
@@ -107,9 +119,13 @@ async def proxy_voice_stream(websocket: WebSocket) -> None:
     try:
         # Signed as http://, not wss:// or https:// - confirmed empirically
         # against a real call (see relay.py's own verify() call, which this
-        # mirrors exactly since both check the same signed URL).
+        # mirrors exactly since both check the same signed URL). The query
+        # string (recipient_id, for an outbound call - see relay.py's own
+        # matching comment) has to be included here too, since it's part
+        # of the URL Plivo actually signed.
         verify(
-            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}/voice/stream",
+            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            f"/voice/stream?{websocket.url.query}",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),
             method="GET",
@@ -132,9 +148,16 @@ async def proxy_voice_stream(websocket: WebSocket) -> None:
         in ("x-plivo-signature-ma-v3", "x-plivo-signature-v3", "x-plivo-signature-v3-nonce")
     }
 
+    # Forwarded unchanged too - recipient_id (an outbound call) has to
+    # reach the real voice service's own stream() the same way it reached
+    # this proxy, or every outbound call would silently be treated as
+    # inbound the moment it crosses this hop.
+    query = f"?{websocket.url.query}" if websocket.url.query else ""
     try:
         upstream = await websockets.connect(
-            f"{_VOICE_WS_BASE}/voice/stream", additional_headers=forwarded_headers, open_timeout=10
+            f"{_VOICE_WS_BASE}/voice/stream{query}",
+            additional_headers=forwarded_headers,
+            open_timeout=10,
         )
     except Exception:
         logger.exception("could not reach voice service for /voice/stream")

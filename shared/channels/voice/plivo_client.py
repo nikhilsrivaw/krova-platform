@@ -227,6 +227,53 @@ async def transfer_call(*, auth_id: str, auth_token: str, call_uuid: str, aleg_u
         raise PlivoError(f"Could not transfer call {call_uuid}")
 
 
+async def make_call(
+    *,
+    auth_id: str,
+    auth_token: str,
+    from_number: str,
+    to_number: str,
+    answer_url: str,
+    hangup_url: str,
+    machine_detection: str = "hangup",
+    machine_detection_time: int = 5000,
+) -> str:
+    """
+    Place an outbound call. Returns Plivo's request_uuid - confirmed
+    against Plivo's own docs this is NOT the eventual call_uuid (that only
+    exists once Plivo actually dials out, and arrives later as `CallUUID`
+    in the answer_url/hangup_url payloads) - so nothing here can key
+    anything on call_uuid in advance. Whatever this call needs to
+    correlate later belongs in answer_url/hangup_url's own query string,
+    not something stashed against this return value.
+
+    machine_detection="hangup" (synchronous mode, the default) makes
+    Plivo detect an answering machine BEFORE ever calling answer_url and
+    hang up immediately if it finds one - simpler than async detection,
+    at the cost of a few seconds of upfront delay, and guarantees the
+    agent never starts talking into a voicemail.
+    """
+    url = f"{BASE_URL}/Account/{auth_id}/Call/"
+    payload = {
+        "from": from_number,
+        "to": to_number,
+        "answer_url": answer_url,
+        "answer_method": "POST",
+        "hangup_url": hangup_url,
+        "hangup_method": "POST",
+        "machine_detection": machine_detection,
+        "machine_detection_time": machine_detection_time,
+    }
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.post(url, auth=httpx.BasicAuth(auth_id, auth_token), json=payload)
+
+    if res.status_code not in (200, 201, 202):
+        logger.warning("plivo make_call failed: %s %s", res.status_code, res.text)
+        raise PlivoError(f"Could not place a call to {to_number}")
+
+    return res.json().get("request_uuid", "")
+
+
 async def release_number(subaccount: Subaccount, number: str) -> None:
     """
     Give a number back to Plivo - a business that churns or no longer wants

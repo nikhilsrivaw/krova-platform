@@ -102,6 +102,11 @@ class CallPipeline:
     speak: Callable[["asyncio.AsyncIterator[str]"], "asyncio.AsyncIterator[bytes]"]
     db: AsyncSession
     call_row_id: uuid.UUID | None = None
+    # Set only for an outbound campaign call (see outbound.py) - the
+    # AI-drafted line explaining why KROVA is calling, spoken instead of
+    # route.greeting. None (the default) preserves inbound behaviour
+    # exactly: every existing call still opens with route.greeting.
+    opening_line: str | None = None
 
     history: list[dict] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
@@ -122,7 +127,7 @@ class CallPipeline:
 
     async def start(self) -> None:
         """Greet the caller. The first thing anyone hears on the call."""
-        await self._say_stream(_single_chunk(self.route.greeting), record=True)
+        await self._say_stream(_single_chunk(self.opening_line or self.route.greeting), record=True)
 
     async def on_transcript(self, text: str, *, is_final: bool, language: str | None = None) -> None:
         """

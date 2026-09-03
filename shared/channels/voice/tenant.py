@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.db.models import Business, BusinessDNA, Channel, ChannelConnection, ConnectionStatus
+from shared.db.models import Business, Channel, ChannelConnection, ConnectionStatus
 
 
 @dataclass(slots=True)
@@ -45,9 +45,28 @@ class VoiceRoute:
     copilot_mode: bool
 
 
+def _build_route(business: Business, connection: ChannelConnection) -> VoiceRoute:
+    """The one place a ChannelConnection's `extra` becomes a VoiceRoute - used by both lookup directions below."""
+    extra = connection.extra or {}
+    return VoiceRoute(
+        business_id=business.id,
+        business_name=business.name,
+        connection_id=connection.id,
+        greeting=extra.get("greeting")
+        or f"Hello, thank you for calling {business.name}. How can I help you?",
+        language=extra.get("language", "en-IN"),
+        language_mode=extra.get("language_mode", "adaptive"),
+        speaker=extra.get("speaker", "shubh"),
+        staff_phone_number=extra.get("staff_phone_number") or None,
+        copilot_mode=bool(extra.get("copilot_mode", False)),
+    )
+
+
 async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
     """
-    Find the business that owns the number a caller dialled.
+    Find the business that owns the number a caller dialled - the inbound
+    direction, where all we start with is the number Plivo says was
+    called.
 
     Returns None for an unrecognised number - happens if a number is
     disconnected while a call is already ringing, or if something outside
@@ -72,18 +91,29 @@ async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
     if business is None or not business.is_active:
         return None
 
-    dna = await db.get(BusinessDNA, business.id)
-    extra = connection.extra or {}
+    return _build_route(business, connection)
 
-    return VoiceRoute(
-        business_id=business.id,
-        business_name=business.name,
-        connection_id=connection.id,
-        greeting=extra.get("greeting")
-        or f"Hello, thank you for calling {business.name}. How can I help you?",
-        language=extra.get("language", "en-IN"),
-        language_mode=extra.get("language_mode", "adaptive"),
-        speaker=extra.get("speaker", "shubh"),
-        staff_phone_number=extra.get("staff_phone_number") or None,
-        copilot_mode=bool(extra.get("copilot_mode", False)),
+
+async def resolve_by_business(business_id: uuid.UUID, db: AsyncSession) -> VoiceRoute | None:
+    """
+    The outbound direction - KROVA already knows which business is
+    calling (from the CallCampaign it placed the call for), so this skips
+    the phone-number lookup `resolve()` needs for inbound entirely, going
+    straight to that business's active voice connection.
+    """
+    business = await db.get(Business, business_id)
+    if business is None or not business.is_active:
+        return None
+
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == business_id,
+            ChannelConnection.channel == Channel.voice,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
     )
+    connection = result.scalars().first()
+    if connection is None:
+        return None
+
+    return _build_route(business, connection)

@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.auth.encryption import decrypt
 from shared.billing import usage
-from shared.channels.voice import plivo_client, sarvam
+from shared.channels.voice import outbound, plivo_client, sarvam
 from shared.channels.voice.call_registry import recall as recall_call
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.pipeline import CallPipeline
@@ -199,10 +199,13 @@ def _first(payload: dict, *keys: str) -> str | None:
 
 
 @router.websocket("/voice/stream")
-async def stream(websocket: WebSocket) -> None:
+async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
     """
     The socket Plivo's <Stream> element connects to for one call.
 
+    `recipient_id` is present only for an outbound campaign call (see
+    outbound.py's outbound_answer, which builds the wss:// URL with it) -
+    None (the default) is every existing inbound call, unchanged.
     """
     try:
         # Plivo signs the stream URL with a bare http:// scheme regardless of
@@ -216,9 +219,15 @@ async def stream(websocket: WebSocket) -> None:
         # this one endpoint serves every business's calls, and at the moment
         # of accepting the upgrade there is no call data yet to say whose
         # subaccount it belongs to - Ma-V3 needs no such lookup.
+        #
+        # The query string (recipient_id, for an outbound call) is signed
+        # as part of the URL Plivo was actually given, so it has to be
+        # included here too - websocket.url.query is empty for every
+        # existing inbound call, which reproduces the exact previously-
+        # signed string unchanged for that case.
         verify(
             uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
-            "/voice/stream",
+            f"/voice/stream?{websocket.url.query}",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),
             method="GET",
@@ -416,16 +425,44 @@ async def stream(websocket: WebSocket) -> None:
                 from_number = remembered.get("from") or _first(message, "from", "From")
 
                 async with AsyncSessionLocal() as db:
-                    route = await resolve(to_number or "", db)
-                    if route is None:
-                        logger.warning("call to unrecognised number %s - hanging up", to_number)
-                        await websocket.close()
-                        return
+                    opening_line: str | None = None
+                    outbound_customer_id: uuid.UUID | None = None
+                    direction = Direction.inbound
+
+                    if recipient_id:
+                        # Outbound campaign call - already knows business +
+                        # customer from the CallCampaignRecipient, so it
+                        # skips resolve()'s phone-number lookup entirely
+                        # (meaningless here: the "to" Plivo reports on an
+                        # outbound leg is the customer, not one of KROVA's
+                        # own numbers).
+                        outbound_context = await outbound.build_context(
+                            uuid.UUID(recipient_id), db
+                        )
+                        if outbound_context is None:
+                            logger.warning(
+                                "outbound stream recipient=%s could not build a call "
+                                "context - hanging up",
+                                recipient_id,
+                            )
+                            await websocket.close()
+                            return
+                        route = outbound_context.route
+                        from_number = outbound_context.customer_phone
+                        opening_line = outbound_context.opening_line
+                        outbound_customer_id = outbound_context.customer_id
+                        direction = Direction.outbound
+                    else:
+                        route = await resolve(to_number or "", db)
+                        if route is None:
+                            logger.warning("call to unrecognised number %s - hanging up", to_number)
+                            await websocket.close()
+                            return
 
                     call_row = Call(
                         business_id=route.business_id,
                         connection_id=route.connection_id,
-                        direction=Direction.inbound,
+                        direction=direction,
                         external_id=call_uuid,
                         transport="plivo",
                         started_at=datetime.now(timezone.utc),
@@ -447,6 +484,8 @@ async def stream(websocket: WebSocket) -> None:
                         speak=speak,
                         db=db,
                         call_row_id=call_row_id,
+                        opening_line=opening_line,
+                        customer_id=outbound_customer_id,
                     )
 
                     logger.info(

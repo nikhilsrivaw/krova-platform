@@ -10,6 +10,12 @@ from shared.db.models.campaign import (
     CampaignRecipient,
     CampaignStatus,
 )
+from shared.db.models.call_campaign import (
+    CallCampaign,
+    CallCampaignRecipient,
+    CallCampaignRecipientStatus,
+    CallCampaignStatus,
+)
 from shared.db.models.crm import CustomerNote, CustomerTag, TagStatus
 from shared.db.models.channel import (
     Call,
@@ -75,6 +81,10 @@ __all__ = [
     "BusinessMember",
     "BusinessRole",
     "Call",
+    "CallCampaign",
+    "CallCampaignRecipient",
+    "CallCampaignRecipientStatus",
+    "CallCampaignStatus",
     "Campaign",
     "CampaignRecipient",
     "CampaignStatus",

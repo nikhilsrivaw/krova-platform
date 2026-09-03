@@ -95,6 +95,19 @@ services:
       postgres:
         condition: service_healthy
 
+  worker-call-campaign:
+    build: .
+    container_name: krova-worker-call-campaign
+    restart: unless-stopped
+    command: ["python", "-m", "services.workers.call_campaign"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   caddy:
     image: caddy:2-alpine
     container_name: krova-caddy
