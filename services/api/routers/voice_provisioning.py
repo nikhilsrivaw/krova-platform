@@ -558,11 +558,27 @@ FEMALE_SPEAKERS = [
 ]
 VALID_SPEAKERS = set(MALE_SPEAKERS) | set(FEMALE_SPEAKERS)
 VALID_LANGUAGE_MODES = {"adaptive", "fixed"}
-# Scoped to what a business can actually pick for `language` - Sarvam
-# supports more Indian languages, but adaptive mode already auto-detects
-# whatever a caller speaks; a fixed choice is only meaningful for the two
-# this product is actually built for.
-VALID_LANGUAGES = {"en-IN", "hi-IN"}
+# Sarvam bulbul:v3's actual documented TTS language coverage (confirmed
+# against docs.sarvam.ai, not guessed) - what a business can pick as this
+# agent's SPOKEN language. STT covers more (22 languages,
+# docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe) but that only
+# matters for adaptive mode's own auto-detection, which needs no picker at
+# all - a caller can be understood in a language the agent still can't speak
+# back in.
+SUPPORTED_LANGUAGES = [
+    {"code": "en-IN", "label": "English"},
+    {"code": "hi-IN", "label": "Hindi"},
+    {"code": "bn-IN", "label": "Bengali"},
+    {"code": "gu-IN", "label": "Gujarati"},
+    {"code": "kn-IN", "label": "Kannada"},
+    {"code": "ml-IN", "label": "Malayalam"},
+    {"code": "mr-IN", "label": "Marathi"},
+    {"code": "od-IN", "label": "Odia"},
+    {"code": "pa-IN", "label": "Punjabi"},
+    {"code": "ta-IN", "label": "Tamil"},
+    {"code": "te-IN", "label": "Telugu"},
+]
+VALID_LANGUAGES = {l["code"] for l in SUPPORTED_LANGUAGES}
 
 
 async def _voice_connection(business_id: uuid.UUID, db: DbDep) -> ChannelConnection:
@@ -582,6 +598,11 @@ async def _voice_connection(business_id: uuid.UUID, db: DbDep) -> ChannelConnect
     return connection
 
 
+class LanguageOption(BaseModel):
+    code: str
+    label: str
+
+
 class AgentSettingsOut(BaseModel):
     greeting: str
     language: str
@@ -589,6 +610,7 @@ class AgentSettingsOut(BaseModel):
     speaker: str
     male_speakers: list[str]
     female_speakers: list[str]
+    languages: list[LanguageOption]
     # None means neither warm-transfer-on-escalate nor copilot mode is in
     # use - the default, and what preserves today's behaviour exactly.
     staff_phone_number: str | None
@@ -605,6 +627,7 @@ def _agent_settings_out(connection: ChannelConnection, business_name: str) -> Ag
         speaker=extra.get("speaker", "shubh"),
         male_speakers=MALE_SPEAKERS,
         female_speakers=FEMALE_SPEAKERS,
+        languages=[LanguageOption(**l) for l in SUPPORTED_LANGUAGES],
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
     )
@@ -668,16 +691,25 @@ async def update_agent_settings(
 
     extra = dict(connection.extra or {})
 
-    if body.copilot_mode:
-        # Never let this switch on with nowhere to actually ring - a
-        # half-configured toggle should fail loudly here, not silently do
-        # nothing the next time a call comes in.
-        has_number = normalised_staff_number is not None or bool(extra.get("staff_phone_number"))
-        if not has_number:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Set staff_phone_number before enabling copilot_mode",
-            )
+    # Checked against the state this request actually RESULTS in, not just
+    # what's stored before it - a request that clears staff_phone_number
+    # while leaving (or setting) copilot_mode true must be rejected too,
+    # not just a bare "turn copilot_mode on with nothing ever configured".
+    # Confirmed this distinction matters by testing it directly: checking
+    # only the pre-request extra let exactly that combination through.
+    resulting_staff_number = (
+        normalised_staff_number if body.staff_phone_number is not None
+        else extra.get("staff_phone_number")
+    )
+    resulting_copilot_mode = (
+        body.copilot_mode if body.copilot_mode is not None
+        else bool(extra.get("copilot_mode", False))
+    )
+    if resulting_copilot_mode and not resulting_staff_number:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="staff_phone_number must be set (and non-empty) for copilot_mode to be on",
+        )
 
     if body.greeting is not None:
         extra["greeting"] = body.greeting.strip()
@@ -708,9 +740,23 @@ async def update_agent_settings(
 # them actually hear one before picking it. Deliberately not gated behind
 # _voice_connection: choosing a voice is a reasonable thing to explore
 # while still mid-compliance, before any number is bought yet.
+#
+# Translations beyond en-IN/hi-IN are a short, generic greeting only -
+# reviewed for plausibility, not confirmed by a native speaker of each
+# language. Worth a real spot-check before leaning on this for anything
+# beyond letting a business owner sample a voice.
 _PREVIEW_TEXT = {
     "en-IN": "Hello! Thank you for calling. How can I help you today?",
     "hi-IN": "नमस्ते! कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकता हूं?",
+    "bn-IN": "নমস্কার! কল করার জন্য ধন্যবাদ। আমি আপনাকে কীভাবে সাহায্য করতে পারি?",
+    "gu-IN": "નમસ્તે! કૉલ કરવા બદલ આભાર. હું તમારી કેવી રીતે મદદ કરી શકું?",
+    "kn-IN": "ನಮಸ್ಕಾರ! ಕರೆ ಮಾಡಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದಗಳು. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?",
+    "ml-IN": "നമസ്കാരം! വിളിച്ചതിന് നന്ദി. ഞാൻ നിങ്ങളെ എങ്ങനെ സഹായിക്കും?",
+    "mr-IN": "नमस्कार! कॉल केल्याबद्दल धन्यवाद. मी तुम्हाला कशी मदत करू शकतो?",
+    "od-IN": "ନମସ୍କାର! କଲ୍ କରିଥିବାରୁ ଧନ୍ୟବାଦ। ମୁଁ ଆପଣଙ୍କୁ କିପରି ସାହାଯ୍ୟ କରିପାରିବି?",
+    "pa-IN": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਕਾਲ ਕਰਨ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ?",
+    "ta-IN": "வணக்கம்! அழைத்ததற்கு நன்றி. நான் உங்களுக்கு எப்படி உதவ முடியும்?",
+    "te-IN": "నమస్కారం! కాల్ చేసినందుకు ధన్యవాదాలు. నేను మీకు ఎలా సహాయం చేయగలను?",
 }
 
 
