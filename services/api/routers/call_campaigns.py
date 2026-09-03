@@ -61,7 +61,7 @@ class AudienceOut(BaseModel):
 
 
 @router.get("/audiences", response_model=list[AudienceOut])
-async def list_audiences() -> list[AudienceOut]:
+async def list_audiences(current_user: CurrentUserDep) -> list[AudienceOut]:
     return [
         AudienceOut(value=a.value, label=_AUDIENCE_LABELS[a], needs_params=a in _NEEDS_PARAMS)
         for a in Audience
