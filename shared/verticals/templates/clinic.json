@@ -2,7 +2,7 @@
   "key": "clinic",
   "label": "Clinic or dental practice",
   "summary": "A clinic where patients book appointments, ask about treatments and fees, and collect reports.",
-  "capabilities": ["conversation_intelligence", "scheduling", "voice_booking"],
+  "capabilities": ["conversation_intelligence", "scheduling"],
   "tone": "Calm, precise and reassuring. Patients messaging a clinic are often worried. Answer the question first, then offer the next step. Never sound rushed.",
   "policies": "Never give medical advice, never suggest a diagnosis, and never estimate whether a symptom is serious. Those go to the doctor, always. Quote only fees listed in the business details - treatment costs vary by case and a wrong number becomes an argument at the counter. Never confirm an appointment slot that is not in the calendar.",
   "known_gaps": [

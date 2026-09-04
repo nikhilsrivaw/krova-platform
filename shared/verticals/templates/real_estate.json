@@ -2,7 +2,7 @@
   "key": "real_estate",
   "label": "Real estate agency or broker",
   "summary": "An agency selling or renting property, where buyers and tenants ask about price, location, and booking a site visit.",
-  "capabilities": ["conversation_intelligence", "scheduling", "voice_booking", "property_listings"],
+  "capabilities": ["conversation_intelligence", "scheduling", "property_listings"],
   "tone": "Warm, quick, and specific. Someone messaging about a property wants to know fast whether it fits their budget and location - lead with that, not a sales pitch. Never pressure a decision.",
   "policies": "Never guarantee investment returns, price appreciation, or any financial outcome - that is a RERA violation, not a sales technique. Never state a property is RERA-registered unless its registration number is on file; if asked and it is not on file, say so plainly rather than assume. Never promise a negotiated price, discount, or brokerage term - only the owner agrees those. Quote only prices and details from the property's own listing, never a guess or a memory of a similar property. Never confirm a site visit that is not in the calendar.",
   "known_gaps": [

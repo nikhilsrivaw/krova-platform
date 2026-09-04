@@ -76,6 +76,14 @@ class AgentContext:
     tone: str | None
     policies: str | None
     known_gaps: list[str]
+    # From the vertical template directly, not BusinessDNA - unlike
+    # known_gaps there is no per-business "learned" bucket for this yet,
+    # so it is looked up fresh from shared/verticals each time rather than
+    # seeded and persisted. Concrete, vertical-specific triggers a generic
+    # model might not otherwise treat as urgent (a clinic's "severe pain,
+    # bleeding, or an emergency", a law firm's "any complaint about how
+    # the matter is being handled").
+    escalate_immediately: list[str]
     offerings: dict
     pricing_notes: str | None
     opening_hours: dict
@@ -126,6 +134,12 @@ class AgentContext:
             lines.append(
                 "\nYou must NOT answer these - hand them to a human instead:\n"
                 + "\n".join(f"- {g}" for g in self.known_gaps)
+            )
+        if self.escalate_immediately:
+            lines.append(
+                "\nEscalate immediately, without trying to answer first, if the "
+                "message matches any of these:\n"
+                + "\n".join(f"- {e}" for e in self.escalate_immediately)
             )
         if self.pricing_notes:
             lines.append(f"\nPricing:\n{self.pricing_notes}")
@@ -260,6 +274,10 @@ async def build(
             dna.known_gaps.get("learned", [])
         )
 
+    escalate_immediately = (
+        verticals.get(business.vertical).get("escalate_immediately", []) if business else []
+    )
+
     availability_text: str | None = None
     if business and verticals.has_capability(business.vertical, "scheduling"):
         doctors = (
@@ -353,6 +371,7 @@ async def build(
         tone=dna.tone if dna else None,
         policies=dna.policies if dna else None,
         known_gaps=gaps,
+        escalate_immediately=escalate_immediately,
         offerings=(dna.offerings if dna else {}) or {},
         pricing_notes=dna.pricing_notes if dna else None,
         opening_hours=(dna.opening_hours if dna else {}) or {},

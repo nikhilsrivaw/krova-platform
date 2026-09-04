@@ -19,5 +19,10 @@
     "Where are you located?",
     "How much does it cost?",
     "Are you available on <date>?"
+  ],
+  "escalate_immediately": [
+    "Any complaint about the business, its product, or its service",
+    "Any request for a refund, discount, or exception to a stated policy",
+    "Any message that reads as angry, threatening, or urgent"
   ]
 }

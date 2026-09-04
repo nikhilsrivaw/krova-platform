@@ -75,6 +75,13 @@ async def _business_context(business_id: uuid.UUID, db: AsyncSession) -> str:
             parts.append(dna.summary)
         if dna.pricing_notes:
             parts.append(f"Pricing: {dna.pricing_notes}")
+
+    watch_for = verticals.get(business.vertical).get("watch_for", []) if business else []
+    if watch_for:
+        parts.append(
+            "For this kind of business, pay particular attention to:\n"
+            + "\n".join(f"- {w['kind']}: {w['note']}" for w in watch_for)
+        )
     return "\n".join(parts)
 
 

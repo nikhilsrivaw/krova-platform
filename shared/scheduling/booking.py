@@ -26,6 +26,7 @@ from shared.db.models import (
     IntakeChannel,
     Property,
 )
+from shared import verticals
 from shared.scheduling import availability
 from shared.scheduling.availability import Slot
 from shared.utils.logging import get_logger
@@ -131,8 +132,22 @@ async def try_book_from_agent(
     in every case is the same: do not confirm a booking that did not happen,
     never surface an unparseable name or race as if it were the agent's own
     decision to escalate instead.
+
+    Gated on the scheduling capability here, in the one shared function,
+    rather than in each of respond.py's and pipeline.py's call sites -
+    shared/ai/agent.py's REPLY_TOOL always includes book_slot regardless of
+    vertical, so without this a non-scheduling business (a restaurant, a
+    law firm) could get a real Appointment row from a hallucinated slot the
+    model had no real availability data to build from.
     """
     if not book_slot:
+        return None
+
+    if not verticals.has_capability(business.vertical, "scheduling"):
+        logger.warning(
+            "agent returned book_slot for a non-scheduling business=%s, ignoring",
+            business.id,
+        )
         return None
 
     try:
