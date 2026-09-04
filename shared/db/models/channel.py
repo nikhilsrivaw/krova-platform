@@ -261,6 +261,16 @@ class Call(UUIDMixin, Base):
     escalated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     escalation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Written once by shared/ai/call_summary.py after the call ends - free
+    # for any call to have none of these (an analysis failure, or a call
+    # with no caller utterances at all).
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sentiment: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Free text, not an enum - a clinic's topics and a real-estate
+    # agency's topics share no fixed taxonomy.
+    topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

@@ -40,6 +40,9 @@ class UsageEventType(str, enum.Enum):
     ai_commitment_extraction = "ai_commitment_extraction"
     ai_signal_extraction = "ai_signal_extraction"
     ai_profile_compression = "ai_profile_compression"
+    # One structured outcome/sentiment/topic/summary read on a finished
+    # call - see shared/ai/call_summary.py.
+    ai_call_analysis = "ai_call_analysis"
 
     # Voice-specific, one row per cost component per call, matching the
     # breakdown already computed in relay.py rather than collapsing them

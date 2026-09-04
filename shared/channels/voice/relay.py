@@ -35,6 +35,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.ai import call_summary
 from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels.voice import outbound, plivo_client, sarvam
@@ -43,7 +44,7 @@ from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.pipeline import CallPipeline
 from shared.channels.voice.tenant import VoiceRoute, resolve
 from shared.config.settings import settings
-from shared.db.models import Call, ChannelConnection, Direction, UsageEventType
+from shared.db.models import Business, Call, ChannelConnection, Direction, UsageEventType
 from shared.db.session import AsyncSessionLocal
 from shared.utils.logging import get_logger
 
@@ -529,6 +530,16 @@ async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
                         sarvam.stt_audio_frame(_b64decode(payload))
                     )
 
+            elif event == "dtmf":
+                # Plivo's RFC-2833 keypress event, delivered over this same
+                # socket independent of the audio codec - confirmed against
+                # Plivo's own streaming docs. Only "0" (the universal "reach
+                # a person" convention) is handled; every other digit is a
+                # no-op for now, no full keypad menu.
+                digit = (message.get("dtmf") or {}).get("digit")
+                if digit == "0" and pipeline is not None:
+                    pipeline._reply_task = asyncio.create_task(pipeline.request_transfer())
+
             elif event in ("stop", "end"):
                 logger.info("call ended stream=%s", stream_id)
                 break
@@ -557,6 +568,29 @@ async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
         )
         _cleanup_tasks.add(task)
         task.add_done_callback(_cleanup_tasks.discard)
+
+        # Snapshotted into plain dicts now, not read lazily from pipeline.turns
+        # inside the detached task - pipeline is a local variable kept alive by
+        # the closure either way, but the transcript itself needs no more than
+        # its role/text, so there is nothing to gain from holding the whole
+        # object alive longer than this function's own scope.
+        transcript = (
+            [{"role": t.role, "text": t.text} for t in pipeline.turns if t.text.strip()]
+            if pipeline
+            else []
+        )
+        # A fully separate detached task from _finalise_call, not folded into
+        # it: that one records billing data, already proven correct - a bug
+        # in this new analytics path must never be able to risk it.
+        analytics_task = asyncio.create_task(
+            _analyze_call(
+                call_row_id,
+                route.business_id if route else None,
+                transcript,
+            )
+        )
+        _cleanup_tasks.add(analytics_task)
+        analytics_task.add_done_callback(_cleanup_tasks.discard)
 
 
 async def _pump_transcripts(stt_ws, pipeline: CallPipeline, prewarm_tts) -> None:
@@ -723,6 +757,67 @@ async def _finalise_call(
             await db.commit()
     except Exception:
         logger.exception("failed to close call record %s", call_row_id)
+
+
+async def _analyze_call(
+    call_row_id: uuid.UUID | None,
+    business_id: uuid.UUID | None,
+    transcript: list[dict],
+) -> None:
+    """
+    Write a structured read on how the call went - outcome, sentiment,
+    topic, a one-line summary - onto the Call row itself.
+
+    Deliberately not shared/ai/signals.py: that module looks for
+    noteworthy signals (a bug, a churn risk) and is gated to businesses
+    whose vertical declares product_feedback (today, only "startup") -
+    the wrong shape and the wrong scope for "how did this call go",
+    which applies to every call on every vertical, not just ones that
+    happen to contain a signal.
+
+    Runs detached, same reasoning as _finalise_call: a caller hanging up
+    must not block or be blocked by this.
+    """
+    if call_row_id is None or not transcript:
+        return
+    try:
+        business_name = None
+        async with AsyncSessionLocal() as db:
+            if business_id is not None:
+                business = await db.get(Business, business_id)
+                business_name = business.name if business is not None else None
+
+            result = await call_summary.summarize(
+                transcript, business_name=business_name
+            )
+            if result is None:
+                return
+
+            call_row = await db.get(Call, call_row_id)
+            if call_row is None:
+                return
+
+            call_row.outcome = result.outcome
+            call_row.sentiment = result.sentiment
+            call_row.topic = result.topic
+            call_row.summary = result.summary
+
+            if business_id is not None:
+                usage.record(
+                    business_id=business_id,
+                    event_type=UsageEventType.ai_call_analysis,
+                    channel="voice",
+                    quantity=1,
+                    unit="call",
+                    krova_cost_paise=result.cost_paise,
+                    source_type="call",
+                    source_id=call_row_id,
+                    db=db,
+                )
+
+            await db.commit()
+    except Exception:
+        logger.exception("failed to analyze call %s", call_row_id)
 
 
 async def _safe_close(ws) -> None:

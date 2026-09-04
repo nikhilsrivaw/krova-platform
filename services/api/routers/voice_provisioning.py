@@ -485,6 +485,12 @@ class CallLogOut(BaseModel):
     cost_breakdown: dict
     hangup_cause: str | None
     started_at: str
+    escalated: bool
+    escalation_reason: str | None
+    outcome: str | None
+    sentiment: str | None
+    topic: str | None
+    summary: str | None
 
 
 @router.get("/logs", response_model=list[CallLogOut])
@@ -536,6 +542,12 @@ async def call_logs(
             cost_breakdown=c.cost_breakdown or {},
             hangup_cause=c.hangup_cause,
             started_at=c.started_at.isoformat(),
+            escalated=c.escalated,
+            escalation_reason=c.escalation_reason,
+            outcome=c.outcome,
+            sentiment=c.sentiment,
+            topic=c.topic,
+            summary=c.summary,
         )
         for c in rows
     ]

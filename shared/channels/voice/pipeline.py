@@ -384,6 +384,49 @@ class CallPipeline:
             db=self.db,
         )
 
+    async def request_transfer(self) -> None:
+        """
+        The caller pressed the keypad's escape-hatch digit (0) asking for a
+        person, independent of anything the AI itself decided - Plivo
+        delivers DTMF over this same relay socket (RFC-2833, out of band
+        from the audio codec), confirmed against Plivo's own streaming
+        docs. Every enterprise IVR keeps this safety net; until now a
+        caller had no way out except talking to the agent.
+
+        Reuses _barge_in() rather than duplicating its silence-then-cancel-
+        then-patch-transcript ordering - a caller pressing 0 mid-reply
+        should stop hearing the AI exactly the same way a caller talking
+        over it does. If nothing was playing this is close to a no-op.
+
+        Reuses _try_transfer() (the same Live Call Modification call the
+        AI's own escalate path already makes) rather than a second transfer
+        mechanism - one way to bridge a call, two ways to trigger it.
+        """
+        await self._barge_in()
+
+        if self.call_row_id is not None:
+            call_row = await self.db.get(Call, self.call_row_id)
+            if call_row is not None:
+                call_row.escalated = True
+                call_row.escalation_reason = "Caller pressed 0 to reach a person"
+
+        if self.route.staff_phone_number and await self._try_transfer():
+            await self._say_stream(
+                _single_chunk(
+                    "Let me connect you to someone who can help with that right now."
+                ),
+                record=True,
+            )
+            return
+
+        await self._say_stream(
+            _single_chunk(
+                "There's no one else available to transfer you to right now, "
+                "but I'll make sure someone follows up with you."
+            ),
+            record=True,
+        )
+
     async def _try_transfer(self) -> bool:
         """
         Ask Plivo to bridge this live call to the business's configured
