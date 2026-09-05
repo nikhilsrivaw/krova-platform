@@ -44,6 +44,11 @@ logger = get_logger(__name__)
 # created here - Krova cannot approve a template on a business's behalf.
 CONFIRMATION_TEMPLATE_NAME = "appointment_confirmed"
 REMINDER_TEMPLATE_NAME = "appointment_reminder"
+# Chronic-care recall (care_recall capability) and OPD queue check-in
+# (opd_queue capability) - both proactive, both outside the 24h window,
+# both go through the same approved-template mechanics as the two above.
+RECALL_TEMPLATE_NAME = "recall_reminder"
+QUEUE_CHECKIN_TEMPLATE_NAME = "queue_checkin_confirmation"
 
 
 async def _send(
@@ -153,4 +158,35 @@ async def send_reminder(
         template_name=REMINDER_TEMPLATE_NAME,
         body_params=[doctor.name, when],
         plain_text=f"Reminder: your appointment with {doctor.name} is {when}.",
+    )
+
+
+async def send_recall_reminder(
+    db: AsyncSession, *, business: Business, customer: Customer,
+) -> bool:
+    """
+    Send the recall_reminder template for a promised follow-up whose due
+    date has arrived - care_recall capability.
+
+    Deliberately generic: no condition, diagnosis, or drug name, per
+    clinic.json's policy - the template text itself must stay this way too,
+    since Meta reviews and locks the approved template's wording.
+    """
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=RECALL_TEMPLATE_NAME,
+        body_params=[business.name],
+        plain_text=f"Reminder from {business.name}: it's time for your scheduled follow-up. Reply or call us to book a convenient time.",
+    )
+
+
+async def send_queue_checkin(
+    db: AsyncSession, *, business: Business, customer: Customer, queue_number: int,
+) -> bool:
+    """Send the queue_checkin_confirmation template on OPD check-in - opd_queue capability."""
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=QUEUE_CHECKIN_TEMPLATE_NAME,
+        body_params=[str(queue_number), business.name],
+        plain_text=f"You're #{queue_number} in line at {business.name}. We'll notify you as your turn nears.",
     )

@@ -4,6 +4,7 @@ from shared.db.base import Base
 from shared.db.models.billing import UsageEvent, UsageEventType
 from shared.db.models.canned_response import CannedResponse
 from shared.db.models.case import Case, CaseStatus
+from shared.db.models.claim import ClaimStatus, InsuranceClaim
 from shared.db.models.campaign import (
     Audience,
     Campaign,
@@ -53,6 +54,8 @@ from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSo
 from shared.db.models.number_request import NumberRequest, NumberRequestStatus, NumberRequestType
 from shared.db.models.order import Order, OrderStatus, StoreConnection
 from shared.db.models.property import ListingType, Property, PropertyStatus
+from shared.db.models.queue import QueueEntry, QueueStatus
+from shared.db.models.shift import Shift, ShiftSession
 from shared.db.models.scheduling import (
     Appointment,
     AppointmentStatus,
@@ -92,6 +95,7 @@ __all__ = [
     "CannedResponse",
     "Channel",
     "ChannelConnection",
+    "ClaimStatus",
     "Commitment",
     "CommitmentDirection",
     "CommitmentKind",
@@ -111,6 +115,7 @@ __all__ = [
     "FlowSendLog",
     "FlowStatus",
     "IdentityKind",
+    "InsuranceClaim",
     "IntakeChannel",
     "Insight",
     "Job",
@@ -129,7 +134,11 @@ __all__ = [
     "OrderStatus",
     "Property",
     "PropertyStatus",
+    "QueueEntry",
+    "QueueStatus",
     "RefreshToken",
+    "Shift",
+    "ShiftSession",
     "StoreConnection",
     "TemplateCategory",
     "TemplateStatus",

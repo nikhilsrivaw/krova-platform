@@ -126,6 +126,14 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Stamped by a proactive reminder sweep (shared/scheduling/recall.py) so a
+    # commitment whose due date has passed is never nudged twice. Generic,
+    # not clinic-specific - any vertical's future recall-style reminder can
+    # reuse it, same as Appointment's reminder_24h_sent_at/reminder_2h_sent_at.
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     __table_args__ = (
         # The ledger's main query: what is open and overdue, soonest first.
         Index("idx_commitments_open", "business_id", "status", "due_at"),

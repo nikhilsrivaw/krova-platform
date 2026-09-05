@@ -140,6 +140,12 @@ class Business(UUIDMixin, TimestampMixin, Base):
 
     settings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
+    # Opaque, rotatable, public - the identifier a kiosk check-in page uses
+    # to resolve which business it belongs to, with no login involved. Null
+    # means kiosk check-in is off for this business. Regenerating this value
+    # is how a leaked/shared kiosk link gets revoked.
+    kiosk_token: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+
     members: Mapped[list["BusinessMember"]] = relationship(
         back_populates="business", cascade="all, delete-orphan"
     )

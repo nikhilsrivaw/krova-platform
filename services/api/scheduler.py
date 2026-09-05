@@ -135,6 +135,42 @@ async def send_appointment_reminders() -> None:
         logger.exception("appointment reminder job failed")
 
 
+async def send_due_recalls() -> None:
+    """
+    Send every chronic-care recall reminder currently due - care_recall
+    capability. See shared/scheduling/recall.py.
+    """
+    from shared.db.session import AsyncSessionLocal
+    from shared.scheduling import recall
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await recall.send_due_recalls(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s chronic-care recall reminder(s)", sent)
+    except Exception:
+        logger.exception("recall reminder job failed")
+
+
+async def check_clinic_commitments() -> None:
+    """
+    Scan overdue commitments for clinic businesses and surface them on the
+    daily briefing - care_recall capability. See shared/ai/recall_insights.py.
+    """
+    from shared.ai import recall_insights
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            created = await recall_insights.check_clinic_commitments(db)
+            await db.commit()
+            if created:
+                logger.info("created %s clinic overdue-commitment insight(s)", created)
+    except Exception:
+        logger.exception("clinic commitment sweep failed")
+
+
 async def check_channel_health() -> None:
     """
     Watch quality rating and sending eligibility instead of only being able
@@ -219,6 +255,25 @@ def build() -> AsyncIOScheduler:
         id="send_appointment_reminders",
         replace_existing=True,
         misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        send_due_recalls,
+        IntervalTrigger(minutes=30),
+        id="send_due_recalls",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Morning run, after the nightly analysis/profile passes so the day's
+    # briefing reflects last night's extraction - not wired to run before
+    # commitments exist to scan, same ordering reasoning as compress_profiles.
+    scheduler.add_job(
+        check_clinic_commitments,
+        CronTrigger(hour=7, minute=0, timezone=IST),
+        id="check_clinic_commitments",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     scheduler.add_job(

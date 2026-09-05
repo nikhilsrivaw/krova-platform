@@ -40,12 +40,14 @@ from shared.db.models import (
     Job,
     Message,
     MessageDraft,
+    QueueEntry,
     UsageEventType,
 )
 from shared.db import queue
 from shared.db.worker_runner import run_worker_process
 from shared.scheduling import booking as scheduling_booking
 from shared.scheduling import notify
+from shared.scheduling import queue_booking
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,6 +77,30 @@ async def _try_book(
         book_slot=proposal.book_slot,
         book_doctor=proposal.book_doctor,
         book_property=proposal.book_property,
+        business=business,
+        customer=customer,
+        intake_channel=IntakeChannel.whatsapp,
+        source_message_ids=[message.id],
+    )
+
+
+async def _try_book_token(
+    proposal: agent_module.Draft,
+    *,
+    business: Business,
+    customer: Customer,
+    message: Message,
+    db: AsyncSession,
+) -> QueueEntry | None:
+    """
+    Turn a model's token-booking decision into a real QueueEntry. Same thin-
+    wrapper shape as _try_book above, over shared/scheduling/
+    queue_booking.py's try_book_token_from_agent - shared with the voice
+    pipeline's booking path, not duplicated here.
+    """
+    return await queue_booking.try_book_token_from_agent(
+        db,
+        book_token=proposal.book_token,
         business=business,
         customer=customer,
         intake_channel=IntakeChannel.whatsapp,
@@ -194,6 +220,21 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                     db, business=business, customer=customer,
                     doctor=doctor, starts_at=appointment.starts_at,
                 )
+
+    if proposal.book_token:
+        queue_entry = await _try_book_token(proposal, business=business, customer=customer, message=message, db=db)
+        if queue_entry is None:
+            # Same reasoning as the book_slot branch above: a drafted
+            # message may already promise a token that was not actually
+            # issued (no shift open, or an unrecognised shift name) -
+            # escalate rather than send an invented queue position.
+            logger.info("book_token %s did not book, escalating instead", proposal.book_token)
+            proposal.action = "escalate"
+            proposal.message = None
+            proposal.gap = f"Could not add customer to the {proposal.book_token} queue - no shift open, or check the shift name"
+        # No separate confirmation send here - queue_booking.issue_token
+        # already fires notify.send_queue_checkin itself on success, unlike
+        # scheduling's book() which leaves the confirmation to the caller.
 
     draft = MessageDraft(
         business_id=message.business_id,

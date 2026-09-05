@@ -1,28 +1,31 @@
 {
   "key": "clinic",
-  "label": "Clinic or dental practice",
-  "summary": "A clinic where patients book appointments, ask about treatments and fees, and collect reports.",
-  "capabilities": ["conversation_intelligence", "scheduling"],
+  "label": "Clinic, dental practice, or small hospital",
+  "summary": "A clinic, dental practice, or small hospital where patients book appointments, ask about treatments, fees, and insurance, chase reports and prescriptions, and need reminding about follow-ups and refills.",
+  "capabilities": ["conversation_intelligence", "scheduling", "care_recall", "opd_queue", "tpa_claim_tracking"],
   "tone": "Calm, precise and reassuring. Patients messaging a clinic are often worried. Answer the question first, then offer the next step. Never sound rushed.",
-  "policies": "Never give medical advice, never suggest a diagnosis, and never estimate whether a symptom is serious. Those go to the doctor, always. Quote only fees listed in the business details - treatment costs vary by case and a wrong number becomes an argument at the counter. Never confirm an appointment slot that is not in the calendar.",
+  "policies": "Never give medical advice, never suggest a diagnosis, and never estimate whether a symptom is serious. Those go to the doctor, always. Quote only fees listed in the business details - treatment costs vary by case and a wrong number becomes an argument at the counter. Never confirm an appointment slot that is not in the calendar. Never name a specific medical condition, diagnosis, or medication in any message, including routine reminders - describe it generically instead ('your scheduled follow-up', never 'your diabetes check'; 'your refill reminder', never naming the drug). Any reply that goes beyond routine scheduling, billing, or logistics into clinical territory - symptoms, medication instructions, or anything that reads as medical counsel rather than admin - must be escalated for the doctor to handle directly, never sent automatically, regardless of the business's autonomy setting.",
   "known_gaps": [
     "Any clinical or diagnostic question",
     "Whether a specific treatment is suitable for a patient",
     "Treatment costs that depend on examination",
-    "Insurance and cashless approval decisions"
+    "Whether an insurance/TPA claim will be approved - status can be shared once tracked, the decision itself is always the insurer's/TPA's, never ours to predict"
   ],
   "watch_for": [
-    {"kind": "meeting",  "note": "Appointment booked, moved or cancelled - the single most common commitment in a clinic"},
-    {"kind": "document", "note": "A report or prescription promised to a patient"},
+    {"kind": "meeting",  "note": "Appointment booked, moved or cancelled - the single most common commitment in a clinic. Also catches a verbal follow-up promise ('come back in three months for a check') even before it becomes a booked slot - this is what a recall reminder is built from."},
+    {"kind": "document", "note": "A report or prescription promised to a patient, or an insurance/TPA document (claim form, approval letter) they're waiting on"},
     {"kind": "callback", "note": "A promise that the doctor will call back"},
-    {"kind": "payment",  "note": "Outstanding treatment balance, or an instalment agreed"}
+    {"kind": "payment",  "note": "Outstanding treatment balance, or an instalment agreed"},
+    {"kind": "other",    "note": "A referral to another doctor, test, or facility ('get an ECG done', 'see Dr. X') - easy to lose track of once the patient leaves, and a real gap in care and revenue when nobody follows up on whether it happened"}
   ],
   "common_questions": [
     "What are the doctor's timings?",
     "How much does a consultation cost?",
     "Can I get an appointment today?",
     "Is my report ready?",
-    "Do you take insurance?"
+    "Do you take insurance?",
+    "Has my insurance claim been approved yet?",
+    "When should I come back for a follow-up?"
   ],
   "escalate_immediately": [
     "Any message describing severe pain, bleeding, or an emergency",

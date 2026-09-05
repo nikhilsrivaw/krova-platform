@@ -53,6 +53,7 @@ from shared.db.models import (
     UsageEventType,
 )
 from shared.scheduling import booking as scheduling_booking
+from shared.scheduling import queue_booking
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -351,6 +352,48 @@ class CallPipeline:
             logger.info(
                 "voice booking succeeded call=%s appointment=%s",
                 self.provider_call_id, appointment.id,
+            )
+
+        if first.book_token:
+            business = await self.db.get(Business, self.route.business_id)
+            customer = await self.db.get(Customer, self.customer_id)
+            queue_entry = None
+            if business is not None and customer is not None and self._last_inbound_message_id is not None:
+                queue_entry = await queue_booking.try_book_token_from_agent(
+                    self.db,
+                    book_token=first.book_token,
+                    business=business,
+                    customer=customer,
+                    intake_channel=IntakeChannel.voice,
+                    source_message_ids=[self._last_inbound_message_id],
+                )
+            if queue_entry is None:
+                # Same reasoning as the book_slot branch above - the reply
+                # already generated for this turn most likely assumes
+                # success ("you're #12 in line!"). Drain the rest of the
+                # stream unspoken and say something honest instead.
+                async for _ in events:
+                    pass
+                logger.info(
+                    "voice token booking failed call=%s book_token=%s, speaking fallback instead",
+                    self.provider_call_id, first.book_token,
+                )
+                if self.call_row_id is not None:
+                    call_row = await self.db.get(Call, self.call_row_id)
+                    if call_row is not None:
+                        call_row.escalated = True
+                        call_row.escalation_reason = f"Could not add to {first.book_token} queue"
+                await self._say_stream(
+                    _single_chunk(
+                        "I wasn't able to add you to that queue right now - let "
+                        "me have someone confirm the details with you."
+                    ),
+                    record=True,
+                )
+                return
+            logger.info(
+                "voice token booking succeeded call=%s entry=%s",
+                self.provider_call_id, queue_entry.id,
             )
 
         reply_cost = {"paise": 0}

@@ -106,6 +106,20 @@ REPLY_TOOL = {
                     "and omit even here if no specific property was confirmed."
                 ),
             },
+            "book_token": {
+                "type": "string",
+                "description": (
+                    "Only for a business with an OPD queue: the exact shift name "
+                    "(e.g. 'morning', 'evening', 'emergency') from the open "
+                    "shifts you were shown, set only when the customer has just "
+                    "confirmed they want to be added to that specific open "
+                    "shift - not a doctor slot, a queue token. Omit entirely if "
+                    "no shift is currently open, or the customer has not yet "
+                    "confirmed. Never set alongside book_slot - a customer is "
+                    "either booking a doctor's calendar slot or getting a queue "
+                    "token, never both from the same message."
+                ),
+            },
         },
         "required": ["action", "reasoning", "confidence"],
     },
@@ -145,6 +159,14 @@ listed property) so it actually gets reserved - do this only once they \
 have clearly agreed to a specific slot, not while they are still asking \
 what's available.
 
+If the business details list which shifts are open right now, that list is \
+the only source of truth for a queue token - never a shift you assume is \
+running. When the customer has just confirmed they want to be added to one \
+specific open shift, set book_token to its exact name so a real token \
+actually gets issued. This is a different thing from book_slot: a token is \
+a place in a walk-in queue, not a doctor's calendar slot, and a message \
+never sets both.
+
 Use what you know about the customer. If they have an outstanding payment or \
 you promised them something, that is context worth using - naturally, not \
 mechanically.
@@ -169,14 +191,15 @@ exactly this format, nothing else, no markdown, no preamble:
 The first line is exactly one word: REPLY, ESCALATE, or NOACTION.
 
 If REPLY: optionally, one or more lines of BOOK_SLOT=<ISO 8601 datetime>, \
-BOOK_DOCTOR=<name>, BOOK_PROPERTY=<name> - following the exact same \
-booking rule already given above (only when the caller has just confirmed \
-one specific time you offered them, BOOK_DOCTOR only when more than one \
-doctor was listed, BOOK_PROPERTY only for one specific listed property \
-viewing) - then a blank line (always, whether or not you wrote any BOOK_ \
-lines), then the spoken reply itself - one short, natural sentence, the \
-way a person would actually say it out loud, not written prose. Nothing \
-after it.
+BOOK_DOCTOR=<name>, BOOK_PROPERTY=<name>, BOOK_TOKEN=<shift name> - \
+following the exact same booking rules already given above (only when the \
+caller has just confirmed one specific time you offered them, BOOK_DOCTOR \
+only when more than one doctor was listed, BOOK_PROPERTY only for one \
+specific listed property viewing, BOOK_TOKEN only for one specific open \
+shift the caller has just confirmed - never alongside BOOK_SLOT) - then a \
+blank line (always, whether or not you wrote any BOOK_ lines), then the \
+spoken reply itself - one short, natural sentence, the way a person would \
+actually say it out loud, not written prose. Nothing after it.
 
 If ESCALATE: a blank line, then one short phrase naming exactly what you \
 did not know (five words or fewer) - not a sentence, just the missing \
@@ -213,6 +236,9 @@ class ReplyStart:
     book_slot: str | None = None
     book_doctor: str | None = None
     book_property: str | None = None
+    # Set only alongside action == "reply", never alongside book_slot - see
+    # REPLY_TOOL's book_token and SYSTEM_STREAM's BOOK_TOKEN= line.
+    book_token: str | None = None
 
 
 @dataclass(slots=True)
@@ -280,6 +306,7 @@ async def stream_reply(agent_context: ctx.AgentContext):
     book_slot: str | None = None
     book_doctor: str | None = None
     book_property: str | None = None
+    book_token: str | None = None
 
     async for delta in stream:
         buffer += delta
@@ -323,10 +350,12 @@ async def stream_reply(agent_context: ctx.AgentContext):
                     book_doctor = line[len("BOOK_DOCTOR="):].strip() or None
                 elif line.startswith("BOOK_PROPERTY="):
                     book_property = line[len("BOOK_PROPERTY="):].strip() or None
+                elif line.startswith("BOOK_TOKEN="):
+                    book_token = line[len("BOOK_TOKEN="):].strip() or None
             header_done = True
             yield ReplyStart(
                 action=action, book_slot=book_slot, book_doctor=book_doctor,
-                book_property=book_property,
+                book_property=book_property, book_token=book_token,
             )
             sentence_buffer = message_start.lstrip("\n")
             continue
@@ -395,6 +424,10 @@ class Draft:
     # for a business with property_listings. Matched by title the same way
     # book_doctor is matched by name; unset for every other vertical.
     book_property: str | None = None
+    # Which shift a queue token was issued for - see REPLY_TOOL's book_token.
+    # Never set alongside book_slot - a message is booking a doctor's
+    # calendar slot or getting a queue token, never both.
+    book_token: str | None = None
 
 
 async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) -> Draft:
@@ -474,6 +507,7 @@ async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) ->
         book_slot=(result.get("book_slot") or "").strip() or None if action == "reply" else None,
         book_doctor=(result.get("book_doctor") or "").strip() or None if action == "reply" else None,
         book_property=(result.get("book_property") or "").strip() or None if action == "reply" else None,
+        book_token=(result.get("book_token") or "").strip() or None if action == "reply" else None,
     )
 
 

@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -30,6 +30,7 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.db.models import (
     Commitment,
     CommitmentDirection,
+    CommitmentKind,
     CommitmentStatus,
     Customer,
     CustomerIdentity,
@@ -39,6 +40,7 @@ from shared.db.models import (
     TagStatus,
 )
 from shared.identity import importer
+from shared.reports import tally_export
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -424,6 +426,55 @@ async def import_customers(
             )
             for r in result.rows
         ],
+    )
+
+
+@router.get("/export/tally")
+async def export_tally_receipts(
+    current_user: CurrentUserDep,
+    db: DbDep,
+    date_from: datetime | None = Query(default=None, alias="from"),
+    date_to: datetime | None = Query(default=None, alias="to"),
+) -> Response:
+    """
+    Settled payments as a Tally-importable Receipt Voucher XML file, for
+    handing to a CA. Scope is deliberately narrow - see
+    shared/reports/tally_export.py's own docstring for why this covers
+    payments received only, not outstanding balances or expenses.
+
+    Import the downloaded file into Tally once per date range - re-importing
+    the same range creates duplicate vouchers, Tally has no dedupe for this.
+    """
+    conditions = [
+        Commitment.business_id == current_user.business,
+        Commitment.kind == CommitmentKind.payment,
+        Commitment.direction == CommitmentDirection.they_owe,
+        Commitment.status == CommitmentStatus.met,
+    ]
+    if date_from:
+        conditions.append(Commitment.resolved_at >= date_from)
+    if date_to:
+        conditions.append(Commitment.resolved_at <= date_to)
+
+    rows = (
+        await db.execute(
+            select(Commitment).where(*conditions).order_by(Commitment.resolved_at.asc())
+        )
+    ).scalars().all()
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No settled payments in this range")
+
+    customer_ids = {c.customer_id for c in rows}
+    customer_rows = (
+        await db.execute(select(Customer).where(Customer.id.in_(customer_ids)))
+    ).scalars().all()
+    customers = {c.id: c for c in customer_rows}
+
+    xml_bytes = tally_export.build_tally_receipts_xml(list(rows), customers)
+    return Response(
+        content=xml_bytes,
+        media_type="application/xml",
+        headers={"Content-Disposition": "attachment; filename=krova_tally_receipts.xml"},
     )
 
 

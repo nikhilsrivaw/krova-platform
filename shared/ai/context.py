@@ -38,12 +38,14 @@ from shared.db.models import (
     CustomerIntelligence,
     Direction,
     Doctor,
+    InsuranceClaim,
     KnowledgeItem,
     Message,
     Order,
     Property,
 )
 from shared.scheduling import availability as scheduling_availability
+from shared.scheduling import queue_booking
 
 # Doctors listed per reply, when the business has the scheduling capability.
 # Bounded deliberately - this sits on the same latency-sensitive path as the
@@ -105,6 +107,16 @@ class AgentContext:
     # this customer yet". This is the customer's own viewing history, not
     # the agency's inventory - see MAX_PROPERTIES_IN_CONTEXT.
     properties: str | None
+    # Same convention again: rendered text, None when the vertical has no
+    # tpa_claim_tracking capability, distinct from "has it, no claim on
+    # record". Status only - never a predicted outcome, per clinic.json's
+    # known_gaps.
+    claims: str | None
+    # Same convention again: rendered text, None when the vertical has no
+    # opd_queue capability, distinct from "has it, nothing open right now".
+    # Same "only source of truth, never invent" role as availability, for
+    # book_token instead of book_slot.
+    open_shifts: str | None
 
     customer_name: str | None
     customer_summary: str | None
@@ -199,6 +211,24 @@ class AgentContext:
                 f"property from memory:\n{self.properties}"
                 if self.properties
                 else "\nNo viewing on record for this customer yet."
+            )
+        if self.claims is not None:
+            lines.append(
+                f"\nTheir insurance/TPA claim(s) - the only source of truth for "
+                f"status, never a guess, and never predict whether it will be "
+                f"approved (that decision belongs to the insurer/TPA alone):"
+                f"\n{self.claims}"
+                if self.claims
+                else "\nNo insurance/TPA claim on record for this customer yet. If "
+                "they say they submitted one, escalate rather than guessing at status."
+            )
+        if self.open_shifts is not None:
+            lines.append(
+                "\nShifts open right now (only source of truth for a queue "
+                f"token - never assume one is running):\n{self.open_shifts}"
+                if self.open_shifts
+                else "\nNo shift is open right now. Escalate a token request "
+                "rather than promising one."
             )
 
         if self.open_commitments:
@@ -364,6 +394,30 @@ async def build(
             )
         properties_text = "\n".join(property_lines)
 
+    claims_text: str | None = None
+    if business and verticals.has_capability(business.vertical, "tpa_claim_tracking"):
+        rows = (
+            await db.execute(
+                select(InsuranceClaim)
+                .where(InsuranceClaim.customer_id == customer_id)
+                .order_by(InsuranceClaim.submitted_at.desc().nullslast())
+            )
+        ).scalars().all()
+        claim_lines = []
+        for c in rows:
+            insurer = c.insurer_or_tpa_name or "insurer/TPA on file"
+            number = f" ({c.claim_number})" if c.claim_number else ""
+            status_value = c.status.value if hasattr(c.status, "value") else str(c.status)
+            claim_lines.append(f"- {insurer}{number} - status: {status_value}")
+        claims_text = "\n".join(claim_lines)
+
+    open_shifts_text: str | None = None
+    if business and verticals.has_capability(business.vertical, "opd_queue"):
+        summary = await queue_booking.open_shift_summary(db, business_id=business_id)
+        open_shifts_text = "\n".join(
+            f"- {shift.value}: {count} waiting" for shift, count in summary
+        )
+
     return AgentContext(
         business_name=business.name if business else "this business",
         vertical=business.vertical if business else "general",
@@ -379,6 +433,8 @@ async def build(
         cases=cases_text,
         orders=orders_text,
         properties=properties_text,
+        claims=claims_text,
+        open_shifts=open_shifts_text,
         knowledge=[
             {
                 "title": k.title,
