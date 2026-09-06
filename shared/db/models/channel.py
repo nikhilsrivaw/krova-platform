@@ -44,6 +44,10 @@ class Channel(str, enum.Enum):
     instagram = "instagram"
     email = "email"
     voice = "voice"
+    # An embeddable website chat widget - see shared/channels/web/. Answered
+    # synchronously within the HTTP request (mirrors voice's live-call
+    # pattern), never through the async draft-queue WhatsApp/Instagram use.
+    web = "web"
 
 
 class ConnectionStatus(str, enum.Enum):

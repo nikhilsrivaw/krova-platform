@@ -59,6 +59,7 @@ class IntakeChannel(str, enum.Enum):
     voice = "voice"
     whatsapp = "whatsapp"
     manual = "manual"  # entered by staff directly, e.g. a walk-in
+    web = "web"  # the website chat widget - see shared/channels/web/
 
 
 class Department(UUIDMixin, TimestampMixin, Base):

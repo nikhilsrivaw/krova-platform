@@ -70,6 +70,7 @@ from shared.db.models.template import (
     TemplateCategory,
     TemplateStatus,
 )
+from shared.db.models.web_widget import WebSession, WebWidgetConfig
 
 __all__ = [
     "Base",
@@ -147,5 +148,7 @@ __all__ = [
     "User",
     "VoiceProvisioning",
     "VoiceProvisioningStatus",
+    "WebSession",
+    "WebWidgetConfig",
     "WhatsAppFlow",
 ]

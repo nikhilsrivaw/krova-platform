@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from services.api import voice_proxy
+from services.api.widget_cors import WidgetCORSMiddleware
 from services.api.routers import (
     account,
     analytics,
@@ -45,6 +46,8 @@ from services.api.routers import (
     templates,
     voice_provisioning,
     webhooks,
+    widget,
+    widget_asset,
 )
 from shared.config.settings import settings
 from shared.db.session import check_db_connection, get_engine
@@ -106,6 +109,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Added after the blanket CORSMiddleware above so it wraps outside it
+# (Starlette applies middleware outside-in in reverse add order) and
+# handles /api/v1/widget/* preflight/CORS itself, before the blanket
+# middleware's own static origin list ever sees a widget request - see
+# widget_cors.py's own docstring for why this can't just be one more
+# origin in that static list.
+app.add_middleware(WidgetCORSMiddleware)
+
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
@@ -145,6 +156,7 @@ app.include_router(signals.router, prefix=API_PREFIX)
 app.include_router(queue.router, prefix=API_PREFIX)
 app.include_router(insurance_claims.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
+app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)
 app.include_router(flows.router, prefix=API_PREFIX)
@@ -160,6 +172,11 @@ app.include_router(webhooks.router)
 # and a short path is what gets pasted into their settings.
 app.include_router(onboarding.router)
 app.include_router(dashboard.router)
+
+# The widget's own JS bundle sits at the root too, same reasoning as
+# onboarding above - a short, memorable URL is what gets pasted into a
+# clinic's own <script src> tag.
+app.include_router(widget_asset.router)
 
 # Voice runs as its own real process (services/voice/main.py, port 8100) -
 # a call holds its WebSocket open for the call's length and cannot share a

@@ -477,6 +477,114 @@ async def build(
     )
 
 
+async def build_anonymous(
+    business_id: uuid.UUID, recent: list[dict], db: AsyncSession
+) -> AgentContext:
+    """
+    The same assembly as build(), for a visitor who is not a Customer yet -
+    the website widget's Tier 1 (anonymous knowledge Q&A), see shared/
+    channels/web/. A new function rather than an optional customer_id on
+    build() itself: every customer-scoped block there (cases/orders/
+    properties/claims, messages, commitments, identities) assumes a real
+    customer_id to query by, and threading None through each of those
+    would touch a function every other channel already depends on working
+    exactly as it does today - not worth the risk for one new caller.
+
+    Only the genuinely business-scoped blocks apply here (knowledge,
+    policies, known_gaps, escalate_immediately, availability, open_shifts -
+    none of these are keyed by customer_id in build() either, confirmed by
+    reading it). Everything customer-specific renders as the same "no
+    capability"/empty state build() already uses for a vertical a business
+    doesn't have - accurate here too, since there is no customer record to
+    have anything against yet.
+
+    recent is the widget's own in-session transcript (not a Message-table
+    query - there is nothing to query before a real Customer exists),
+    supplied by the caller in the exact shape AgentContext.recent expects.
+    """
+    business = await db.get(Business, business_id)
+    dna = await db.get(BusinessDNA, business_id)
+
+    knowledge = await db.execute(
+        select(KnowledgeItem)
+        .where(
+            KnowledgeItem.business_id == business_id,
+            KnowledgeItem.active == True,  # noqa: E712
+        )
+        .order_by(KnowledgeItem.kind)
+    )
+    knowledge_items = list(knowledge.scalars().all())
+
+    gaps = []
+    if dna and isinstance(dna.known_gaps, dict):
+        gaps = list(dna.known_gaps.get("from_template", [])) + list(
+            dna.known_gaps.get("learned", [])
+        )
+
+    escalate_immediately = (
+        verticals.get(business.vertical).get("escalate_immediately", []) if business else []
+    )
+
+    availability_text: str | None = None
+    if business and verticals.has_capability(business.vertical, "scheduling"):
+        doctors = (
+            await db.execute(
+                select(Doctor)
+                .where(Doctor.business_id == business_id, Doctor.active == True)  # noqa: E712
+                .limit(MAX_DOCTORS_IN_CONTEXT)
+            )
+        ).scalars().all()
+        doctor_lines = []
+        for doctor in doctors:
+            slots = await scheduling_availability.next_open_slots(
+                db, business=business, doctor=doctor, count=3
+            )
+            times = ", ".join(s.starts_at.isoformat() for s in slots)
+            doctor_lines.append(f"- {doctor.name}: {times or 'nothing free in the next two weeks'}")
+        availability_text = "\n".join(doctor_lines)
+
+    open_shifts_text: str | None = None
+    if business and verticals.has_capability(business.vertical, "opd_queue"):
+        summary = await queue_booking.open_shift_summary(db, business_id=business_id)
+        open_shifts_text = "\n".join(
+            f"- {shift.value}: {count} waiting" for shift, count in summary
+        )
+
+    return AgentContext(
+        business_name=business.name if business else "this business",
+        vertical=business.vertical if business else "general",
+        dna_summary=dna.summary if dna else None,
+        tone=dna.tone if dna else None,
+        policies=dna.policies if dna else None,
+        known_gaps=gaps,
+        escalate_immediately=escalate_immediately,
+        offerings=(dna.offerings if dna else {}) or {},
+        pricing_notes=dna.pricing_notes if dna else None,
+        opening_hours=(dna.opening_hours if dna else {}) or {},
+        availability=availability_text,
+        cases=None,
+        orders=None,
+        properties=None,
+        claims=None,
+        open_shifts=open_shifts_text,
+        knowledge=[
+            {
+                "title": k.title,
+                "kind": k.kind.value if hasattr(k.kind, "value") else str(k.kind),
+                "content": k.content,
+            }
+            for k in knowledge_items
+        ],
+        customer_name=None,
+        customer_summary=None,
+        customer_since=None,
+        identities=[],
+        recent=recent,
+        open_commitments=[],
+        context_message_ids=[],
+    )
+
+
 def now_line() -> str:
     """Today's date, so the agent can reason about 'Friday' and 'next week'."""
     return datetime.now(timezone.utc).strftime("%A, %d %B %Y")

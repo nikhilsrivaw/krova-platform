@@ -127,9 +127,11 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     # the instant the caller finished talking - it cannot pause mid-call for
     # a human to approve a draft. Queuing one here would leave a stale
     # "pending" card in the approvals screen for a conversation that is
-    # already over.
+    # already over. The website widget (channel=web) already got its reply
+    # synchronously too, in the same HTTP request that ingested this
+    # message - see shared/channels/web/reply.py - for the identical reason.
     channel = message.channel.value if hasattr(message.channel, "value") else message.channel
-    if channel == "voice":
+    if channel in ("voice", "web"):
         return None
 
     customer = await db.get(Customer, message.customer_id)
