@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.db.models import Business, Customer, IntakeChannel, QueueEntry, QueueStatus, Shift, ShiftSession
+from shared.integrations import google_calendar
 from shared.scheduling import queue_booking
 from shared.utils.logging import get_logger
 
@@ -252,4 +253,13 @@ async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user
         entry.completed_at = now
 
     await db.flush()
+
+    if body.status == QueueStatus.cancelled and entry.google_calendar_event_id:
+        business = await db.get(Business, entry.business_id)
+        if business is not None:
+            try:
+                await google_calendar.sync_queue_entry(db, business=business, entry=entry, action="cancel")
+            except Exception:
+                logger.exception("calendar cancel-sync failed for queue entry=%s", entry.id)
+
     return _out(entry)

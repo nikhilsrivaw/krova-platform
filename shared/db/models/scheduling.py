@@ -256,6 +256,12 @@ class Appointment(UUIDMixin, TimestampMixin, Base):
         ARRAY(PgUUID(as_uuid=True)), nullable=True
     )
 
+    # Set once shared/integrations/google_calendar.py successfully creates
+    # this appointment's matching event - null when there's no connected
+    # calendar, or sync hasn't run yet. One-way sync (Krova -> Google only),
+    # so this is the only state that needs tracking.
+    google_calendar_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     __table_args__ = (
         Index("idx_appointments_business", "business_id"),
         Index("idx_appointments_customer", "customer_id"),

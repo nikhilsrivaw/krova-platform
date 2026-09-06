@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # Instagram webhook signature check fail.
     meta_instagram_app_id: str = Field(default="", alias="META_INSTAGRAM_APP_ID")
     meta_instagram_app_secret: str = Field(default="", alias="META_INSTAGRAM_APP_SECRET")
+
+    # Google Calendar sync - a business's own OAuth Client, created once in
+    # Google Cloud Console (Calendar API enabled + an OAuth consent screen).
+    # Same "code ships now, feature works once this is set" pattern as the
+    # Meta credentials above - a real-world setup step, not a code blocker.
+    google_calendar_client_id: str = Field(default="", alias="GOOGLE_CALENDAR_CLIENT_ID")
+    google_calendar_client_secret: str = Field(default="", alias="GOOGLE_CALENDAR_CLIENT_SECRET")
+    google_calendar_redirect_uri: str = Field(default="", alias="GOOGLE_CALENDAR_REDIRECT_URI")
     # Must match, character for character, what is registered in Meta's
     # dashboard as this app's OAuth Redirect URI - the token exchange call
     # is rejected otherwise, and the two are configured completely separately.

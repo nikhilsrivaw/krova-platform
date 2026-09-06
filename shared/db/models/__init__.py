@@ -28,6 +28,7 @@ from shared.db.models.channel import (
     VoiceProvisioning,
     VoiceProvisioningStatus,
 )
+from shared.db.models.integrations import CalendarConnection, OutboundWebhook, WebhookEventType
 from shared.db.models.identity import (
     Business,
     BusinessMember,
@@ -86,6 +87,7 @@ __all__ = [
     "BusinessMember",
     "BusinessRole",
     "Call",
+    "CalendarConnection",
     "CallCampaign",
     "CallCampaignRecipient",
     "CallCampaignRecipientStatus",
@@ -133,6 +135,7 @@ __all__ = [
     "MessageTemplate",
     "Order",
     "OrderStatus",
+    "OutboundWebhook",
     "Property",
     "PropertyStatus",
     "QueueEntry",
@@ -150,5 +153,6 @@ __all__ = [
     "VoiceProvisioningStatus",
     "WebSession",
     "WebWidgetConfig",
+    "WebhookEventType",
     "WhatsAppFlow",
 ]

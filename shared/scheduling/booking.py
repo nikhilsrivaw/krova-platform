@@ -25,8 +25,10 @@ from shared.db.models import (
     Doctor,
     IntakeChannel,
     Property,
+    WebhookEventType,
 )
 from shared import verticals
+from shared.integrations import google_calendar, webhooks
 from shared.scheduling import availability
 from shared.scheduling.availability import Slot
 from shared.utils.logging import get_logger
@@ -99,6 +101,32 @@ async def book(
         "appointment booked id=%s doctor=%s channel=%s",
         appointment.id, doctor_id, intake_channel.value,
     )
+
+    # Best-effort side channels - a business's own calendar/webhook, never
+    # allowed to undo or block the booking itself. Same "log and move on"
+    # contract shared/scheduling/queue_booking.py's own notify call already
+    # follows for the identical reason.
+    business = await db.get(Business, business_id)
+    if business is not None:
+        try:
+            await google_calendar.sync_appointment(db, business=business, appointment=appointment, action="upsert")
+        except Exception:
+            logger.exception("calendar sync failed for appointment=%s", appointment.id)
+        try:
+            await webhooks.dispatch_event(
+                db, business_id=business_id, event_type=WebhookEventType.appointment_booked.value,
+                payload={
+                    "appointment_id": str(appointment.id),
+                    "customer_id": str(appointment.customer_id),
+                    "doctor_id": str(doctor_id),
+                    "starts_at": appointment.starts_at.isoformat(),
+                    "ends_at": appointment.ends_at.isoformat(),
+                    "intake_channel": intake_channel.value,
+                },
+            )
+        except Exception:
+            logger.exception("webhook dispatch failed for appointment=%s", appointment.id)
+
     return appointment
 
 
@@ -230,6 +258,21 @@ async def cancel(db: AsyncSession, *, appointment: Appointment, reason: str | No
         appointment.notes = f"{appointment.notes}\nCancelled: {reason}" if appointment.notes else f"Cancelled: {reason}"
     await db.flush()
     logger.info("appointment cancelled id=%s", appointment.id)
+
+    business = await db.get(Business, appointment.business_id)
+    if business is not None:
+        try:
+            await google_calendar.sync_appointment(db, business=business, appointment=appointment, action="cancel")
+        except Exception:
+            logger.exception("calendar cancel-sync failed for appointment=%s", appointment.id)
+        try:
+            await webhooks.dispatch_event(
+                db, business_id=appointment.business_id, event_type=WebhookEventType.appointment_cancelled.value,
+                payload={"appointment_id": str(appointment.id), "reason": reason},
+            )
+        except Exception:
+            logger.exception("webhook dispatch failed for cancelled appointment=%s", appointment.id)
+
     return appointment
 
 

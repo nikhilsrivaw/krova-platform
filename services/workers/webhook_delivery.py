@@ -1,0 +1,79 @@
+"""
+Delivers one outbound webhook per job - the Zapier-shaped "send booking
+events wherever a business already points a catch-hook" integration.
+
+Same claim-handle-commit shape as every other worker (see
+shared/db/worker_runner.py). A slow or dead endpoint on a business's own
+side must never affect Krova's own request path - that's the whole reason
+this is a queued job and not an inline httpx call at booking time.
+"""
+
+import json
+import uuid
+from datetime import datetime, timezone
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.db import queue
+from shared.db.models import Job, OutboundWebhook
+from shared.db.worker_runner import run_worker_process
+from shared.integrations import webhooks
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+QUEUE = webhooks.QUEUE
+
+_TIMEOUT = 15.0
+
+
+async def _run_job(job: Job, db: AsyncSession) -> None:
+    payload = job.payload or {}
+    webhook_id = payload.get("webhook_id")
+    if not webhook_id:
+        await queue.fail(job, "job payload has no webhook_id", db)
+        return
+
+    webhook = await db.get(OutboundWebhook, uuid.UUID(webhook_id))
+    if webhook is None or not webhook.active:
+        # Deleted or disabled since this was queued - nothing to deliver.
+        await queue.complete(job, db)
+        return
+
+    body = json.dumps({
+        "event_type": payload.get("event_type"),
+        "data": payload.get("payload"),
+    }).encode()
+    signature = webhooks.sign(webhook.secret, body)
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            response = await client.post(
+                webhook.target_url,
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Krova-Signature-256": f"sha256={signature}",
+                },
+            )
+    except httpx.HTTPError as exc:
+        webhook.failure_count += 1
+        webhook.last_delivery_status = f"error: {type(exc).__name__}"
+        await queue.fail(job, f"{type(exc).__name__}: {exc}", db)
+        return
+
+    webhook.last_delivery_at = datetime.now(timezone.utc)
+
+    if 200 <= response.status_code < 300:
+        webhook.failure_count = 0
+        webhook.last_delivery_status = "ok"
+        await queue.complete(job, db)
+    else:
+        webhook.failure_count += 1
+        webhook.last_delivery_status = f"http {response.status_code}"
+        await queue.fail(job, f"target returned {response.status_code}", db)
+
+
+if __name__ == "__main__":
+    run_worker_process(QUEUE, _run_job, worker_name="webhook_delivery")

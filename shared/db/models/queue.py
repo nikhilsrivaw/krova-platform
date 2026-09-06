@@ -14,7 +14,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ARRAY, Date, DateTime, ForeignKey, Index, Integer, UniqueConstraint
+from sqlalchemy import ARRAY, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -78,6 +78,10 @@ class QueueEntry(UUIDMixin, TimestampMixin, Base):
     checked_in_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     called_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Same purpose as Appointment.google_calendar_event_id - set once this
+    # token has a matching Google Calendar event.
+    google_calendar_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     __table_args__ = (
         # The live-list query: today's queue for a doctor, in order.

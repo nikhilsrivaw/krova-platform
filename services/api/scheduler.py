@@ -40,6 +40,22 @@ logger = get_logger(__name__)
 IST = "Asia/Kolkata"
 
 
+async def refresh_calendar_tokens() -> None:
+    """
+    Renew Google Calendar access tokens before they lapse - separate job
+    from refresh_channel_tokens above (a different table, a different
+    provider's token endpoint), not a branch added to that one.
+    """
+    from shared.db.session import AsyncSessionLocal
+    from shared.integrations import google_calendar
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await google_calendar.refresh_expiring(db)
+    except Exception:
+        logger.exception("calendar token refresh job failed")
+
+
 async def refresh_channel_tokens() -> None:
     """Renew credentials before they lapse."""
     from shared.channels.whatsapp import token_refresh
@@ -230,6 +246,14 @@ def build() -> AsyncIOScheduler:
         id="refresh_channel_tokens",
         replace_existing=True,
         # If the server was down at 3:30, still run when it comes back.
+        misfire_grace_time=6 * 3600,
+    )
+
+    scheduler.add_job(
+        refresh_calendar_tokens,
+        CronTrigger(hour=3, minute=45, timezone=IST),
+        id="refresh_calendar_tokens",
+        replace_existing=True,
         misfire_grace_time=6 * 3600,
     )
 

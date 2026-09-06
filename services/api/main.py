@@ -32,6 +32,7 @@ from services.api.routers import (
     flows,
     gmail_channel,
     insurance_claims,
+    integrations,
     kiosk,
     ledger,
     migration,
@@ -155,6 +156,7 @@ app.include_router(cases.router, prefix=API_PREFIX)
 app.include_router(signals.router, prefix=API_PREFIX)
 app.include_router(queue.router, prefix=API_PREFIX)
 app.include_router(insurance_claims.router, prefix=API_PREFIX)
+app.include_router(integrations.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)

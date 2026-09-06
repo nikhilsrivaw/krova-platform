@@ -28,7 +28,9 @@ from shared.db.models import (
     QueueStatus,
     Shift,
     ShiftSession,
+    WebhookEventType,
 )
+from shared.integrations import google_calendar, webhooks
 from shared.scheduling import notify
 from shared.utils.logging import get_logger
 
@@ -158,8 +160,9 @@ async def issue_token(
         entry.id, business_id, shift.value, entry.queue_number, intake_channel.value,
     )
 
+    business = await db.get(Business, business_id)
+
     if customer_id is not None:
-        business = await db.get(Business, business_id)
         customer = await db.get(Customer, customer_id)
         if business is not None and customer is not None:
             try:
@@ -170,6 +173,28 @@ async def issue_token(
                 # Never let a notification failure undo or block the token
                 # itself - the patient already has a real place in line.
                 logger.exception("queue check-in notification failed for entry=%s", entry.id)
+
+    # Same best-effort side channels as shared/scheduling/booking.py's
+    # book() - a business's own calendar/webhook, never allowed to undo or
+    # block a token that already has a real place in line.
+    if business is not None:
+        try:
+            await google_calendar.sync_queue_entry(db, business=business, entry=entry, action="upsert")
+        except Exception:
+            logger.exception("calendar sync failed for queue entry=%s", entry.id)
+        try:
+            await webhooks.dispatch_event(
+                db, business_id=business_id, event_type=WebhookEventType.queue_token_issued.value,
+                payload={
+                    "queue_entry_id": str(entry.id),
+                    "customer_id": str(customer_id) if customer_id else None,
+                    "shift": shift.value,
+                    "queue_number": entry.queue_number,
+                    "intake_channel": intake_channel.value,
+                },
+            )
+        except Exception:
+            logger.exception("webhook dispatch failed for queue entry=%s", entry.id)
 
     return entry
 
