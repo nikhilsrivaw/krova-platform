@@ -109,6 +109,24 @@ async def proxy_voice_outbound_hangup(request: Request) -> Response:
     return await _proxy_http(request, f"/voice/outbound-hangup{query}")
 
 
+@router.post("/voice/cod-answer")
+async def proxy_voice_cod_answer(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/cod-answer{query}")
+
+
+@router.post("/voice/cod-digits")
+async def proxy_voice_cod_digits(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/cod-digits{query}")
+
+
+@router.post("/voice/cod-hangup")
+async def proxy_voice_cod_hangup(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/cod-hangup{query}")
+
+
 @router.websocket("/voice/stream")
 async def proxy_voice_stream(websocket: WebSocket) -> None:
     """

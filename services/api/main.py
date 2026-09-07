@@ -29,6 +29,8 @@ from services.api.routers import (
     crm,
     knowledge,
     dashboard,
+    escalations,
+    export,
     flows,
     gmail_channel,
     insurance_claims,
@@ -40,6 +42,7 @@ from services.api.routers import (
     onboarding,
     orders,
     properties,
+    public_api,
     queue,
     scheduling,
     signals,
@@ -157,6 +160,9 @@ app.include_router(signals.router, prefix=API_PREFIX)
 app.include_router(queue.router, prefix=API_PREFIX)
 app.include_router(insurance_claims.router, prefix=API_PREFIX)
 app.include_router(integrations.router, prefix=API_PREFIX)
+app.include_router(public_api.router, prefix=API_PREFIX)
+app.include_router(escalations.router, prefix=API_PREFIX)
+app.include_router(export.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)

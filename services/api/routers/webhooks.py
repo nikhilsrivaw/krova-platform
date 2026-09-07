@@ -12,6 +12,7 @@ response goes out.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Header, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
@@ -25,6 +26,7 @@ from shared.channels.shopify import signature as shopify_signature
 from shared.channels.shopify import webhook as shopify_webhook
 from shared.channels.whatsapp import conversions, media, signature, webhook
 from shared.db.models import (
+    AbandonedCheckout,
     Channel,
     ChannelConnection,
     ConnectionStatus,
@@ -188,7 +190,16 @@ async def _process_instagram(raw_body: bytes) -> None:
                     text=comment.text,
                     occurred_at=comment.occurred_at,
                     display_name=comment.from_username,
-                    media={"kind": "comment", "media_id": comment.media_id},
+                    media={
+                        "kind": "comment",
+                        "media_id": comment.media_id,
+                        # The comment's own id - external_id already equals
+                        # this (see instagram/webhook.py's InboundComment)
+                        # but copied into media too since send_draft.py
+                        # needs it off the *replied-to* message, and only
+                        # media travels with a draft's in_reply_to lookup.
+                        "comment_id": comment.external_id,
+                    },
                     raw=comment.raw,
                     connection_id=connection.id,
                     db=db,
@@ -580,6 +591,7 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
                     )
                     customer_id = resolution.customer.id
 
+            is_new_order = order is None
             if order is None:
                 order = Order(
                     business_id=business_id,
@@ -592,12 +604,30 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
             elif order.customer_id is None and customer_id is not None:
                 order.customer_id = customer_id
 
+            # A real order from this customer means any cart they'd
+            # abandoned did convert after all - stops the recovery sweep
+            # re-nudging them, and this is exactly what the intent-
+            # leakage sweep (shared/care/intent_leakage.py) excludes on:
+            # a recovered checkout is not leaked intent, it converted.
+            if is_new_order and customer_id is not None:
+                open_checkouts = await db.execute(
+                    select(AbandonedCheckout).where(
+                        AbandonedCheckout.business_id == business_id,
+                        AbandonedCheckout.customer_id == customer_id,
+                        AbandonedCheckout.recovered_at.is_(None),
+                    )
+                )
+                for checkout in open_checkouts.scalars().all():
+                    checkout.recovered_at = datetime.now(timezone.utc)
+
             order.order_number = parsed.order_number
             order.status = parsed.status
             order.items = parsed.items
             order.total_paise = parsed.total_paise
             order.tracking_number = parsed.tracking_number
             order.carrier = parsed.carrier
+            order.is_cod = parsed.is_cod
+            order.shipping_pincode = parsed.shipping_pincode
             order.raw_payload = parsed.raw
 
             just_became_paid = parsed.status == "paid" and not was_already_paid
@@ -620,6 +650,125 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
     # otherwise-successful order webhook.
     if fire_conversion_for is not None:
         await _fire_purchase_conversion(business_id, *fire_conversion_for)
+
+
+@router.post("/shopify/checkouts")
+async def receive_shopify_checkout_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_shopify_hmac_sha256: str | None = Header(default=None),
+    x_shopify_shop_domain: str | None = Header(default=None),
+) -> Response:
+    """
+    checkouts/create and checkouts/update - the same StoreConnection this
+    business already registered for orders/*, since Shopify signs every
+    topic with the one app secret regardless of which topic it is. Same
+    verify-then-background-task shape as receive_shopify_order_webhook,
+    on purpose - not a second pattern for what is structurally the same
+    receiver.
+    """
+    if not x_shopify_shop_domain:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+    raw_body = await request.body()
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(StoreConnection).where(
+                StoreConnection.platform == "shopify",
+                StoreConnection.store_identifier == x_shopify_shop_domain,
+                StoreConnection.active == True,  # noqa: E712
+            )
+        )
+        connection = result.scalars().first()
+
+        if connection is None:
+            logger.warning("shopify checkout webhook for unconnected store %s", x_shopify_shop_domain)
+            return Response(status_code=status.HTTP_200_OK)
+
+        try:
+            shopify_signature.verify(
+                raw_body, x_shopify_hmac_sha256, decrypt(connection.webhook_secret)
+            )
+        except shopify_signature.InvalidSignature:
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+        business_id = connection.business_id
+
+    background_tasks.add_task(_process_shopify_checkout, raw_body, business_id)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_shopify_checkout(raw_body: bytes, business_id: uuid.UUID) -> None:
+    """Upsert one abandoned checkout. Same never-raise, log-and-return
+    contract as _process_shopify_order."""
+    import json
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("shopify checkout webhook body was not JSON (%d bytes)", len(raw_body))
+        return
+
+    parsed = shopify_webhook.parse_checkout(payload)
+    if parsed is None:
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            existing = await db.execute(
+                select(AbandonedCheckout).where(
+                    AbandonedCheckout.business_id == business_id,
+                    AbandonedCheckout.source_platform == "shopify",
+                    AbandonedCheckout.external_checkout_id == parsed.external_checkout_id,
+                )
+            )
+            checkout = existing.scalars().first()
+
+            # Same "resolve identity once, never re-resolve on update" rule
+            # as _process_shopify_order - see that function's own comment
+            # for why: a later webhook carrying a different subset of
+            # fields must not silently reassign an already-attached
+            # customer.
+            customer_id = checkout.customer_id if checkout else None
+            if customer_id is None:
+                if parsed.customer_phone:
+                    resolution = await identity_resolver.resolve(
+                        business_id, IdentityKind.phone, parsed.customer_phone, db,
+                    )
+                    customer_id = resolution.customer.id
+                elif parsed.customer_email:
+                    resolution = await identity_resolver.resolve(
+                        business_id, IdentityKind.email, parsed.customer_email, db,
+                    )
+                    customer_id = resolution.customer.id
+
+            if checkout is None:
+                checkout = AbandonedCheckout(
+                    business_id=business_id,
+                    customer_id=customer_id,
+                    source_platform="shopify",
+                    external_checkout_id=parsed.external_checkout_id,
+                    abandoned_at=parsed.abandoned_at,
+                )
+                db.add(checkout)
+            elif checkout.customer_id is None and customer_id is not None:
+                checkout.customer_id = customer_id
+
+            checkout.items = parsed.items
+            checkout.total_paise = parsed.total_paise
+            checkout.checkout_url = parsed.checkout_url
+            checkout.customer_phone = parsed.customer_phone
+            checkout.customer_email = parsed.customer_email
+            checkout.raw_payload = parsed.raw
+
+            await db.commit()
+            logger.info(
+                "shopify checkout %s business=%s", parsed.external_checkout_id, business_id,
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("failed to process shopify checkout webhook")
 
 
 async def _fire_purchase_conversion(

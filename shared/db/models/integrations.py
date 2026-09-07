@@ -59,6 +59,7 @@ class WebhookEventType(str, enum.Enum):
     appointment_booked = "appointment.booked"
     appointment_cancelled = "appointment.cancelled"
     queue_token_issued = "queue_token.issued"
+    escalation_raised = "escalation.raised"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):
@@ -81,4 +82,47 @@ class OutboundWebhook(UUIDMixin, TimestampMixin, Base):
     last_delivery_status: Mapped[str | None] = mapped_column(String(255), nullable=True)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # "raw" (default) sends the plain event payload unchanged - today's
+    # exact behavior. "slack"/"teams" wrap the same payload into the
+    # {"text": "..."} shape those platforms' own incoming webhooks expect
+    # - see services/workers/webhook_delivery.py for where this branches.
+    format: Mapped[str] = mapped_column(String(10), nullable=False, default="raw")
+
     __table_args__ = (Index("idx_outbound_webhooks_business", "business_id"),)
+
+
+class ApiKey(UUIDMixin, TimestampMixin, Base):
+    """
+    A business's own systems calling Krova directly - see
+    services/api/routers/public_api.py - not the embeddable widget
+    (WebWidgetConfig.site_key is
+    public-by-design and domain-scoped; this is a bearer credential that
+    must never appear in client-side code and has no domain to check).
+
+    Only a hash is stored - a raw API key only ever needs comparing on the
+    request path, never reading back, so unlike ChannelConnection's OAuth
+    tokens (reversible, via shared.auth.encryption, because they get used
+    again against Meta/Google), a one-way hash is the simpler, correct
+    choice here. The raw key is shown exactly once, at creation - same
+    convention already established for OutboundWebhook.secret.
+    """
+
+    __tablename__ = "api_keys"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # First few characters of the raw key, stored plaintext - lets the
+    # settings UI show "krova_live_a1b2c3.." without ever being able to
+    # re-display the real key. Same convention Stripe/GitHub use.
+    key_prefix: Mapped[str] = mapped_column(String(20), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Same fixed-window shape already proven on WebWidgetConfig.
+    rate_limit_window_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rate_limit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (Index("idx_api_keys_business", "business_id"),)

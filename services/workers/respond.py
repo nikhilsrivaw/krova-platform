@@ -25,17 +25,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.ai import agent as agent_module
 from shared.ai import context as agent_context
 from shared.ai.client import AIError
+from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels.send_draft import DraftSendError, send_draft
-from shared.channels.whatsapp.client import SERVICE_WINDOW
+from shared.channels.whatsapp.client import SERVICE_WINDOW, WhatsAppClient, WhatsAppError
 from shared.db.models import (
     Appointment,
     Business,
+    Channel,
+    ChannelConnection,
+    ConnectionStatus,
     Customer,
+    CustomerIdentity,
     Direction,
     Doctor,
     DraftAction,
     DraftStatus,
+    IdentityKind,
     IntakeChannel,
     Job,
     Message,
@@ -43,6 +49,7 @@ from shared.db.models import (
     QueueEntry,
     UsageEventType,
 )
+from shared.care import cod_confirmation
 from shared.db import queue
 from shared.db.worker_runner import run_worker_process
 from shared.scheduling import booking as scheduling_booking
@@ -108,6 +115,48 @@ async def _try_book_token(
     )
 
 
+async def _try_share_catalog(*, business: Business, customer: Customer, db: AsyncSession) -> None:
+    """
+    Best-effort, never blocks or fails the reply that already sent - the
+    same "log and move on" contract every other proactive side-channel in
+    this codebase already follows (e.g. shared/scheduling/queue_booking.py's
+    own notify.send_queue_checkin call). Sends whichever catalog is
+    attached to this WABA in Meta Commerce Manager - a real, external
+    setup step for the business, not something KROVA stores or passes
+    (see WhatsAppClient.send_catalog_message's own docstring) - so this
+    fails closed, quietly, for a business that hasn't set one up yet,
+    exactly like a WhatsApp template that hasn't been approved does.
+    """
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business.id,
+                ChannelConnection.channel == Channel.whatsapp,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        return
+
+    phone = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer.id,
+                CustomerIdentity.kind == IdentityKind.phone,
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if phone is None:
+        return
+
+    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+    try:
+        await client.send_catalog_message(phone, f"Here's what's available at {business.name}:")
+    except WhatsAppError as exc:
+        logger.warning("catalog share failed business=%s: %s", business.id, exc)
+
+
 async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageDraft | None:
     """
     Read the conversation this message belongs to and propose a reply.
@@ -132,6 +181,16 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     # message - see shared/channels/web/reply.py - for the identical reason.
     channel = message.channel.value if hasattr(message.channel, "value") else message.channel
     if channel in ("voice", "web"):
+        return None
+
+    # A COD confirm/decline button tap is answered deterministically, not
+    # by the agent - see shared/care/cod_confirmation.py's own docstring.
+    # Independent of Business.autonomy, same reasoning proactive template
+    # sends already use elsewhere: this is not an LLM-drafted reply, it's
+    # a fixed local record of what the customer actually tapped.
+    cod_payload = cod_confirmation.button_payload(message)
+    if cod_payload is not None:
+        await cod_confirmation.handle(message, cod_payload, db)
         return None
 
     customer = await db.get(Customer, message.customer_id)
@@ -260,17 +319,22 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     db.add(draft)
     await db.flush()
 
-    if proposal.action == "escalate" and proposal.gap:
-        await agent_module.record_gap(message.business_id, proposal.gap, db)
+    if proposal.action == "escalate":
+        await agent_module.notify_escalation(
+            message.business_id, reason=proposal.gap or "needs review",
+            customer_id=message.customer_id, channel=channel, db=db,
+        )
+        if proposal.gap:
+            await agent_module.record_gap(message.business_id, proposal.gap, db)
 
     # `act` sends without a person - the whole point of the setting - but
     # only for a genuine reply. escalate exists precisely because the agent
     # is unsure what to say; act mode does not override that judgment, it
     # only skips the human step for replies the agent was confident enough
-    # to propose in the first place. WhatsApp only for now - send_draft
-    # (shared/channels/send_draft.py) has no Instagram path yet, and a
-    # channel != whatsapp draft is left pending for a person either way.
-    if autonomy == "act" and proposal.action == "reply" and channel == "whatsapp":
+    # to propose in the first place. WhatsApp and Instagram now both have a
+    # send_draft.py path (shared/channels/send_draft.py); any other channel
+    # is left pending for a person either way.
+    if autonomy == "act" and proposal.action == "reply" and channel in ("whatsapp", "instagram"):
         try:
             await send_draft(draft, message.business_id, db, reviewed_by_user_id=None)
         except DraftSendError as exc:
@@ -281,6 +345,9 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                 "act-mode auto-send failed for draft=%s, left pending: %s",
                 draft.id, exc,
             )
+        else:
+            if proposal.share_catalog:
+                await _try_share_catalog(business=business, customer=customer, db=db)
 
     logger.info(
         "drafted %s for business=%s customer=%s confidence=%.2f autonomy=%s status=%s",

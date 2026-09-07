@@ -55,3 +55,37 @@ class InstagramClient:
         if not external_id:
             logger.warning("instagram send returned no message id: %s", body)
         return SendResult(external_id=external_id)
+
+    async def send_private_reply(self, comment_id: str, text: str) -> SendResult:
+        """
+        Reply privately to a comment - a different Meta contract from
+        send_text above, confirmed against developers.facebook.com/docs/
+        messenger-platform/instagram/features/private-replies: the
+        recipient is `{"comment_id": ...}`, not the commenter's IGSID,
+        works only within 7 days of the comment, and Meta allows exactly
+        one such reply per comment (a second attempt returns error
+        subcode 2534014 - surfaced here as a normal InstagramSendError,
+        not specially handled). The 7-day-window check itself lives in
+        the caller (shared/channels/send_draft.py), which has the
+        comment's timestamp; this method only knows the id.
+        """
+        url = f"{settings.instagram_graph_base_url}/{self._ig_user_id}/messages"
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            res = await client.post(
+                url,
+                params={"access_token": self._token},
+                json={"recipient": {"comment_id": comment_id}, "message": {"text": text}},
+            )
+        if res.status_code != 200:
+            logger.error(
+                "instagram private reply failed ig_user_id=%s comment_id=%s status=%s body=%s",
+                self._ig_user_id, comment_id, res.status_code, res.text[:500],
+            )
+            raise InstagramSendError(
+                f"Meta rejected the private reply ({res.status_code}): {res.text[:300]}"
+            )
+        body = res.json()
+        external_id = body.get("message_id") or body.get("id") or ""
+        if not external_id:
+            logger.warning("instagram private reply returned no message id: %s", body)
+        return SendResult(external_id=external_id)

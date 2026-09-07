@@ -194,6 +194,10 @@ async def generate_reply(
         async for ev in events:
             if isinstance(ev, agent_module.ReplyDone):
                 gap = ev.gap
+        await agent_module.notify_escalation(
+            business.id, reason=gap or "needs review",
+            customer_id=customer.id if customer is not None else None, channel="web", db=db,
+        )
         if gap:
             await agent_module.record_gap(business.id, gap, db)
         reply = (
@@ -242,6 +246,9 @@ async def generate_reply(
             async for _ in events:
                 pass
             reply = "I wasn't able to lock in that exact time - someone will confirm the details with you shortly."
+            await agent_module.notify_escalation(
+                business.id, reason=f"Could not book {first.book_slot}", customer_id=customer.id, channel="web", db=db,
+            )
             await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=reply)
             return ReplyOutcome(reply_text=reply, booked=False, needs_contact=False)
         booked = True
@@ -254,6 +261,9 @@ async def generate_reply(
             async for _ in events:
                 pass
             reply = "I wasn't able to add you to that queue right now - someone will confirm the details with you shortly."
+            await agent_module.notify_escalation(
+                business.id, reason=f"Could not add to {first.book_token} queue", customer_id=customer.id, channel="web", db=db,
+            )
             await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=reply)
             return ReplyOutcome(reply_text=reply, booked=False, needs_contact=False)
         booked = True

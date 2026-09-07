@@ -192,7 +192,18 @@ def _extract_text(message: dict) -> tuple[str | None, dict]:
             return payload.get("caption"), media
 
         case "button":
-            return (message.get("button", {}) or {}).get("text"), media
+            button = message.get("button", {}) or {}
+            # `payload` is the developer-defined value baked into the
+            # template's own approved quick-reply button at registration
+            # time - stable and unique-by-design, unlike `text` (the
+            # human-readable label, which a caller must not match on for
+            # anything that needs to be reliable, since two unrelated
+            # templates could reuse the same visible label). Additive:
+            # every existing reader of this tuple's `text` half is
+            # unaffected, this only adds a new key to `media`.
+            if button.get("payload"):
+                media = {"kind": "button_reply", "payload": button.get("payload")}
+            return button.get("text"), media
 
         case "interactive":
             interactive = message.get("interactive", {}) or {}

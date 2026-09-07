@@ -221,6 +221,14 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     # promise, and it is why we can read a mixed Instagram inbox at all.
     is_private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Learned from voice (the one channel with a structured detection
+    # source - Sarvam's own per-utterance language detection, see
+    # shared/channels/voice/pipeline.py's detected_language). Read at the
+    # start of a call to seed the greeting, written back at the end if it
+    # changed - text channels already adapt reply language live per
+    # message with no need to persist a preference at all.
+    preferred_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
     assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

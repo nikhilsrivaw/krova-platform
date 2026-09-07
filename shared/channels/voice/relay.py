@@ -44,7 +44,17 @@ from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.pipeline import CallPipeline
 from shared.channels.voice.tenant import VoiceRoute, resolve
 from shared.config.settings import settings
-from shared.db.models import Business, Call, ChannelConnection, Direction, UsageEventType
+from shared.db.models import (
+    Business,
+    Call,
+    ChannelConnection,
+    Customer,
+    CustomerIdentity,
+    Direction,
+    IdentityKind,
+    UsageEventType,
+)
+from shared.identity.normalise import InvalidIdentifier, normalise
 from shared.db.session import AsyncSessionLocal
 from shared.utils.logging import get_logger
 
@@ -476,6 +486,37 @@ async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
 
                     await _warn_if_near_capacity(db)
 
+                    # A repeat caller Sarvam already correctly identified
+                    # last call gets that language back for the greeting -
+                    # the one moment real-time detection can't cover, since
+                    # nothing has been heard yet. Read-only lookup (never
+                    # resolve()'s find-or-create - a call that never speaks
+                    # a word must not create a Customer row), so a caller
+                    # with no history simply leaves this None, today's
+                    # exact behavior.
+                    known_language: str | None = None
+                    if outbound_customer_id is not None:
+                        known_customer = await db.get(Customer, outbound_customer_id)
+                        known_language = known_customer.preferred_language if known_customer else None
+                    elif from_number:
+                        try:
+                            normalised_phone = normalise(IdentityKind.phone.value, from_number)
+                        except InvalidIdentifier:
+                            normalised_phone = None
+                        if normalised_phone:
+                            existing_customer_id = (
+                                await db.execute(
+                                    select(CustomerIdentity.customer_id).where(
+                                        CustomerIdentity.business_id == route.business_id,
+                                        CustomerIdentity.kind == IdentityKind.phone,
+                                        CustomerIdentity.value == normalised_phone,
+                                    )
+                                )
+                            ).scalar_one_or_none()
+                            if existing_customer_id is not None:
+                                known_customer = await db.get(Customer, existing_customer_id)
+                                known_language = known_customer.preferred_language if known_customer else None
+
                     pipeline = CallPipeline(
                         route=route,
                         caller_phone=from_number or "unknown",
@@ -487,6 +528,7 @@ async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
                         call_row_id=call_row_id,
                         opening_line=opening_line,
                         customer_id=outbound_customer_id,
+                        detected_language=known_language,
                     )
 
                     logger.info(
@@ -564,7 +606,11 @@ async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
             _prewarmed_tts.cancel()
         agent_chars = sum(len(t.text) for t in pipeline.turns if t.role == "agent") if pipeline else 0
         task = asyncio.create_task(
-            _finalise_call(call_row_id, call_start, agent_chars)
+            _finalise_call(
+                call_row_id, call_start, agent_chars,
+                customer_id=pipeline.customer_id if pipeline else None,
+                detected_language=pipeline.detected_language if pipeline else None,
+            )
         )
         _cleanup_tasks.add(task)
         task.add_done_callback(_cleanup_tasks.discard)
@@ -669,7 +715,8 @@ async def _fetch_plivo_cdr(connection: ChannelConnection | None, call_uuid: str)
 
 
 async def _finalise_call(
-    call_row_id: uuid.UUID | None, started_at: float, agent_chars: int
+    call_row_id: uuid.UUID | None, started_at: float, agent_chars: int,
+    *, customer_id: uuid.UUID | None = None, detected_language: str | None = None,
 ) -> None:
     """
     Close the call record after the socket handler's scope may already be gone.
@@ -688,6 +735,16 @@ async def _finalise_call(
 
             call_row.ended_at = datetime.now(timezone.utc)
             call_row.duration_seconds = int(time.time() - started_at)
+
+            # The call's own language preference improves every call it
+            # is heard on, rather than being fixed once - only written
+            # when Sarvam actually detected something and it differs from
+            # what's already stored, so a call with no caller speech (e.g.
+            # an immediate hangup) leaves the existing value untouched.
+            if customer_id is not None and detected_language:
+                customer = await db.get(Customer, customer_id)
+                if customer is not None and customer.preferred_language != detected_language:
+                    customer.preferred_language = detected_language
 
             connection = (
                 await db.get(ChannelConnection, call_row.connection_id)

@@ -28,7 +28,7 @@ from shared.db.models.channel import (
     VoiceProvisioning,
     VoiceProvisioningStatus,
 )
-from shared.db.models.integrations import CalendarConnection, OutboundWebhook, WebhookEventType
+from shared.db.models.integrations import ApiKey, CalendarConnection, OutboundWebhook, WebhookEventType
 from shared.db.models.identity import (
     Business,
     BusinessMember,
@@ -46,6 +46,7 @@ from shared.db.models.intelligence import (
     CommitmentKind,
     CommitmentStatus,
     CustomerIntelligence,
+    Escalation,
     Insight,
 )
 from shared.db.models.draft import DraftAction, DraftStatus, MessageDraft
@@ -53,7 +54,7 @@ from shared.db.models.flow import FlowSendLog, FlowStatus, WhatsAppFlow
 from shared.db.models.job import Job, JobStatus
 from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSource
 from shared.db.models.number_request import NumberRequest, NumberRequestStatus, NumberRequestType
-from shared.db.models.order import Order, OrderStatus, StoreConnection
+from shared.db.models.order import AbandonedCheckout, Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.db.models.property import ListingType, Property, PropertyStatus
 from shared.db.models.queue import QueueEntry, QueueStatus
 from shared.db.models.shift import Shift, ShiftSession
@@ -75,6 +76,8 @@ from shared.db.models.web_widget import WebSession, WebWidgetConfig
 
 __all__ = [
     "Base",
+    "AbandonedCheckout",
+    "ApiKey",
     "Appointment",
     "AppointmentStatus",
     "Audience",
@@ -115,6 +118,7 @@ __all__ = [
     "Department",
     "Direction",
     "Doctor",
+    "Escalation",
     "FlowSendLog",
     "FlowStatus",
     "IdentityKind",
@@ -143,6 +147,7 @@ __all__ = [
     "RefreshToken",
     "Shift",
     "ShiftSession",
+    "ShippingConnection",
     "StoreConnection",
     "TemplateCategory",
     "TemplateStatus",

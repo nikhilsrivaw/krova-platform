@@ -262,6 +262,10 @@ class Appointment(UUIDMixin, TimestampMixin, Base):
     # so this is the only state that needs tracking.
     google_calendar_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Same dedupe shape as reminder_24h_sent_at/reminder_2h_sent_at -
+    # stamped once a review request has been sent for this appointment.
+    review_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         Index("idx_appointments_business", "business_id"),
         Index("idx_appointments_customer", "customer_id"),

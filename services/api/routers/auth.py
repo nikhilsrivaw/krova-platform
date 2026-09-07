@@ -60,6 +60,11 @@ class MeResponse(BaseModel):
     capabilities: list[str]
     autonomy: str | None
     role: str | None
+    # Settings.google_review_url made a first-class field on this response
+    # rather than a raw settings passthrough - see UpdateMeRequest's own
+    # reasoning for why this one key gets a named field instead of an
+    # arbitrary-JSONB write endpoint.
+    google_review_url: str | None
 
 
 def _session_response(s: service.Session) -> SessionResponse:
@@ -188,6 +193,7 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         ),
         autonomy=business.autonomy if business else None,
         role=current_user.role,
+        google_review_url=(business.settings or {}).get("google_review_url") if business else None,
     )
 
 
@@ -195,6 +201,11 @@ class UpdateMeRequest(BaseModel):
     full_name: str | None = Field(default=None, max_length=255)
     business_name: str | None = Field(default=None, min_length=1, max_length=255)
     vertical: str | None = None
+    # A named field rather than a generic settings dict - keeps this
+    # endpoint from becoming an arbitrary-JSONB write surface while still
+    # reusing Business.settings as the actual storage (same JSONB bag
+    # already used for e.g. settings["pipeline_stages"]).
+    google_review_url: str | None = Field(default=None, max_length=2000)
 
 
 @router.post("/me", response_model=MeResponse)
@@ -226,6 +237,8 @@ async def update_me(
             business.name = body.business_name
         if body.vertical is not None:
             business.vertical = body.vertical
+        if body.google_review_url is not None:
+            business.settings = {**(business.settings or {}), "google_review_url": body.google_review_url}
 
     await db.commit()
 
@@ -241,4 +254,5 @@ async def update_me(
         ),
         autonomy=business.autonomy if business else None,
         role=current_user.role,
+        google_review_url=(business.settings or {}).get("google_review_url") if business else None,
     )

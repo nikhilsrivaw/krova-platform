@@ -21,6 +21,7 @@ given") forbids. They stay unset until a real courier-tracking source
 exists to report them.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -39,7 +40,27 @@ class ParsedOrder:
     total_paise: int | None
     tracking_number: str | None
     carrier: str | None
+    is_cod: bool
     placed_at: datetime
+    customer_email: str | None
+    customer_phone: str | None
+    # Shopify's shipping_address.zip - captured off the same dict the phone
+    # number above is already read from. What shared/care/intent_leakage.py's
+    # check_rto_risk_pincodes sweep groups a business's own NDR history by.
+    shipping_pincode: str | None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ParsedCheckout:
+    """A checkout that has not (yet) become an order - see
+    AbandonedCheckout's own docstring for why this is a separate shape
+    from ParsedOrder, not an optional-fields version of it."""
+    external_checkout_id: str
+    items: list[dict]
+    total_paise: int | None
+    checkout_url: str | None
+    abandoned_at: datetime
     customer_email: str | None
     customer_phone: str | None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -111,6 +132,20 @@ def _tracking(payload: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
+_COD_PATTERN = re.compile(r"\bcod\b|cash on delivery", re.IGNORECASE)
+
+
+def _is_cod(payload: dict) -> bool:
+    """Shopify's own payment_gateway_names is a list of strings, e.g.
+    ["Cash on Delivery (COD)"] - matched on a word boundary for "cod" (not
+    a bare substring, which would also match an unrelated gateway name
+    that merely contains those three letters) since the exact gateway
+    name a store's Shopify admin uses for COD is store-configurable text,
+    not a fixed enum Shopify defines."""
+    names = payload.get("payment_gateway_names") or []
+    return any(_COD_PATTERN.search(str(n)) for n in names)
+
+
 def parse_order(payload: dict) -> ParsedOrder | None:
     """
     Turn one Shopify order webhook body into a normalised order.
@@ -140,8 +175,40 @@ def parse_order(payload: dict) -> ParsedOrder | None:
         total_paise=_to_paise(payload.get("total_price")),
         tracking_number=tracking_number,
         carrier=carrier,
+        is_cod=_is_cod(payload),
         placed_at=_timestamp(payload.get("created_at")),
         customer_email=payload.get("email") or customer.get("email"),
         customer_phone=payload.get("phone") or customer.get("phone") or shipping.get("phone"),
+        shipping_pincode=shipping.get("zip"),
+        raw=payload,
+    )
+
+
+def parse_checkout(payload: dict) -> ParsedCheckout | None:
+    """
+    Turn one Shopify checkout webhook body (checkouts/create,
+    checkouts/update) into a normalised abandoned-checkout record.
+
+    Same never-raise, drop-on-missing-id contract as parse_order, for the
+    identical reason - Shopify expects a fast 200, and one malformed
+    payload must not cost every future webhook a retry storm.
+    """
+    external_id = payload.get("id")
+    if external_id is None:
+        logger.warning("shopify checkout webhook missing id - dropped")
+        return None
+
+    customer = payload.get("customer") or {}
+
+    return ParsedCheckout(
+        external_checkout_id=str(external_id),
+        items=_items(payload),
+        total_paise=_to_paise(payload.get("total_price")),
+        # Shopify's own field name for the resume-checkout link - sent
+        # verbatim in the recovery message, never reconstructed.
+        checkout_url=payload.get("abandoned_checkout_url"),
+        abandoned_at=_timestamp(payload.get("created_at")),
+        customer_email=payload.get("email") or customer.get("email"),
+        customer_phone=payload.get("phone") or customer.get("phone"),
         raw=payload,
     )

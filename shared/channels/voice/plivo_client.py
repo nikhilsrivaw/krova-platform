@@ -274,6 +274,23 @@ async def make_call(
     return res.json().get("request_uuid", "")
 
 
+async def send_sms(*, auth_id: str, auth_token: str, from_number: str, to_number: str, text: str) -> None:
+    """
+    Fire-and-forget SMS via Plivo's Message API - unlike make_call above,
+    needs no live answer_url/hangup_url webhook, which is exactly why this
+    is the escalation failsafe's mechanism rather than a phone call: one
+    POST, no new inbound-webhook surface to stand up.
+    """
+    url = f"{BASE_URL}/Account/{auth_id}/Message/"
+    payload = {"src": from_number, "dst": to_number, "text": text}
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.post(url, auth=httpx.BasicAuth(auth_id, auth_token), json=payload)
+
+    if res.status_code not in (200, 201, 202):
+        logger.warning("plivo send_sms failed: %s %s", res.status_code, res.text)
+        raise PlivoError(f"Could not send SMS to {to_number}")
+
+
 async def release_number(subaccount: Subaccount, number: str) -> None:
     """
     Give a number back to Plivo - a business that churns or no longer wants

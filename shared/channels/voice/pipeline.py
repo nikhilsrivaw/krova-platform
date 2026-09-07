@@ -276,6 +276,10 @@ class CallPipeline:
                 source_id=self.call_row_id,
                 db=self.db,
             )
+            await agent_module.notify_escalation(
+                self.route.business_id, reason=gap or "needs review",
+                customer_id=self.customer_id, channel="voice", db=self.db,
+            )
             if gap:
                 await agent_module.record_gap(self.route.business_id, gap, self.db)
             if self.call_row_id is not None:
@@ -341,6 +345,10 @@ class CallPipeline:
                     if call_row is not None:
                         call_row.escalated = True
                         call_row.escalation_reason = f"Could not book {first.book_slot}"
+                await agent_module.notify_escalation(
+                    self.route.business_id, reason=f"Could not book {first.book_slot}",
+                    customer_id=self.customer_id, channel="voice", db=self.db,
+                )
                 await self._say_stream(
                     _single_chunk(
                         "I wasn't able to lock in that exact time - let me "
@@ -383,6 +391,10 @@ class CallPipeline:
                     if call_row is not None:
                         call_row.escalated = True
                         call_row.escalation_reason = f"Could not add to {first.book_token} queue"
+                await agent_module.notify_escalation(
+                    self.route.business_id, reason=f"Could not add to {first.book_token} queue",
+                    customer_id=self.customer_id, channel="voice", db=self.db,
+                )
                 await self._say_stream(
                     _single_chunk(
                         "I wasn't able to add you to that queue right now - let "
@@ -452,6 +464,11 @@ class CallPipeline:
             if call_row is not None:
                 call_row.escalated = True
                 call_row.escalation_reason = "Caller pressed 0 to reach a person"
+
+        await agent_module.notify_escalation(
+            self.route.business_id, reason="Caller pressed 0 to reach a person",
+            customer_id=self.customer_id, channel="voice", db=self.db,
+        )
 
         if self.route.staff_phone_number and await self._try_transfer():
             await self._say_stream(

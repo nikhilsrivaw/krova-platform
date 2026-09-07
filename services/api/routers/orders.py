@@ -17,7 +17,8 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import encrypt
-from shared.db.models import Order, OrderStatus, StoreConnection
+from shared.care import shiprocket_sync
+from shared.db.models import Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -104,6 +105,10 @@ class OrderOut(BaseModel):
     total_paise: int | None
     tracking_number: str | None
     carrier: str | None
+    is_cod: bool
+    cod_confirmed_at: str | None
+    cod_declined_at: str | None
+    ndr_at: str | None
     placed_at: str
 
 
@@ -118,6 +123,10 @@ def _order_out(o: Order) -> OrderOut:
         total_paise=o.total_paise,
         tracking_number=o.tracking_number,
         carrier=o.carrier,
+        is_cod=o.is_cod,
+        cod_confirmed_at=o.cod_confirmed_at.isoformat() if o.cod_confirmed_at else None,
+        cod_declined_at=o.cod_declined_at.isoformat() if o.cod_declined_at else None,
+        ndr_at=o.ndr_at.isoformat() if o.ndr_at else None,
         placed_at=o.placed_at.isoformat(),
     )
 
@@ -178,3 +187,77 @@ async def update_order(order_id: uuid.UUID, body: OrderPatch, current_user: Curr
         order.carrier = body.carrier
     await db.flush()
     return _order_out(order)
+
+
+# ── Shipping connections (Shiprocket) ───────────────────────────────────
+# A business's own Shiprocket account - separate from the store
+# connections above (a different platform relationship, see
+# ShippingConnection's own docstring). Same "paste credentials generated
+# in the platform's own dashboard" shape as store connections - Shiprocket
+# itself is self-serve (no partner-approval gate, confirmed in research),
+# so there is no OAuth dance to build here either.
+
+class ShippingConnectionIn(BaseModel):
+    email: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=500)
+
+
+class ShippingConnectionOut(BaseModel):
+    id: str
+    platform: str
+    email: str
+    active: bool
+    # password/access_token deliberately absent - same rule as
+    # StoreConnection.webhook_secret, never returned once stored.
+
+
+def _shipping_out(c: ShippingConnection) -> ShippingConnectionOut:
+    return ShippingConnectionOut(id=str(c.id), platform=c.platform, email=c.email, active=c.active)
+
+
+@router.get("/shipping-connections", response_model=list[ShippingConnectionOut])
+async def list_shipping_connections(current_user: CurrentUserDep, db: DbDep) -> list[ShippingConnectionOut]:
+    rows = await db.execute(
+        select(ShippingConnection).where(ShippingConnection.business_id == current_user.business)
+    )
+    return [_shipping_out(c) for c in rows.scalars().all()]
+
+
+@router.post("/shipping-connections", response_model=ShippingConnectionOut, status_code=status.HTTP_201_CREATED)
+async def connect_shipping(
+    body: ShippingConnectionIn, current_user: CurrentUserDep, db: DbDep
+) -> ShippingConnectionOut:
+    from datetime import datetime, timezone
+
+    # A real login, not just stored credentials - confirms the email/
+    # password actually work before the connection is saved, the same
+    # "prove it before storing it" instinct as every other connect flow
+    # in this codebase.
+    try:
+        await shiprocket_sync._login(body.email, body.password)
+    except shiprocket_sync.ShiprocketError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Could not verify Shiprocket credentials: {exc}") from exc
+
+    connection = ShippingConnection(
+        business_id=current_user.business,
+        platform="shiprocket",
+        email=body.email,
+        password=encrypt(body.password),
+        connected_at=datetime.now(timezone.utc),
+    )
+    db.add(connection)
+    try:
+        await db.flush()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "This Shiprocket account is already connected to this business.")
+    logger.info("shiprocket connected business=%s", current_user.business)
+    return _shipping_out(connection)
+
+
+@router.delete("/shipping-connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_shipping(connection_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    connection = await db.get(ShippingConnection, connection_id)
+    if connection is None or connection.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Shipping connection not found")
+    connection.active = False

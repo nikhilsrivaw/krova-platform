@@ -28,6 +28,30 @@ QUEUE = webhooks.QUEUE
 _TIMEOUT = 15.0
 
 
+def _slack_line(event_type: str | None, data: dict) -> str:
+    """
+    One readable line for a Slack/Teams incoming webhook - both platforms
+    accept the same {"text": "..."} shape, so one formatter covers both
+    rather than two near-identical ones.
+    """
+    if event_type == "escalation.raised":
+        return f":rotating_light: Krova escalated on *{data.get('channel', 'unknown')}*: {data.get('reason', 'needs review')}"
+    if event_type == "appointment.booked":
+        return f":calendar: New appointment booked (id `{data.get('appointment_id', '?')}`)"
+    if event_type == "appointment.cancelled":
+        return f":x: Appointment cancelled (id `{data.get('appointment_id', '?')}`)"
+    if event_type == "queue_token.issued":
+        return f":ticket: Queue token #{data.get('queue_number', '?')} issued ({data.get('shift', '?')} shift)"
+    return f"Krova event: {event_type}"
+
+
+def _serialize(webhook: OutboundWebhook, event_type: str | None, data: dict) -> bytes:
+    if webhook.format in ("slack", "teams"):
+        return json.dumps({"text": _slack_line(event_type, data)}).encode()
+    # "raw" (default) - today's exact shape, unchanged.
+    return json.dumps({"event_type": event_type, "data": data}).encode()
+
+
 async def _run_job(job: Job, db: AsyncSession) -> None:
     payload = job.payload or {}
     webhook_id = payload.get("webhook_id")
@@ -41,10 +65,7 @@ async def _run_job(job: Job, db: AsyncSession) -> None:
         await queue.complete(job, db)
         return
 
-    body = json.dumps({
-        "event_type": payload.get("event_type"),
-        "data": payload.get("payload"),
-    }).encode()
+    body = _serialize(webhook, payload.get("event_type"), payload.get("payload") or {})
     signature = webhooks.sign(webhook.secret, body)
 
     try:

@@ -9,6 +9,7 @@ data leak, and "remember to filter" is not a security model.
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -17,12 +18,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.auth.tokens import TokenError, decode_access_token
-from shared.db.models import Business, BusinessMember, User
+from shared.db.models import ApiKey, Business, BusinessMember, User
 from shared.db.session import get_db
+from shared.integrations import api_keys
 
 # auto_error=False so a missing header produces our 401 with a useful message
 # rather than FastAPI's bare 403.
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass(slots=True)
@@ -115,3 +121,39 @@ async def get_current_user(
 
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 DbDep = Annotated[AsyncSession, Depends(get_db)]
+
+
+async def get_api_key_business(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Business:
+    """
+    The API-key equivalent of get_current_user, for services/api/routers/
+    public_api.py only - never mixed with JWT auth. A business's own
+    backend authenticates with `Authorization: Bearer krova_live_...`,
+    hashed and looked up against ApiKey, same shape as widget.py's
+    site_key resolution but for a bearer credential instead of a public
+    embed identifier.
+    """
+    if credentials is None or not credentials.credentials.startswith("krova_live_"):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "A valid API key is required")
+
+    key_hash = api_keys.hash_key(credentials.credentials)
+    result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.active.is_(True)))
+    api_key = result.scalars().first()
+    if api_key is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or revoked API key")
+
+    if not api_keys.check_rate_limit(api_key):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests - please try again shortly")
+
+    api_key.last_used_at = _now_utc()
+    await db.flush()
+
+    business = await db.get(Business, api_key.business_id)
+    if business is None or not business.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or revoked API key")
+    return business
+
+
+ApiKeyBusinessDep = Annotated[Business, Depends(get_api_key_business)]

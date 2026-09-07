@@ -83,6 +83,10 @@ class QueueEntry(UUIDMixin, TimestampMixin, Base):
     # token has a matching Google Calendar event.
     google_calendar_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Stamped once a review request has been sent for this completed visit -
+    # same dedupe shape as Appointment's reminder_*_sent_at columns.
+    review_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         # The live-list query: today's queue for a doctor, in order.
         Index("idx_queue_business_date_status", "business_id", "queue_date", "status"),

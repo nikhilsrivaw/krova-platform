@@ -169,6 +169,139 @@ async def send_due_recalls() -> None:
         logger.exception("recall reminder job failed")
 
 
+async def send_review_requests() -> None:
+    """
+    Cross-vertical review-request sweep, gated per-business on
+    Business.settings["google_review_url"]. See shared/scheduling/recall.py.
+    """
+    from shared.db.session import AsyncSessionLocal
+    from shared.scheduling import recall
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await recall.send_review_requests(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s review request(s)", sent)
+    except Exception:
+        logger.exception("review request job failed")
+
+
+async def escalate_unacknowledged() -> None:
+    """
+    The SMS failsafe for an Escalation nobody acknowledged in time. See
+    shared/care/escalation_failsafe.py.
+    """
+    from shared.care import escalation_failsafe
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            processed = await escalation_failsafe.check_unacknowledged(db)
+            await db.commit()
+            if processed:
+                logger.info("processed %s unacknowledged escalation(s)", processed)
+    except Exception:
+        logger.exception("escalation failsafe job failed")
+
+
+async def send_cod_confirmations() -> None:
+    """D2C, order_sync capability. See shared/scheduling/recall.py."""
+    from shared.db.session import AsyncSessionLocal
+    from shared.scheduling import recall
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await recall.send_cod_confirmations(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s COD confirmation(s)", sent)
+    except Exception:
+        logger.exception("COD confirmation job failed")
+
+
+async def send_abandoned_cart_recovery() -> None:
+    """D2C, order_sync capability. See shared/scheduling/recall.py."""
+    from shared.db.session import AsyncSessionLocal
+    from shared.scheduling import recall
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await recall.send_abandoned_cart_recovery(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s abandoned-cart recovery message(s)", sent)
+    except Exception:
+        logger.exception("abandoned cart recovery job failed")
+
+
+async def check_cod_call_failsafe() -> None:
+    """
+    The voice-call failsafe for an unanswered COD WhatsApp confirmation,
+    plus escalating any call that itself went unanswered - order_sync
+    capability. See shared/care/cod_call_failsafe.py.
+    """
+    from shared.care import cod_call_failsafe
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            placed = await cod_call_failsafe.due_for_call(db)
+            escalated = await cod_call_failsafe.escalate_no_outcome(db)
+            await db.commit()
+            if placed or escalated:
+                logger.info(
+                    "COD call failsafe: placed=%s escalated=%s", placed, escalated
+                )
+    except Exception:
+        logger.exception("COD call failsafe job failed")
+
+
+async def send_repeat_purchase_nudges() -> None:
+    """D2C, order_sync capability. See shared/scheduling/recall.py."""
+    from shared.db.session import AsyncSessionLocal
+    from shared.scheduling import recall
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await recall.send_repeat_purchase_nudges(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s repeat-purchase nudge(s)", sent)
+    except Exception:
+        logger.exception("repeat-purchase nudge job failed")
+
+
+async def check_intent_leakage() -> None:
+    """D2C, order_sync capability. See shared/care/intent_leakage.py."""
+    from shared.care import intent_leakage
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            created = await intent_leakage.check_intent_leakage(db)
+            await db.commit()
+            if created:
+                logger.info("created %s intent-leakage insight(s)", created)
+    except Exception:
+        logger.exception("intent leakage sweep failed")
+
+
+async def sync_shiprocket() -> None:
+    """D2C, order_sync capability. See shared/care/shiprocket_sync.py."""
+    from shared.care import shiprocket_sync
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            processed = await shiprocket_sync.sync_all(db)
+            await db.commit()
+            if processed:
+                logger.info("processed %s Shiprocket NDR event(s)", processed)
+    except Exception:
+        logger.exception("Shiprocket sync job failed")
+
+
 async def check_clinic_commitments() -> None:
     """
     Scan overdue commitments for clinic businesses and surface them on the
@@ -185,6 +318,40 @@ async def check_clinic_commitments() -> None:
                 logger.info("created %s clinic overdue-commitment insight(s)", created)
     except Exception:
         logger.exception("clinic commitment sweep failed")
+
+
+async def check_ecommerce_commitments() -> None:
+    """
+    Scan overdue promised-refund/replacement commitments for ecommerce
+    businesses and surface them on the daily briefing - order_sync
+    capability. See shared/ai/recall_insights.py.
+    """
+    from shared.ai import recall_insights
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            created = await recall_insights.check_ecommerce_commitments(db)
+            await db.commit()
+            if created:
+                logger.info("created %s ecommerce overdue-refund insight(s)", created)
+    except Exception:
+        logger.exception("ecommerce commitment sweep failed")
+
+
+async def check_rto_risk_pincodes() -> None:
+    """D2C, order_sync capability. See shared/care/intent_leakage.py."""
+    from shared.care import intent_leakage
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            created = await intent_leakage.check_rto_risk_pincodes(db)
+            await db.commit()
+            if created:
+                logger.info("created %s RTO-risk insight(s)", created)
+    except Exception:
+        logger.exception("RTO-risk pincode sweep failed")
 
 
 async def check_channel_health() -> None:
@@ -289,6 +456,71 @@ def build() -> AsyncIOScheduler:
         misfire_grace_time=1800,
     )
 
+    scheduler.add_job(
+        send_review_requests,
+        IntervalTrigger(minutes=30),
+        id="send_review_requests",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        escalate_unacknowledged,
+        IntervalTrigger(minutes=5),
+        id="escalate_unacknowledged",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        send_cod_confirmations,
+        IntervalTrigger(minutes=15),
+        id="send_cod_confirmations",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        send_abandoned_cart_recovery,
+        IntervalTrigger(minutes=30),
+        id="send_abandoned_cart_recovery",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        send_repeat_purchase_nudges,
+        IntervalTrigger(hours=6),
+        id="send_repeat_purchase_nudges",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # After send_cod_confirmations has had time to go unanswered.
+    scheduler.add_job(
+        check_cod_call_failsafe,
+        IntervalTrigger(minutes=30),
+        id="check_cod_call_failsafe",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        check_intent_leakage,
+        CronTrigger(hour=7, minute=30, timezone=IST),
+        id="check_intent_leakage",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        sync_shiprocket,
+        IntervalTrigger(minutes=20),
+        id="sync_shiprocket",
+        replace_existing=True,
+        misfire_grace_time=1200,
+    )
+
     # Morning run, after the nightly analysis/profile passes so the day's
     # briefing reflects last night's extraction - not wired to run before
     # commitments exist to scan, same ordering reasoning as compress_profiles.
@@ -296,6 +528,24 @@ def build() -> AsyncIOScheduler:
         check_clinic_commitments,
         CronTrigger(hour=7, minute=0, timezone=IST),
         id="check_clinic_commitments",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # Same morning slot as check_clinic_commitments - after the nightly
+    # analysis pass, for the identical reason.
+    scheduler.add_job(
+        check_ecommerce_commitments,
+        CronTrigger(hour=7, minute=15, timezone=IST),
+        id="check_ecommerce_commitments",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        check_rto_risk_pincodes,
+        CronTrigger(hour=7, minute=45, timezone=IST),
+        id="check_rto_risk_pincodes",
         replace_existing=True,
         misfire_grace_time=3600,
     )

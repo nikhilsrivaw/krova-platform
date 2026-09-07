@@ -24,6 +24,7 @@ to a caller to remember.
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,6 +121,17 @@ REPLY_TOOL = {
                     "token, never both from the same message."
                 ),
             },
+            "share_catalog": {
+                "type": "boolean",
+                "description": (
+                    "Only for a business with a product catalog connected: set "
+                    "true when the customer is asking what products/services are "
+                    "available and browsing the catalog would answer it better "
+                    "than a written list. Omit for every other business, and omit "
+                    "even here unless the customer's own message asked to see "
+                    "what's on offer - never send it unprompted."
+                ),
+            },
         },
         "required": ["action", "reasoning", "confidence"],
     },
@@ -166,6 +178,11 @@ specific open shift, set book_token to its exact name so a real token \
 actually gets issued. This is a different thing from book_slot: a token is \
 a place in a walk-in queue, not a doctor's calendar slot, and a message \
 never sets both.
+
+If the business details mention a connected product catalog, set \
+share_catalog to true when the customer is actually asking what's \
+available - never send it unprompted, and never in place of answering a \
+specific question they asked directly.
 
 Use what you know about the customer. If they have an outstanding payment or \
 you promised them something, that is context worth using - naturally, not \
@@ -428,6 +445,13 @@ class Draft:
     # Never set alongside book_slot - a message is booking a doctor's
     # calendar slot or getting a queue token, never both.
     book_token: str | None = None
+    # order_sync capability - see REPLY_TOOL's share_catalog. Text-channel
+    # only (WhatsApp/Instagram/Gmail via this Draft path) - deliberately
+    # not added to ReplyStart/the streaming protocol voice and the web
+    # widget share, since a catalog image/link makes no sense spoken and
+    # touching that shared, proven header-parsing loop for a feature only
+    # one of its two consumers would ever use is not worth the risk.
+    share_catalog: bool = False
 
 
 async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) -> Draft:
@@ -508,6 +532,7 @@ async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) ->
         book_doctor=(result.get("book_doctor") or "").strip() or None if action == "reply" else None,
         book_property=(result.get("book_property") or "").strip() or None if action == "reply" else None,
         book_token=(result.get("book_token") or "").strip() or None if action == "reply" else None,
+        share_catalog=bool(result.get("share_catalog")) if action == "reply" else False,
     )
 
 
@@ -539,3 +564,47 @@ async def record_gap(business_id: uuid.UUID, gap: str, db: AsyncSession) -> None
     learned.append(gap.strip())
     known["learned"] = learned[-50:]
     dna.known_gaps = known
+
+
+async def notify_escalation(
+    business_id: uuid.UUID, *, reason: str, customer_id: uuid.UUID | None, channel: str, db: AsyncSession
+) -> None:
+    """
+    Tell whoever's listening (Slack, Teams, anything else a business has
+    wired up) that the agent just escalated - unconditionally, unlike
+    record_gap above which only fires when a specific knowledge gap was
+    named. A booking that failed, or a caller who pressed 0, is just as
+    much a "someone needs to know right now" moment as an unanswered
+    question, and today none of those notify anyone outside Krova's own
+    dashboard.
+
+    Two effects, both best-effort and independent of each other: the
+    outbound webhook dispatch (unchanged from when this function was
+    added), and now also a durable Escalation row - so the failsafe sweep
+    in shared/care/escalation_failsafe.py has something to query. Before
+    this second effect existed, an escalation fired a webhook and left no
+    other trace anywhere.
+    """
+    from shared.db.models import Escalation
+    from shared.integrations import webhooks
+
+    try:
+        await webhooks.dispatch_event(
+            db, business_id=business_id, event_type="escalation.raised",
+            payload={
+                "reason": reason,
+                "customer_id": str(customer_id) if customer_id else None,
+                "channel": channel,
+            },
+        )
+    except Exception:
+        logger.exception("escalation webhook dispatch failed business=%s", business_id)
+
+    try:
+        db.add(Escalation(
+            business_id=business_id, customer_id=customer_id, channel=channel,
+            reason=reason, created_at=datetime.now(timezone.utc),
+        ))
+        await db.flush()
+    except Exception:
+        logger.exception("escalation record failed business=%s", business_id)

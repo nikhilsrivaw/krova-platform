@@ -20,7 +20,8 @@ from shared.auth import tokens
 from shared.auth.encryption import encrypt
 from shared.auth.tokens import TokenError
 from shared.config.settings import settings
-from shared.db.models import CalendarConnection, ConnectionStatus, OutboundWebhook, WebhookEventType
+from shared.db.models import ApiKey, CalendarConnection, ConnectionStatus, OutboundWebhook, WebhookEventType
+from shared.integrations import api_keys as api_keys_module
 from shared.integrations import google_calendar
 from shared.utils.logging import get_logger
 
@@ -140,9 +141,13 @@ async def google_calendar_disconnect(current_user: CurrentUserDep, db: DbDep) ->
 _VALID_EVENTS = {e.value for e in WebhookEventType}
 
 
+_VALID_FORMATS = {"raw", "slack", "teams"}
+
+
 class WebhookIn(BaseModel):
     target_url: str = Field(min_length=1, max_length=2000)
     event_types: list[str] = Field(min_length=1)
+    format: str = "raw"
 
 
 class WebhookOut(BaseModel):
@@ -150,6 +155,7 @@ class WebhookOut(BaseModel):
     target_url: str
     event_types: list[str]
     active: bool
+    format: str
     secret: str | None = None  # only ever returned once, on create
     last_delivery_at: datetime | None
     last_delivery_status: str | None
@@ -159,7 +165,7 @@ class WebhookOut(BaseModel):
 def _out(w: OutboundWebhook, *, reveal_secret: bool = False) -> WebhookOut:
     return WebhookOut(
         id=str(w.id), target_url=w.target_url, event_types=list(w.event_types),
-        active=w.active, secret=w.secret if reveal_secret else None,
+        active=w.active, format=w.format, secret=w.secret if reveal_secret else None,
         last_delivery_at=w.last_delivery_at, last_delivery_status=w.last_delivery_status,
         failure_count=w.failure_count,
     )
@@ -169,6 +175,11 @@ def _validate_events(event_types: list[str]) -> None:
     unknown = set(event_types) - _VALID_EVENTS
     if unknown:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Unknown event type(s): {sorted(unknown)}")
+
+
+def _validate_format(fmt: str) -> None:
+    if fmt not in _VALID_FORMATS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Unknown format {fmt!r} - must be one of {sorted(_VALID_FORMATS)}")
 
 
 @router.get("/webhooks", response_model=list[WebhookOut])
@@ -182,10 +193,12 @@ async def list_webhooks(current_user: CurrentUserDep, db: DbDep) -> list[Webhook
 @router.post("/webhooks", response_model=WebhookOut, status_code=status.HTTP_201_CREATED)
 async def create_webhook(body: WebhookIn, current_user: CurrentUserDep, db: DbDep) -> WebhookOut:
     _validate_events(body.event_types)
+    _validate_format(body.format)
     webhook = OutboundWebhook(
         business_id=current_user.business,
         target_url=body.target_url,
         event_types=body.event_types,
+        format=body.format,
         secret=secrets.token_urlsafe(32),
         active=True,
     )
@@ -199,6 +212,7 @@ class WebhookPatch(BaseModel):
     target_url: str | None = None
     event_types: list[str] | None = None
     active: bool | None = None
+    format: str | None = None
 
 
 @router.patch("/webhooks/{webhook_id}", response_model=WebhookOut)
@@ -214,9 +228,58 @@ async def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, current_user
         webhook.target_url = body.target_url
     if body.active is not None:
         webhook.active = body.active
+    if body.format is not None:
+        _validate_format(body.format)
+        webhook.format = body.format
 
     await db.flush()
     return _out(webhook)
+
+
+# ── API keys ─────────────────────────────────────────────────────────────
+
+class ApiKeyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ApiKeyOut(BaseModel):
+    id: str
+    name: str
+    key_prefix: str
+    active: bool
+    last_used_at: datetime | None
+    raw_key: str | None = None  # only ever returned once, on create
+
+
+def _api_key_out(k: ApiKey, *, reveal: str | None = None) -> ApiKeyOut:
+    return ApiKeyOut(
+        id=str(k.id), name=k.name, key_prefix=k.key_prefix, active=k.active,
+        last_used_at=k.last_used_at, raw_key=reveal,
+    )
+
+
+@router.get("/api-keys", response_model=list[ApiKeyOut])
+async def list_api_keys(current_user: CurrentUserDep, db: DbDep) -> list[ApiKeyOut]:
+    result = await db.execute(select(ApiKey).where(ApiKey.business_id == current_user.business))
+    return [_api_key_out(k) for k in result.scalars().all()]
+
+
+@router.post("/api-keys", response_model=ApiKeyOut, status_code=status.HTTP_201_CREATED)
+async def create_api_key(body: ApiKeyIn, current_user: CurrentUserDep, db: DbDep) -> ApiKeyOut:
+    raw_key, key_hash, prefix = api_keys_module.generate()
+    key = ApiKey(business_id=current_user.business, name=body.name, key_hash=key_hash, key_prefix=prefix, active=True)
+    db.add(key)
+    await db.flush()
+    logger.info("api key created id=%s business=%s", key.id, current_user.business)
+    return _api_key_out(key, reveal=raw_key)
+
+
+@router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_api_key(key_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    key = await db.get(ApiKey, key_id)
+    if key is None or key.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "API key not found")
+    await db.delete(key)
 
 
 @router.delete("/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -93,6 +93,45 @@ def copilot_response(
     )
 
 
+def getdigits_response(
+    prompt_text: str,
+    action_url: str,
+    *,
+    num_digits: int = 1,
+    valid_digits: str = "12",
+    timeout: int = 8,
+    retries: int = 1,
+    on_no_input: str = "",
+) -> str:
+    """
+    A deterministic DTMF menu - no AI, no <Stream>, for exactly the kind of
+    fixed yes/no decision that should never cost an LLM call (the same
+    "deterministic, never agent-mediated" rule already applied to the
+    WhatsApp COD button-tap path). Confirmed against Plivo's own
+    <GetDigits> docs (plivo.com/docs/voice/xml/getdigits): action receives
+    the pressed Digits by POST; on exhausted retries with no input, Plivo
+    moves on to the next XML element rather than erroring, which is what
+    on_no_input (typically a Hangup, or nothing - see cod_ivr.py) is for.
+    """
+    attrs = [
+        f'action="{escape(action_url)}"',
+        'method="POST"',
+        f'numDigits="{num_digits}"',
+        f'validDigits="{escape(valid_digits)}"',
+        f'timeout="{timeout}"',
+        f'retries="{retries}"',
+    ]
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"  <GetDigits {' '.join(attrs)}>\n"
+        f"    <Speak>{escape(prompt_text)}</Speak>\n"
+        "  </GetDigits>\n"
+        f"  {on_no_input}\n"
+        "</Response>"
+    )
+
+
 def hangup_response(reason: str | None = None) -> str:
     """
     End the call cleanly.

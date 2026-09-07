@@ -256,3 +256,39 @@ class Insight(UUIDMixin, Base):
     __table_args__ = (
         Index("idx_insights_business_open", "business_id", "dismissed_at", "created_at"),
     )
+
+
+class Escalation(UUIDMixin, Base):
+    """
+    A durable trace of every time the agent escalated - shared/ai/agent.py's
+    notify_escalation() writes one of these alongside firing the outbound
+    webhook, so there's something for shared/care/escalation_failsafe.py's
+    sweep to query. Before this, an escalation fired a webhook and left no
+    other record - fine for Slack, useless for "did anyone actually see it."
+    """
+
+    __tablename__ = "escalations"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True
+    )
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Stamped once the SMS failsafe has run for this escalation, whether or
+    # not the send actually succeeded - a business with no voice number
+    # connected still gets this stamped (nothing to retry), a real failure
+    # is logged loudly instead of silently retried forever.
+    escalated_further_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_escalations_sweep", "business_id", "acknowledged_at", "escalated_further_at"),
+    )
