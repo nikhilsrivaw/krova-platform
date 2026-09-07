@@ -90,6 +90,31 @@ class AgentPerformance(BaseModel):
     top_gaps: list[dict]
 
 
+class TrustSample(BaseModel):
+    body: str | None
+    confidence: float
+    cited_message_count: int
+    channel: str
+    created_at: datetime
+
+
+class TrustReport(BaseModel):
+    """
+    software-startup vertical (product_feedback capability) - what
+    Nikhil's research called "proof of performance": real numbers off
+    MessageDraft.confidence/used_context, which already exist on every
+    draft because of how this codebase was built, not a new tracking
+    system. Meant to be shown to a skeptical, technical user - a founder
+    proving the AI shows its work, not claiming it.
+    """
+
+    total_replies: int
+    average_confidence: float | None
+    escalated: int
+    escalation_rate: float | None
+    samples: list[TrustSample]
+
+
 class TeamMemberPerformance(BaseModel):
     user_id: str
     full_name: str | None
@@ -376,6 +401,56 @@ async def agent_performance(
             {"gap": g, "times": n}
             for g, n in sorted(gap_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
         ],
+    )
+
+
+@router.get("/trust-report", response_model=TrustReport)
+async def trust_report(
+    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+) -> TrustReport:
+    """
+    Real evidence, not a marketing claim - see TrustReport's own
+    docstring. Every number here reads directly off MessageDraft rows
+    that already exist; nothing is computed specially for this report.
+    """
+    business_id = current_user.business
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = (
+        await db.execute(
+            select(MessageDraft).where(
+                MessageDraft.business_id == business_id,
+                MessageDraft.created_at >= since,
+            ).order_by(MessageDraft.created_at.desc())
+        )
+    ).scalars().all()
+
+    total = len(rows)
+    escalated = sum(1 for d in rows if d.action == DraftAction.escalate)
+    average_confidence = round(sum(d.confidence for d in rows) / total, 3) if total else None
+    escalation_rate = round(escalated / total, 3) if total else None
+
+    # Only genuine replies are worth showing as "here's what the AI said
+    # and why" samples - an escalation has no answer to show grounded,
+    # it's the honest opposite case.
+    reply_rows = [d for d in rows if d.action == DraftAction.reply]
+    samples = [
+        TrustSample(
+            body=d.final_body,
+            confidence=d.confidence,
+            cited_message_count=len(d.used_context or []),
+            channel=d.channel,
+            created_at=d.created_at,
+        )
+        for d in reply_rows[:20]
+    ]
+
+    return TrustReport(
+        total_replies=total,
+        average_confidence=average_confidence,
+        escalated=escalated,
+        escalation_rate=escalation_rate,
+        samples=samples,
     )
 
 

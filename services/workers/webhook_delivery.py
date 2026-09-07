@@ -42,6 +42,9 @@ def _slack_line(event_type: str | None, data: dict) -> str:
         return f":x: Appointment cancelled (id `{data.get('appointment_id', '?')}`)"
     if event_type == "queue_token.issued":
         return f":ticket: Queue token #{data.get('queue_number', '?')} issued ({data.get('shift', '?')} shift)"
+    if event_type == "competitor.mentioned":
+        quote = data.get("source_quote") or data.get("title", "")
+        return f":dart: Competitor mentioned ({data.get('severity', 'info')}): \"{quote}\""
     return f"Krova event: {event_type}"
 
 

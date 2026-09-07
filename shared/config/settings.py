@@ -138,6 +138,17 @@ class Settings(BaseSettings):
     plivo_auth_token: str = Field(default="", alias="PLIVO_AUTH_TOKEN")
     sarvam_api_key: str = Field(default="", alias="SARVAM_API_KEY")
 
+    # Two shared, Krova-level credentials (not per-business) - see
+    # shared/integrations/postmark.py's own docstring for why this is a
+    # platform-level credential like plivo_auth_token above, rather than
+    # a per-business ChannelConnection. Postmark itself splits these:
+    # the account token manages sender signatures (X-Postmark-Account-
+    # Token, confirmed via Postmark's own docs), the server token sends
+    # mail (X-Postmark-Server-Token) - genuinely two different
+    # credentials, not one reused twice.
+    postmark_account_token: str = Field(default="", alias="POSTMARK_ACCOUNT_TOKEN")
+    postmark_server_token: str = Field(default="", alias="POSTMARK_SERVER_TOKEN")
+
     # Comma-separated. Empty in production by default was the bug this
     # replaced - it silently blocked every browser request to the API with
     # no origin allowed at all, discovered only once something was actually

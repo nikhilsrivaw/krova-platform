@@ -184,6 +184,30 @@ async def _extract_signals(
         already.add(found.title.strip().lower())
         stored += 1
 
+        if found.kind == "competitor_mention":
+            # Real-time, not batched - unlike every other signal kind,
+            # which just waits on the Signals page. Research: the ~83
+            # seconds after a competitor comes up decide the deal, so
+            # this fires the instant it's extracted (this worker already
+            # runs per-message off the ANALYSE_QUEUE, not a nightly
+            # sweep - "real-time" here means "as fast as this queue
+            # already is," not a new fast-path).
+            from shared.integrations import webhooks
+
+            try:
+                await webhooks.dispatch_event(
+                    db, business_id=message.business_id, event_type="competitor.mentioned",
+                    payload={
+                        "customer_id": str(message.customer_id),
+                        "title": found.title,
+                        "body": found.body,
+                        "severity": found.severity,
+                        "source_quote": found.source_quote,
+                    },
+                )
+            except Exception:
+                logger.exception("competitor-mention webhook dispatch failed business=%s", message.business_id)
+
     if stored:
         logger.info("stored %s product feedback signal(s) for message=%s", stored, message.id)
     return stored

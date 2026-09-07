@@ -14,7 +14,7 @@ because it is the same functions underneath, not a parallel implementation.
 """
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from services.api.dependencies import ApiKeyBusinessDep, DbDep
 from shared.ai import agent as agent_module
 from shared.ai import context as agent_context
-from shared.db.models import Doctor, IdentityKind, IntakeChannel, Shift
+from shared.db.models import CustomerLifecycleEvent, Doctor, IdentityKind, IntakeChannel, Shift
 from shared.identity import resolver as identity_resolver
 from shared.scheduling import availability, booking as scheduling_booking, queue_booking
 from shared.utils.logging import get_logger
@@ -174,3 +174,69 @@ async def create_booking(body: BookingIn, business: ApiKeyBusinessDep, db: DbDep
     except queue_booking.ShiftNotOpen as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return BookingOut(booked=True, queue_entry_id=str(entry.id), queue_number=entry.queue_number)
+
+
+# ── Lifecycle events (software-startup vertical - onboarding drop-off) ──
+#
+# Krova only ever sees conversations on its own - it has no way to know a
+# user signed up or activated inside a business's own product unless that
+# business tells it, here. See CustomerLifecycleEvent's own docstring
+# (shared/db/models/identity.py) for why this is a real, disclosed
+# dependency rather than something Krova infers.
+
+class LifecycleCustomerIn(BaseModel):
+    email: str | None = None
+    phone: str | None = None
+    name: str | None = None
+
+
+class LifecycleEventIn(BaseModel):
+    customer: LifecycleCustomerIn
+    event: str = Field(min_length=1, max_length=100)
+    occurred_at: datetime | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class LifecycleEventOut(BaseModel):
+    id: str
+    customer_id: str
+    event: str
+    occurred_at: datetime
+
+
+@router.post("/lifecycle-events", response_model=LifecycleEventOut, status_code=status.HTTP_201_CREATED)
+async def create_lifecycle_event(body: LifecycleEventIn, business: ApiKeyBusinessDep, db: DbDep) -> LifecycleEventOut:
+    if not body.customer.email and not body.customer.phone:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide at least one of customer.email or customer.phone")
+
+    # Email preferred when both are given - a signup form collects email
+    # far more reliably than phone, and identity resolution merges the
+    # same person across identities anyway once more channels appear.
+    if body.customer.email:
+        resolution = await identity_resolver.resolve(
+            business.id, IdentityKind.email, body.customer.email, db, display_name=body.customer.name,
+        )
+    else:
+        resolution = await identity_resolver.resolve(
+            business.id, IdentityKind.phone, body.customer.phone, db, display_name=body.customer.name,
+        )
+
+    occurred_at = body.occurred_at or datetime.now(timezone.utc)
+    lifecycle_event = CustomerLifecycleEvent(
+        business_id=business.id,
+        customer_id=resolution.customer.id,
+        event=body.event.strip(),
+        occurred_at=occurred_at,
+        event_metadata=body.metadata,
+    )
+    db.add(lifecycle_event)
+    await db.flush()
+
+    logger.info(
+        "lifecycle event recorded business=%s customer=%s event=%s",
+        business.id, resolution.customer.id, lifecycle_event.event,
+    )
+    return LifecycleEventOut(
+        id=str(lifecycle_event.id), customer_id=str(resolution.customer.id),
+        event=lifecycle_event.event, occurred_at=lifecycle_event.occurred_at,
+    )

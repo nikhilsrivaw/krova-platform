@@ -354,6 +354,63 @@ async def check_rto_risk_pincodes() -> None:
         logger.exception("RTO-risk pincode sweep failed")
 
 
+async def send_onboarding_dropoff_nudges() -> None:
+    """
+    One nudge for a customer whose business reported a trial_started
+    lifecycle event with no later activated one, past the 3-day window
+    research found most predictive - product_feedback capability. See
+    shared/care/onboarding_dropoff.py.
+    """
+    from shared.care import onboarding_dropoff
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await onboarding_dropoff.send_onboarding_dropoff_nudges(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s onboarding-dropoff nudge(s)", sent)
+    except Exception:
+        logger.exception("onboarding dropoff nudge job failed")
+
+
+async def send_expansion_nudges() -> None:
+    """
+    One nudge per not-yet-nudged usage-milestone lifecycle event -
+    product_feedback capability. See shared/care/expansion_signals.py.
+    """
+    from shared.care import expansion_signals
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await expansion_signals.send_expansion_nudges(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s expansion nudge(s)", sent)
+    except Exception:
+        logger.exception("expansion nudge job failed")
+
+
+async def check_feature_request_dedup() -> None:
+    """
+    Merge newly-created feature_request Insights into an existing open
+    one when they're the same underlying ask - product_feedback
+    capability. See shared/care/feature_request_dedup.py.
+    """
+    from shared.care import feature_request_dedup
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            merged = await feature_request_dedup.check_feature_request_dedup(db)
+            await db.commit()
+            if merged:
+                logger.info("merged %s duplicate feature request(s)", merged)
+    except Exception:
+        logger.exception("feature request dedup sweep failed")
+
+
 async def check_channel_health() -> None:
     """
     Watch quality rating and sending eligibility instead of only being able
@@ -548,6 +605,30 @@ def build() -> AsyncIOScheduler:
         id="check_rto_risk_pincodes",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        check_feature_request_dedup,
+        IntervalTrigger(minutes=30),
+        id="check_feature_request_dedup",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        send_onboarding_dropoff_nudges,
+        IntervalTrigger(hours=6),
+        id="send_onboarding_dropoff_nudges",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        send_expansion_nudges,
+        IntervalTrigger(minutes=30),
+        id="send_expansion_nudges",
+        replace_existing=True,
+        misfire_grace_time=1800,
     )
 
     scheduler.add_job(

@@ -53,6 +53,10 @@ class CommitmentKind(str, enum.Enum):
     callback = "callback"
     document = "document"
     meeting = "meeting"
+    # A promised bug fix, in the software-startup vertical - a dedicated
+    # kind rather than folded into "other", which recall_insights.py's
+    # own docstring already reserves for referral-shaped commitments.
+    bug_fix = "bug_fix"
     other = "other"
 
 
@@ -134,10 +138,35 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Set when this commitment was created by the staff-triggered
+    # "file as GitHub issue" action (services/api/routers/signals.py) -
+    # what the GitHub webhook (services/api/routers/webhooks.py) looks
+    # this row up by when the issue closes.
+    github_issue_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # A generic external system's own id for whatever created this
+    # commitment without a real conversation behind it (a webhook, not a
+    # message) - the Stripe dunning receiver's own idempotency key today
+    # (the invoice id, so a retried webhook delivery never creates a
+    # second open commitment for the same invoice), reusable by any
+    # future non-conversational commitment source, not Stripe-specific.
+    external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Dedupe for the proactive "it's fixed" send - same "stamp so a
+    # webhook retry never resends" shape as every other *_sent_at column
+    # in this schema.
+    bug_fix_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     __table_args__ = (
         # The ledger's main query: what is open and overdue, soonest first.
         Index("idx_commitments_open", "business_id", "status", "due_at"),
         Index("idx_commitments_customer", "customer_id", "status"),
+        # The GitHub webhook's own query: which commitment does this
+        # issue_url belong to.
+        Index("idx_commitments_github_issue", "github_issue_url"),
+        # The Stripe dunning webhook's own idempotency query.
+        Index("idx_commitments_external_ref", "business_id", "external_ref"),
     )
 
 
@@ -250,6 +279,15 @@ class Insight(UUIDMixin, Base):
         DateTime(timezone=True), nullable=False
     )
     dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Stamped by shared/care/feature_request_dedup.py's own sweep - same
+    # "stamp so a sweep never reprocesses" discipline as every other
+    # sweep dedupe column in this schema. Without this, a genuinely
+    # unique open feature_request would cost one LLM call every single
+    # sweep run forever, since a "no match found" outcome leaves nothing
+    # else to distinguish it from an unchecked row.
+    dedup_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

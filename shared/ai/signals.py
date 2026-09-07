@@ -1,6 +1,8 @@
 """
 Finding product feedback in conversations - bugs, feature requests,
-complaints, churn risk, praise.
+complaints, churn risk, praise - plus, for a startup selling to WhatsApp-
+native SMB buyers where a pricing/demo conversation happens in the same
+channel as support, demo_request and pricing_question.
 
 Same discipline as commitments.py, aimed at a different table: Insight
 already existed in the schema ("something worth telling the owner, with the
@@ -41,7 +43,10 @@ EXTRACT_TOOL = {
                     "properties": {
                         "kind": {
                             "type": "string",
-                            "enum": ["bug", "feature_request", "complaint", "churn_risk", "praise"],
+                            "enum": [
+                                "bug", "feature_request", "complaint", "churn_risk", "praise",
+                                "demo_request", "pricing_question", "competitor_mention",
+                            ],
                         },
                         "title": {
                             "type": "string",
@@ -56,8 +61,10 @@ EXTRACT_TOOL = {
                             "enum": ["info", "warning", "critical"],
                             "description": (
                                 "critical: churn risk, or a bug touching billing/security/data "
-                                "loss. warning: a real bug, or a pointed complaint. "
-                                "info: a feature request or praise."
+                                "loss. warning: a real bug, a pointed complaint, or a competitor "
+                                "mention that reads as active evaluation (not just curiosity). "
+                                "info: a feature request, praise, or a competitor mentioned only "
+                                "in passing."
                             ),
                         },
                         "source_message_ids": {
@@ -88,9 +95,15 @@ RECORD these:
 - "This crashes every time I try to export"        -> bug
 - "Can you add dark mode?"                          -> feature_request
 - "This is the third time support hasn't replied"   -> complaint
-- "We're evaluating [competitor] instead"           -> churn_risk
 - "Cancel my account"                               -> churn_risk
 - "This update is exactly what we needed"           -> praise
+- "Can we get a demo?"                              -> demo_request
+- "What's your pricing for 50 seats?"                -> pricing_question
+- "We're evaluating [competitor] instead"           -> competitor_mention (also churn_risk if
+  it reads as a real intent to leave, not just comparison-shopping - both signals can apply
+  to the same message)
+- "Do you have anything like [competitor]'s X?"     -> competitor_mention only, not churn_risk -
+  a feature comparison, not a threat to leave
 
 DO NOT RECORD these:
 - Plain how-to questions with no frustration or problem behind them:
@@ -227,7 +240,10 @@ async def extract(
             continue
 
         kind = item.get("kind")
-        if kind not in ("bug", "feature_request", "complaint", "churn_risk", "praise"):
+        if kind not in (
+            "bug", "feature_request", "complaint", "churn_risk", "praise",
+            "demo_request", "pricing_question", "competitor_mention",
+        ):
             kind = "complaint"
         severity = item.get("severity")
         if severity not in ("info", "warning", "critical"):

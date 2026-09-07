@@ -385,7 +385,7 @@ async def extract(
                 kind=(
                     item.get("kind")
                     if item.get("kind")
-                    in ("payment", "delivery", "callback", "document", "meeting", "other")
+                    in ("payment", "delivery", "callback", "document", "meeting", "bug_fix", "other")
                     else "other"
                 ),
                 description=(item.get("description") or "").strip(),

@@ -27,19 +27,27 @@ from shared.channels.shopify import webhook as shopify_webhook
 from shared.channels.whatsapp import conversions, media, signature, webhook
 from shared.db.models import (
     AbandonedCheckout,
+    Business,
     Channel,
     ChannelConnection,
+    Commitment,
+    CommitmentDirection,
+    CommitmentKind,
+    CommitmentStatus,
     ConnectionStatus,
     Customer,
     Direction,
     FlowSendLog,
+    GitHubConnection,
     IdentityKind,
     Order,
     OrderStatus,
     StoreConnection,
+    StripeConnection,
 )
 from shared.db.session import AsyncSessionLocal
 from shared.identity import resolver as identity_resolver
+from shared.integrations import github_signature, stripe_client
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -804,3 +812,240 @@ async def _fire_purchase_conversion(
                 logger.info("purchase conversion sent business=%s customer=%s", business_id, customer_id)
         except conversions.ConversionEventError:
             logger.warning("purchase conversion failed business=%s customer=%s", business_id, customer_id)
+
+
+# ── GitHub (software-startup vertical's closed bug-lifecycle loop) ──────
+#
+# GitHub carries no per-business identifying header the way Shopify's
+# x-shopify-shop-domain does - the repository is only in the JSON body
+# itself. Same safe two-step as Shopify's own lookup-then-verify: the
+# body is parsed just far enough to find which business's
+# GitHubConnection to check the signature against, and that check is
+# what actually proves authenticity - a spoofed repository field just
+# fails HMAC verification against the real business's real secret, it
+# never skips it.
+
+@router.post("/github")
+async def receive_github_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str | None = Header(default=None),
+    x_github_event: str | None = Header(default=None),
+) -> Response:
+    if x_github_event != "issues":
+        # Every other event type this business's webhook might also be
+        # subscribed to (comments, labels, ...) - ack and drop, nothing
+        # here uses them yet.
+        return Response(status_code=status.HTTP_200_OK)
+
+    import json
+
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except ValueError:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+    if payload.get("action") != "closed":
+        return Response(status_code=status.HTTP_200_OK)
+
+    repo = payload.get("repository") or {}
+    owner = ((repo.get("owner") or {}).get("login")) or ""
+    name = repo.get("name") or ""
+    if not owner or not name:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+    issue_url = ((payload.get("issue") or {}).get("html_url")) or ""
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(GitHubConnection).where(
+                GitHubConnection.repo_owner == owner,
+                GitHubConnection.repo_name == name,
+                GitHubConnection.status == ConnectionStatus.active,
+            )
+        )
+        connection = result.scalars().first()
+        if connection is None:
+            logger.warning("github webhook for unconnected repo %s/%s", owner, name)
+            return Response(status_code=status.HTTP_200_OK)
+
+        try:
+            github_signature.verify(raw_body, x_hub_signature_256, decrypt(connection.webhook_secret))
+        except github_signature.InvalidSignature:
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+        business_id = connection.business_id
+
+    if issue_url:
+        background_tasks.add_task(_process_github_issue_closed, business_id, issue_url)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_github_issue_closed(business_id: uuid.UUID, issue_url: str) -> None:
+    """
+    Mark the matching Commitment met and fire the proactive "it's fixed"
+    notification. Runs after the response has already been sent - never
+    raises, same contract as every other background webhook processor.
+    Naturally idempotent: a Commitment already `met` is left untouched
+    and no second notification fires, so a GitHub retry of the same
+    delivery is harmless.
+    """
+    from shared.scheduling import notify
+
+    async with AsyncSessionLocal() as db:
+        try:
+            result = await db.execute(
+                select(Commitment).where(
+                    Commitment.business_id == business_id,
+                    Commitment.github_issue_url == issue_url,
+                )
+            )
+            commitment = result.scalars().first()
+            if commitment is None or commitment.status == CommitmentStatus.met:
+                await db.commit()
+                return
+
+            now = datetime.now(timezone.utc)
+            commitment.status = CommitmentStatus.met
+            commitment.resolved_at = now
+
+            customer = await db.get(Customer, commitment.customer_id)
+            business = await db.get(Business, business_id) if customer is not None else None
+
+            if customer is not None and business is not None:
+                await notify.send_bug_fixed_notification(db, business=business, customer=customer, commitment=commitment)
+
+            await db.commit()
+            logger.info("github issue closed -> commitment met business=%s commitment=%s", business_id, commitment.id)
+        except Exception:
+            logger.exception("github issue-closed processing failed business=%s issue=%s", business_id, issue_url)
+            await db.rollback()
+
+
+# ── Stripe (software-startup vertical's billing-dunning receiver) ───────
+#
+# No per-business identifying header exists on a Stripe webhook the way
+# Shopify's shop-domain header or GitHub's repository name do, so the
+# webhook URL itself is the lookup key - see StripeConnection's own
+# docstring for why this is a cleaner design than GitHub's parse-then-
+# verify two-step. Signature verification uses Stripe's own SDK
+# (shared/integrations/stripe_client.py), not hand-rolled HMAC - the one
+# deliberate exception in this codebase, also explained there.
+
+@router.post("/stripe/{webhook_token}")
+async def receive_stripe_webhook(
+    webhook_token: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    stripe_signature: str | None = Header(default=None, alias="stripe-signature"),
+) -> Response:
+    raw_body = await request.body()
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(StripeConnection).where(
+                StripeConnection.webhook_token == webhook_token,
+                StripeConnection.status == ConnectionStatus.active,
+            )
+        )
+        connection = result.scalars().first()
+        if connection is None:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+
+        try:
+            event = stripe_client.verify_and_parse(
+                raw_body, stripe_signature, decrypt(connection.webhook_secret)
+            )
+        except stripe_client.InvalidSignature:
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+        business_id = connection.business_id
+
+    if event.get("type") == "invoice.payment_failed":
+        background_tasks.add_task(_process_stripe_payment_failed, business_id, event)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_stripe_payment_failed(business_id: uuid.UUID, event: dict) -> None:
+    """
+    Runs after the response has already been sent - never raises, same
+    contract as every other background webhook processor. This never
+    tries to recover the payment itself (Stripe's own Smart Retries do
+    that job) - it only makes sure the business and the ledger both know
+    a payment is stuck, the same "surface it, don't automate the money"
+    boundary Order Sync's receive-only design already drew for Shopify.
+    """
+    from shared.scheduling import notify
+
+    invoice = (event.get("data") or {}).get("object") or {}
+    invoice_id = invoice.get("id")
+    customer_email = invoice.get("customer_email")
+    amount_due = invoice.get("amount_due")
+    currency = (invoice.get("currency") or "").upper()
+    hosted_url = invoice.get("hosted_invoice_url")
+
+    if not invoice_id or not customer_email:
+        logger.warning(
+            "stripe payment_failed webhook missing invoice id or customer email business=%s", business_id,
+        )
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            existing = await db.execute(
+                select(Commitment.id).where(
+                    Commitment.business_id == business_id,
+                    Commitment.external_ref == invoice_id,
+                ).limit(1)
+            )
+            if existing.scalars().first() is not None:
+                # Stripe retries an undelivered webhook with the same
+                # event - a repeat delivery for an invoice already
+                # recorded is not a new commitment.
+                await db.commit()
+                return
+
+            business = await db.get(Business, business_id)
+            if business is None:
+                await db.commit()
+                return
+
+            resolution = await identity_resolver.resolve(
+                business_id, IdentityKind.email, customer_email, db,
+            )
+            customer = resolution.customer
+
+            # amount_paise is an INR-paise convention used throughout this
+            # schema - a Stripe invoice may be in any currency, so the
+            # amount is never written there (that would silently
+            # mislabel a non-INR figure); it's shown, currency-tagged,
+            # only in the description text a person actually reads.
+            amount_note = f" ({currency} {amount_due / 100:.2f})" if amount_due is not None and currency else ""
+            commitment = Commitment(
+                business_id=business_id,
+                customer_id=customer.id,
+                direction=CommitmentDirection.they_owe,
+                kind=CommitmentKind.payment,
+                description=f"Payment failed on invoice {invoice_id}{amount_note}",
+                status=CommitmentStatus.open,
+                source_message_ids=[],
+                external_ref=invoice_id,
+            )
+            db.add(commitment)
+            await db.flush()
+
+            await notify.send_payment_failed_reminder(
+                db, business=business, customer=customer, invoice_url=hosted_url,
+            )
+
+            await db.commit()
+            logger.info(
+                "stripe payment failed -> commitment created business=%s commitment=%s",
+                business_id, commitment.id,
+            )
+        except Exception:
+            logger.exception(
+                "stripe payment_failed processing failed business=%s invoice=%s", business_id, invoice_id,
+            )
+            await db.rollback()

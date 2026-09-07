@@ -55,11 +55,135 @@ class CalendarConnection(UUIDMixin, TimestampMixin, Base):
     )
 
 
+class GitHubConnection(UUIDMixin, TimestampMixin, Base):
+    """
+    A business's own GitHub repo, for the software-startup vertical's
+    closed bug-lifecycle loop (shared/integrations/github.py). Not a
+    customer-facing channel - nobody chats with GitHub - this plays the
+    same "backend system of record KROVA listens to for the truth" role
+    Shiprocket already plays for D2C delivery status.
+
+    v1 is one PAT, one repo per business - the same "start with what's
+    confirmed simple" reasoning Shiprocket's login-based auth used over
+    a bigger OAuth app. A real GitHub App/multi-repo flow is a bigger,
+    separate effort, not built here.
+    """
+
+    __tablename__ = "github_connections"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    repo_owner: Mapped[str] = mapped_column(String(255), nullable=False)
+    repo_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Encrypted at rest, same convention as ChannelConnection.access_token.
+    # Write direction: creating an issue (shared/integrations/github.py).
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    # Receive direction: verifying the issues-closed webhook
+    # (services/api/routers/webhooks.py). The business creates this
+    # webhook themselves in their own repo's settings (GitHub has no
+    # self-serve "generate a secret for me" flow the way Shopify's app
+    # install does) and pastes the secret they chose here - same
+    # StoreConnection.webhook_secret precedent, entered rather than
+    # generated.
+    webhook_secret: Mapped[str] = mapped_column(Text, nullable=False)
+
+    status: Mapped[ConnectionStatus] = mapped_column(
+        EnumType(ConnectionStatus, 20), nullable=False, default=ConnectionStatus.active
+    )
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", name="uq_github_connection_per_business"),
+        Index("idx_github_connections_business", "business_id"),
+    )
+
+
+class EmailSendConnection(UUIDMixin, TimestampMixin, Base):
+    """
+    A business's own verified send-from address, routed through Krova's
+    one shared Postmark account (settings.postmark_server_token) rather
+    than a per-business OAuth mailbox connection - see shared/
+    integrations/postmark.py's own module docstring for why: Postmark
+    does per-customer reputation isolation natively, which is what a
+    multi-tenant platform actually needs, and a sender-signature (one
+    confirmed address, no DNS changes) is the honest v1 versus a full
+    domain/DKIM setup.
+    """
+
+    __tablename__ = "email_send_connections"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    from_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    # Postmark's own id for this sender signature - what verified-status
+    # polling and every send call key off, not the raw email string.
+    postmark_signature_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", name="uq_email_send_connection_per_business"),
+        Index("idx_email_send_connections_business", "business_id"),
+    )
+
+
+class StripeConnection(UUIDMixin, TimestampMixin, Base):
+    """
+    A business's own Stripe webhook endpoint secret - for the billing-
+    dunning half of the software-startup vertical (shared/integrations/
+    stripe_client.py). Receive-only: this never calls Stripe's own API,
+    only verifies an inbound webhook, so there's no API key to store here
+    yet - same "receive-only, no API token needed yet" reasoning
+    StoreConnection's own docstring already used for Shopify.
+
+    The business creates the webhook endpoint themselves in their own
+    Stripe Dashboard, pointed at Krova's own per-business URL
+    (/webhooks/stripe/{webhook_token} - unlike Shopify's shop-domain
+    header or GitHub's repository name, a Stripe webhook payload carries
+    no reliable per-tenant identifier at all, so the URL itself is the
+    lookup key, generated server-side same as OutboundWebhook.secret -
+    a direct, O(1) lookup rather than GitHub's parse-then-verify two-step
+    or trying every connection's secret in turn), and pastes the signing
+    secret Stripe shows them for that endpoint - entered, not generated,
+    the same shape as GitHubConnection.webhook_secret.
+    """
+
+    __tablename__ = "stripe_connections"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    # Generated server-side (secrets.token_urlsafe), never chosen by the
+    # caller - what makes the webhook URL itself the per-business lookup.
+    webhook_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # Encrypted at rest, same convention as every other secret in this file.
+    webhook_secret: Mapped[str] = mapped_column(Text, nullable=False)
+
+    status: Mapped[ConnectionStatus] = mapped_column(
+        EnumType(ConnectionStatus, 20), nullable=False, default=ConnectionStatus.active
+    )
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", name="uq_stripe_connection_per_business"),
+        Index("idx_stripe_connections_business", "business_id"),
+        Index("idx_stripe_connections_token", "webhook_token"),
+    )
+
+
 class WebhookEventType(str, enum.Enum):
     appointment_booked = "appointment.booked"
     appointment_cancelled = "appointment.cancelled"
     queue_token_issued = "queue_token.issued"
     escalation_raised = "escalation.raised"
+    # software-startup vertical - fired the moment a competitor_mention
+    # signal is extracted (services/workers/analyse.py), not batched -
+    # research found the first ~83 seconds after a competitor comes up
+    # decide the deal, so this is deliberately real-time, not a nightly
+    # sweep like every other Insight-kind check in this codebase.
+    competitor_mentioned = "competitor.mentioned"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):

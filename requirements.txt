@@ -35,3 +35,8 @@ pytest==8.4.1
 pytest-asyncio==1.1.0
 websockets==17.0.1
 plivo==4.62.0
+
+# ── Billing dunning (software-startup vertical) ─────────────────────────────
+# The one vendor SDK this codebase uses for webhook verification rather than
+# hand-rolled HMAC - see shared/integrations/stripe_client.py's own docstring.
+stripe==15.6.1

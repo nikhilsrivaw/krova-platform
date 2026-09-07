@@ -10,6 +10,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -17,12 +18,24 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth import tokens
-from shared.auth.encryption import encrypt
+from shared.auth.encryption import decrypt, encrypt
 from shared.auth.tokens import TokenError
 from shared.config.settings import settings
-from shared.db.models import ApiKey, CalendarConnection, ConnectionStatus, OutboundWebhook, WebhookEventType
+from shared.db.models import (
+    ApiKey,
+    Business,
+    CalendarConnection,
+    ConnectionStatus,
+    EmailSendConnection,
+    GitHubConnection,
+    OutboundWebhook,
+    StripeConnection,
+    WebhookEventType,
+)
 from shared.integrations import api_keys as api_keys_module
+from shared.integrations import github as github_module
 from shared.integrations import google_calendar
+from shared.integrations import postmark
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -134,6 +147,275 @@ async def google_calendar_disconnect(current_user: CurrentUserDep, db: DbDep) ->
         connection.status = ConnectionStatus.disconnected
         connection.access_token = None
         connection.refresh_token = None
+
+
+# ── GitHub (software-startup vertical's closed bug-lifecycle loop) ──────
+#
+# v1 is a pasted fine-grained PAT + a webhook secret the business chose
+# themselves in their own repo's Settings > Webhooks screen - the same
+# "paste credentials generated in the platform's own dashboard" shape as
+# ShippingConnection above, and for the identical reason: no self-serve
+# GitHub App/OAuth flow is built here, that is a bigger, separate effort.
+
+class GitHubConnectionIn(BaseModel):
+    repo_owner: str = Field(min_length=1, max_length=255)
+    repo_name: str = Field(min_length=1, max_length=255)
+    access_token: str = Field(min_length=1, max_length=500)
+    webhook_secret: str = Field(min_length=1, max_length=500)
+
+
+class GitHubConnectionOut(BaseModel):
+    id: str
+    repo_owner: str
+    repo_name: str
+    status: str
+    connected_at: datetime | None
+    # access_token/webhook_secret deliberately absent - never returned
+    # once stored, same rule as every other credential in this router.
+
+
+def _github_out(c: GitHubConnection) -> GitHubConnectionOut:
+    return GitHubConnectionOut(
+        id=str(c.id), repo_owner=c.repo_owner, repo_name=c.repo_name,
+        status=c.status.value, connected_at=c.connected_at,
+    )
+
+
+@router.get("/github", response_model=GitHubConnectionOut | None)
+async def github_status(current_user: CurrentUserDep, db: DbDep) -> GitHubConnectionOut | None:
+    result = await db.execute(
+        select(GitHubConnection).where(GitHubConnection.business_id == current_user.business)
+    )
+    connection = result.scalar_one_or_none()
+    return _github_out(connection) if connection else None
+
+
+@router.post("/github", response_model=GitHubConnectionOut, status_code=status.HTTP_201_CREATED)
+async def connect_github(body: GitHubConnectionIn, current_user: CurrentUserDep, db: DbDep) -> GitHubConnectionOut:
+    # A real check, not just stored credentials - confirms the token can
+    # actually see this repo before the connection is saved, same
+    # "prove it before storing it" instinct as Shiprocket's own real
+    # login check.
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.get(
+            f"{github_module.API_BASE}/repos/{body.repo_owner}/{body.repo_name}",
+            headers={"Authorization": f"Bearer {body.access_token}", "Accept": "application/vnd.github+json"},
+        )
+    if res.status_code != 200:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Could not access {body.repo_owner}/{body.repo_name} with this token ({res.status_code})",
+        )
+
+    existing = (
+        await db.execute(select(GitHubConnection).where(GitHubConnection.business_id == current_user.business))
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        existing = GitHubConnection(business_id=current_user.business)
+        db.add(existing)
+
+    existing.repo_owner = body.repo_owner
+    existing.repo_name = body.repo_name
+    existing.access_token = encrypt(body.access_token)
+    existing.webhook_secret = encrypt(body.webhook_secret)
+    existing.status = ConnectionStatus.active
+    existing.connected_at = existing.connected_at or now
+
+    await db.flush()
+    logger.info("github connected business=%s repo=%s/%s", current_user.business, body.repo_owner, body.repo_name)
+    return _github_out(existing)
+
+
+@router.delete("/github", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_github(current_user: CurrentUserDep, db: DbDep) -> None:
+    result = await db.execute(
+        select(GitHubConnection).where(GitHubConnection.business_id == current_user.business)
+    )
+    connection = result.scalar_one_or_none()
+    if connection is not None:
+        connection.status = ConnectionStatus.disconnected
+
+
+# ── Outbound email (software-startup vertical - the "it's fixed" send) ──
+#
+# See shared/integrations/postmark.py's own docstring for why this is
+# one shared Krova-level Postmark account with a per-business sender
+# signature, not a per-business OAuth mailbox connection.
+
+class EmailConnectionIn(BaseModel):
+    from_email: str = Field(min_length=3, max_length=320)
+
+
+class EmailConnectionOut(BaseModel):
+    id: str
+    from_email: str
+    verified: bool
+    connected_at: datetime | None
+
+
+def _email_out(c: EmailSendConnection) -> EmailConnectionOut:
+    return EmailConnectionOut(
+        id=str(c.id), from_email=c.from_email, verified=c.verified, connected_at=c.connected_at,
+    )
+
+
+@router.get("/email-connection", response_model=EmailConnectionOut | None)
+async def email_connection_status(current_user: CurrentUserDep, db: DbDep) -> EmailConnectionOut | None:
+    """
+    Also re-polls Postmark for a not-yet-verified signature, so the
+    settings screen reflects a confirmation click without a separate
+    "check status" button - cheap, since this is a low-traffic page.
+    """
+    result = await db.execute(
+        select(EmailSendConnection).where(EmailSendConnection.business_id == current_user.business)
+    )
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        return None
+    if not connection.verified:
+        try:
+            connection.verified = await postmark.check_signature_verified(connection.postmark_signature_id)
+        except postmark.PostmarkError:
+            pass  # left as-is; the next poll tries again
+    return _email_out(connection)
+
+
+@router.post("/email-connection", response_model=EmailConnectionOut, status_code=status.HTTP_201_CREATED)
+async def connect_email(body: EmailConnectionIn, current_user: CurrentUserDep, db: DbDep) -> EmailConnectionOut:
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+
+    try:
+        signature = await postmark.create_signature(body.from_email, business_name=business.name)
+    except postmark.PostmarkError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    existing = (
+        await db.execute(
+            select(EmailSendConnection).where(EmailSendConnection.business_id == current_user.business)
+        )
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        existing = EmailSendConnection(business_id=current_user.business)
+        db.add(existing)
+
+    existing.from_email = body.from_email
+    existing.postmark_signature_id = signature.id
+    existing.verified = signature.confirmed
+    existing.connected_at = existing.connected_at or now
+
+    await db.flush()
+    logger.info("email connection created business=%s from=%s", current_user.business, body.from_email)
+    return _email_out(existing)
+
+
+@router.delete("/email-connection", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_email(current_user: CurrentUserDep, db: DbDep) -> None:
+    result = await db.execute(
+        select(EmailSendConnection).where(EmailSendConnection.business_id == current_user.business)
+    )
+    connection = result.scalar_one_or_none()
+    if connection is not None:
+        await db.delete(connection)
+
+
+# ── Stripe (software-startup vertical - billing dunning) ────────────────
+#
+# See StripeConnection's own docstring for why the webhook URL itself
+# (not a header) is the per-business lookup key. Krova only ever
+# generates the URL's token; the business generates the signing secret
+# themselves in their own Stripe Dashboard and pastes it here.
+
+class StripeConnectionIn(BaseModel):
+    # Optional on purpose: the real-world order is generate-the-URL-first,
+    # paste-it-into-Stripe, THEN Stripe hands back a secret to paste here -
+    # a business cannot have the secret before Krova has issued the URL.
+    # Calling this with no secret just (re)issues the URL; calling it
+    # again with one fills it in, same connection, same token/URL.
+    webhook_secret: str | None = Field(default=None, max_length=500)
+
+
+class StripeConnectionOut(BaseModel):
+    id: str
+    webhook_url: str
+    status: str
+    connected_at: datetime | None
+    # Whether a real signing secret has been saved yet - lets the
+    # settings screen show "step 2 still needed" without ever returning
+    # the secret itself, which stays absent here on purpose.
+    has_secret: bool = False
+
+
+def _stripe_webhook_url(webhook_token: str) -> str:
+    return f"{settings.public_base_url.rstrip('/')}/webhooks/stripe/{webhook_token}"
+
+
+@router.get("/stripe", response_model=StripeConnectionOut | None)
+async def stripe_status(current_user: CurrentUserDep, db: DbDep) -> StripeConnectionOut | None:
+    result = await db.execute(
+        select(StripeConnection).where(StripeConnection.business_id == current_user.business)
+    )
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        return None
+    return StripeConnectionOut(
+        id=str(connection.id), webhook_url=_stripe_webhook_url(connection.webhook_token),
+        status=connection.status.value, connected_at=connection.connected_at,
+        has_secret=bool(connection.webhook_secret and decrypt(connection.webhook_secret)),
+    )
+
+
+@router.post("/stripe", response_model=StripeConnectionOut, status_code=status.HTTP_201_CREATED)
+async def connect_stripe(body: StripeConnectionIn, current_user: CurrentUserDep, db: DbDep) -> StripeConnectionOut:
+    existing = (
+        await db.execute(select(StripeConnection).where(StripeConnection.business_id == current_user.business))
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+
+    if existing is None:
+        # No secret yet is the expected first call - a business cannot
+        # have Stripe's own secret before Krova has issued this URL for
+        # them to paste into their Stripe Dashboard. Placeholder secret
+        # (empty string, encrypted) means every webhook 403s until they
+        # come back with the real one - self-correcting, no separate
+        # "pending" status needed.
+        connection = StripeConnection(
+            business_id=current_user.business,
+            webhook_token=secrets.token_urlsafe(32),
+            webhook_secret=encrypt(body.webhook_secret or ""),
+            status=ConnectionStatus.active,
+            connected_at=now,
+        )
+        db.add(connection)
+    else:
+        connection = existing
+        # Never blanks an already-saved secret - a call to just re-fetch
+        # the URL (no secret in the body) must not undo a working setup.
+        if body.webhook_secret:
+            connection.webhook_secret = encrypt(body.webhook_secret)
+        connection.status = ConnectionStatus.active
+        connection.connected_at = connection.connected_at or now
+
+    await db.flush()
+    logger.info("stripe connected business=%s", current_user.business)
+    return StripeConnectionOut(
+        id=str(connection.id), webhook_url=_stripe_webhook_url(connection.webhook_token),
+        status=connection.status.value, connected_at=connection.connected_at,
+        has_secret=bool(connection.webhook_secret and decrypt(connection.webhook_secret)),
+    )
+
+
+@router.delete("/stripe", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_stripe(current_user: CurrentUserDep, db: DbDep) -> None:
+    result = await db.execute(
+        select(StripeConnection).where(StripeConnection.business_id == current_user.business)
+    )
+    connection = result.scalar_one_or_none()
+    if connection is not None:
+        connection.status = ConnectionStatus.disconnected
 
 
 # ── Outbound webhooks ────────────────────────────────────────────────────

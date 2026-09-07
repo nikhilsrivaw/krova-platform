@@ -13,7 +13,7 @@ approved by Meta yet gets a skipped send and a log line, never a crash and
 never a fabricated message the business didn't actually send.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -26,6 +26,7 @@ from shared.db.models import (
     Business,
     Channel,
     ChannelConnection,
+    Commitment,
     ConnectionStatus,
     Customer,
     CustomerIdentity,
@@ -57,10 +58,18 @@ REVIEW_TEMPLATE_NAME = "review_request"
 # buttons - "Confirm Order" (payload COD_CONFIRM) and "Cancel Order"
 # (payload COD_DECLINE) - see shared/care/cod_confirmation.py's own
 # docstring for why those exact payload strings matter downstream.
+ONBOARDING_NUDGE_TEMPLATE_NAME = "onboarding_nudge"
+EXPANSION_NUDGE_TEMPLATE_NAME = "expansion_nudge"
+PAYMENT_FAILED_TEMPLATE_NAME = "payment_failed_reminder"
 COD_CONFIRMATION_TEMPLATE_NAME = "cod_confirmation"
 ABANDONED_CART_TEMPLATE_NAME = "abandoned_cart_recovery"
 REPEAT_PURCHASE_TEMPLATE_NAME = "repeat_purchase_nudge"
 NDR_RESCHEDULE_TEMPLATE_NAME = "ndr_reschedule_request"
+# product_feedback capability (software-startup vertical). WhatsApp-origin
+# only - see send_bug_fixed_notification's own docstring for the
+# email-origin branch, which does not go through this template mechanism
+# at all.
+BUG_FIXED_TEMPLATE_NAME = "bug_fixed_notification"
 
 
 async def _send(
@@ -308,4 +317,220 @@ async def send_ndr_reschedule_request(
         template_name=NDR_RESCHEDULE_TEMPLATE_NAME,
         body_params=[customer.display_name or "there", order_number],
         plain_text=f"We tried to deliver your order #{order_number} but missed you - reply to let us know when you'll be available.",
+    )
+
+
+async def send_bug_fixed_notification(
+    db: AsyncSession, *, business: Business, customer: Customer, commitment: Commitment,
+) -> bool:
+    """
+    Close the loop on a promised bug fix - product_feedback capability.
+    Fired only by services/api/routers/webhooks.py's GitHub receiver, once
+    the real issue actually closes - never guessed, never sent because an
+    LLM decided the bug was probably fixed.
+
+    Unlike every other function in this module, this one is not
+    WhatsApp-only: this vertical's users are more often reachable by
+    email or the web widget than WhatsApp, so the send channel is
+    whichever channel the original bug report actually came in on - the
+    same "reply where they wrote" rule identity resolution already
+    applies everywhere else in this codebase - read off the Message
+    behind the commitment's own first source_message_id.
+    """
+    from shared.db.models import Channel, EmailSendConnection, Message
+
+    if commitment.bug_fix_notified_at is not None:
+        return False  # already sent - see the webhook receiver's own idempotency note
+
+    origin_channel = None
+    if commitment.source_message_ids:
+        source = await db.get(Message, commitment.source_message_ids[0])
+        if source is not None:
+            origin_channel = source.channel
+
+    sent = False
+    if origin_channel == Channel.whatsapp:
+        sent = await _send(
+            db, business=business, customer=customer,
+            template_name=BUG_FIXED_TEMPLATE_NAME,
+            body_params=[customer.display_name or "there", commitment.description],
+            plain_text=f"Good news - the issue you reported (\"{commitment.description}\") has been fixed.",
+        )
+    else:
+        # Email/web-origin (or unknown - email is the safer default for a
+        # non-WhatsApp report, since a web-widget session is rarely still
+        # open by the time a bug is actually fixed).
+        from shared.integrations import postmark
+
+        connection = (
+            await db.execute(
+                select(EmailSendConnection).where(
+                    EmailSendConnection.business_id == business.id,
+                    EmailSendConnection.verified.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        to_email = None
+        if connection is not None:
+            identity = (
+                await db.execute(
+                    select(CustomerIdentity.value).where(
+                        CustomerIdentity.customer_id == customer.id,
+                        CustomerIdentity.kind == IdentityKind.email,
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            to_email = identity
+
+        if connection is None or to_email is None:
+            logger.info(
+                "bug-fixed notification skipped business=%s commitment=%s - no verified email connection or customer email",
+                business.id, commitment.id,
+            )
+        else:
+            try:
+                await postmark.send_email(
+                    from_email=connection.from_email,
+                    to=to_email,
+                    subject=f"Fixed: {commitment.description}",
+                    text_body=(
+                        f"Hi {customer.display_name or 'there'},\n\n"
+                        f"Good news - the issue you reported (\"{commitment.description}\") has been fixed.\n\n"
+                        f"- {business.name}"
+                    ),
+                )
+                sent = True
+            except postmark.PostmarkError as exc:
+                logger.warning("bug-fixed email failed business=%s commitment=%s: %s", business.id, commitment.id, exc)
+
+    if sent:
+        commitment.bug_fix_notified_at = datetime.now(timezone.utc)
+    return sent
+
+
+async def _send_whatsapp_or_email(
+    db: AsyncSession, *, business: Business, customer: Customer,
+    whatsapp_template: str, whatsapp_params: list[str], whatsapp_plain_text: str,
+    email_subject: str, email_body: str, log_label: str,
+) -> bool:
+    """
+    Shared dual-channel dispatch behind send_onboarding_nudge and
+    send_expansion_nudge below - both need the identical "try WhatsApp,
+    fall back to the verified EmailSendConnection" shape with no origin
+    message to key off (a lifecycle event has no channel of its own,
+    unlike a bug report - see send_bug_fixed_notification, which keys off
+    the origin message instead and is kept separate rather than forced
+    through this same helper).
+    """
+    from shared.db.models import EmailSendConnection
+
+    whatsapp_ok = await _send(
+        db, business=business, customer=customer,
+        template_name=whatsapp_template, body_params=whatsapp_params, plain_text=whatsapp_plain_text,
+    )
+    if whatsapp_ok:
+        return True
+
+    connection = (
+        await db.execute(
+            select(EmailSendConnection).where(
+                EmailSendConnection.business_id == business.id,
+                EmailSendConnection.verified.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None:
+        return False
+
+    to_email = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer.id,
+                CustomerIdentity.kind == IdentityKind.email,
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if to_email is None:
+        return False
+
+    from shared.integrations import postmark
+
+    try:
+        await postmark.send_email(from_email=connection.from_email, to=to_email, subject=email_subject, text_body=email_body)
+        return True
+    except postmark.PostmarkError as exc:
+        logger.warning("%s email failed business=%s customer=%s: %s", log_label, business.id, customer.id, exc)
+        return False
+
+
+async def send_onboarding_nudge(db: AsyncSession, *, business: Business, customer: Customer) -> bool:
+    """
+    product_feedback capability. Fired by shared/care/onboarding_dropoff.py
+    for a customer whose business reported a trial_started
+    CustomerLifecycleEvent with no later activated one, past the 3-day
+    window research found most predictive.
+    """
+    return await _send_whatsapp_or_email(
+        db, business=business, customer=customer,
+        whatsapp_template=ONBOARDING_NUDGE_TEMPLATE_NAME,
+        whatsapp_params=[customer.display_name or "there"],
+        whatsapp_plain_text=f"Hi, noticed you haven't finished setting up {business.name} yet - need a hand with anything?",
+        email_subject=f"Need a hand getting started with {business.name}?",
+        email_body=(
+            f"Hi {customer.display_name or 'there'},\n\n"
+            f"Noticed you haven't finished setting up {business.name} yet - "
+            "just reply if you need a hand with anything.\n\n"
+            f"- {business.name}"
+        ),
+        log_label="onboarding nudge",
+    )
+
+
+async def send_expansion_nudge(db: AsyncSession, *, business: Business, customer: Customer) -> bool:
+    """
+    product_feedback capability. Fired by shared/care/expansion_signals.py
+    for a customer whose business reported a usage-milestone
+    CustomerLifecycleEvent (e.g. usage_threshold_reached) - top SaaS
+    companies get 50%+ of new ARR from existing-customer expansion, and
+    research found most companies leave 40-60% of it on the table for
+    lack of a system like this. Krova never invents the milestone itself
+    - it only ever fires because the business's own product told it one
+    was hit (see CustomerLifecycleEvent's own docstring).
+    """
+    return await _send_whatsapp_or_email(
+        db, business=business, customer=customer,
+        whatsapp_template=EXPANSION_NUDGE_TEMPLATE_NAME,
+        whatsapp_params=[customer.display_name or "there"],
+        whatsapp_plain_text=f"Hi, looks like you're getting real value out of {business.name} - want to talk about upgrading?",
+        email_subject=f"You're growing with {business.name} - let's talk upgrade",
+        email_body=(
+            f"Hi {customer.display_name or 'there'},\n\n"
+            f"Looks like you're getting real value out of {business.name} - "
+            "happy to talk through upgrading if that's useful.\n\n"
+            f"- {business.name}"
+        ),
+        log_label="expansion nudge",
+    )
+
+
+async def send_payment_failed_reminder(
+    db: AsyncSession, *, business: Business, customer: Customer, invoice_url: str | None,
+) -> bool:
+    """
+    product_feedback capability. Fired once by services/api/routers/
+    webhooks.py's Stripe receiver, the moment invoice.payment_failed
+    arrives - never inferred, never sent speculatively. This only makes
+    sure the business and the ledger both know a payment is stuck; Stripe's
+    own Smart Retries already handle actually recovering it (see
+    Commitment(kind=payment) created alongside this - the ledger entry,
+    not this message, is the durable record).
+    """
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=PAYMENT_FAILED_TEMPLATE_NAME,
+        body_params=[customer.display_name or "there", invoice_url or ""],
+        plain_text=(
+            f"Hi, your last payment to {business.name} didn't go through - "
+            + (f"you can update your payment method here: {invoice_url}" if invoice_url else "please update your payment method to keep your account active.")
+        ),
     )

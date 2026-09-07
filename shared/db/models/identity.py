@@ -304,3 +304,50 @@ class CustomerIdentity(UUIDMixin, Base):
         UniqueConstraint("business_id", "kind", "value", name="uq_identity_per_business"),
         Index("idx_identities_customer", "customer_id"),
     )
+
+
+class CustomerLifecycleEvent(UUIDMixin, Base):
+    """
+    Something a business's own product told Krova happened - "this user
+    signed up," "this user activated." Krova only ever sees conversations
+    on its own; it has no visibility into a startup's product signup or
+    activation flow unless the business calls
+    POST /public-api/v1/lifecycle-events themselves (shared/care/
+    onboarding_dropoff.py's own sweep reads this table). A real,
+    disclosed dependency on the business wiring this in - the same shape
+    as Shiprocket needing a business's own login or GitHub needing a
+    business's own PAT, not something Krova can see on its own.
+
+    Deliberately its own table, not new columns on Customer: this is
+    software-startup-specific data (a clinic's Customer has no notion of
+    "trial started"), and Customer is shared across every vertical.
+    """
+
+    __tablename__ = "customer_lifecycle_events"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Free text, not an enum - "trial_started"/"activated" are the two the
+    # onboarding-dropoff sweep looks for, but a business may send whatever
+    # its own product calls its own lifecycle moments.
+    event: Mapped[str] = mapped_column(String(100), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Whatever the business wants to attach - plan name, signup source.
+    # Never read by KROVA's own logic, only shown back to the owner.
+    event_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    # Dedupe for the onboarding-dropoff nudge - same "stamp so a sweep
+    # never re-sends" shape as every other *_sent_at column in this schema.
+    nudge_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_lifecycle_events_customer", "customer_id", "event"),
+        # The onboarding-dropoff sweep's own query: this business's
+        # trial_started events not yet nudged.
+        Index("idx_lifecycle_events_sweep", "business_id", "event", "nudge_sent_at"),
+    )
