@@ -7,11 +7,14 @@ Kept as a genuinely separate module rather than a branch inside signup.py:
 different host (graph.facebook.com throughout, not api.instagram.com /
 graph.instagram.com), different credentials (the main app's meta_app_id /
 meta_app_secret, the same ones WhatsApp's signup.py already uses - not the
-separate Instagram app identity), and a different identifier entirely. The
-account that receives messages is identified by its Facebook Page id, not
-an Instagram-scoped user id - that Page id is what should appear as
-entry.id in the webhook payload, per the long-standing Messenger Platform
-convention this route inherits.
+separate Instagram app identity).
+
+This module once assumed the Facebook Page id was what a webhook's
+entry.id would carry, by analogy with the Messenger Platform convention
+it inherits. A real Instagram webhook delivery disproved that: entry.id
+carries the Instagram account id, so the caller keys the connection on
+ig_business_account_id and keeps page_id only for Page-scoped Graph
+calls.
 
 The flow:
 

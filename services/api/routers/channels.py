@@ -429,14 +429,19 @@ async def instagram_fb_callback(
         logger.error("instagram (fb login) signup failed business=%s: %s", business_id, exc)
         return RedirectResponse(f"{settings_url}?instagram=error")
 
-    # Keyed on the Page id, not the Instagram business account id - see
-    # signup_pages.py's module docstring on why that is the id a webhook's
-    # entry.id is expected to carry for this route.
+    # Keyed on the Instagram business account id, not the Page id. The
+    # docstring here used to claim the opposite - a real Instagram webhook
+    # delivery proved otherwise: entry.id carries the Instagram account id
+    # (the same value /me's own "user_id" field returns), never the linked
+    # Page id, so keying on page_id left every inbound message unmatched.
+    # Page id stays in extra, where it is still the right identifier for
+    # Page-scoped Graph calls.
+    account_id = result.ig_business_account_id or result.page_id
     existing = await db.execute(
         select(ChannelConnection).where(
             ChannelConnection.business_id == business_id,
             ChannelConnection.channel == Channel.instagram,
-            ChannelConnection.external_account_id == result.page_id,
+            ChannelConnection.external_account_id == account_id,
         )
     )
     connection = existing.scalar_one_or_none()
@@ -446,7 +451,7 @@ async def instagram_fb_callback(
         connection = ChannelConnection(
             business_id=business_id,
             channel=Channel.instagram,
-            external_account_id=result.page_id,
+            external_account_id=account_id,
             connected_at=now,
         )
         db.add(connection)
