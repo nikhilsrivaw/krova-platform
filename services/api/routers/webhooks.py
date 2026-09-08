@@ -146,6 +146,13 @@ async def _process_instagram(raw_body: bytes) -> None:
 
     parsed = instagram_webhook.parse(payload)
     if not parsed:
+        # Previously silent - a 200 OK with nothing extracted looked
+        # identical to "nothing happened" in the logs, with no way to
+        # tell a genuinely empty delivery apart from a payload shape
+        # parse() doesn't recognise yet. Logging the raw payload here is
+        # what actually diagnosed the real Facebook-Login-route shape
+        # live, rather than guessing at it.
+        logger.warning("instagram webhook parsed to nothing - raw payload: %s", payload)
         return
 
     async with AsyncSessionLocal() as db:
