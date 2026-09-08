@@ -20,7 +20,11 @@ from sqlalchemy import select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels import ingest
-from shared.channels.instagram.client import InstagramClient, InstagramSendError
+from shared.channels.instagram.client import (
+    InstagramApiError,
+    InstagramClient,
+    InstagramSendError,
+)
 from shared.channels.whatsapp.client import (
     CarouselSendCard,
     WhatsAppClient,
@@ -529,13 +533,20 @@ class SendInstagramText(BaseModel):
     body: str = Field(min_length=1, max_length=1000)
 
 
-@router.post("/instagram/text", response_model=SendResult)
-async def send_instagram_text(
-    body: SendInstagramText, current_user: CurrentUserDep, db: DbDep
-) -> SendResult:
+class InstagramParticipantOut(BaseModel):
+    id: str
+    username: str | None
+
+
+class InstagramConversationOut(BaseModel):
+    id: str
+    participants: list[InstagramParticipantOut]
+
+
+async def _active_instagram_connection(business_id, db) -> ChannelConnection:
     result = await db.execute(
         select(ChannelConnection).where(
-            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.business_id == business_id,
             ChannelConnection.channel == Channel.instagram,
             ChannelConnection.status == ConnectionStatus.active,
         )
@@ -545,7 +556,42 @@ async def send_instagram_text(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Connect Instagram first"
         )
+    return connection
 
+
+@router.get("/instagram/conversations", response_model=list[InstagramConversationOut])
+async def list_instagram_conversations(
+    current_user: CurrentUserDep, db: DbDep
+) -> list[InstagramConversationOut]:
+    """
+    Who this business can message on Instagram right now, with the IGSID
+    each one is addressed by - read live from Meta rather than from our own
+    messages table, because a conversation Meta knows about is exactly the
+    set the Send API will accept, and the two can differ.
+    """
+    connection = await _active_instagram_connection(current_user.business, db)
+    client = InstagramClient.for_connection(connection)
+    try:
+        conversations = await client.list_conversations()
+    except InstagramApiError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return [
+        InstagramConversationOut(
+            id=c.id,
+            participants=[
+                InstagramParticipantOut(id=p.id, username=p.username) for p in c.participants
+            ],
+        )
+        for c in conversations
+    ]
+
+
+@router.post("/instagram/text", response_model=SendResult)
+async def send_instagram_text(
+    body: SendInstagramText, current_user: CurrentUserDep, db: DbDep
+) -> SendResult:
+    connection = await _active_instagram_connection(current_user.business, db)
     client = InstagramClient.for_connection(connection)
     try:
         sent = await client.send_text(body.to, body.body)

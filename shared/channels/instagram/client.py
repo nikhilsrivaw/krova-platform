@@ -30,7 +30,11 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class InstagramSendError(Exception):
+class InstagramApiError(Exception):
+    """A Graph call failed. The message is shown to the business."""
+
+
+class InstagramSendError(InstagramApiError):
     """Message could not be sent. The message is shown to the business."""
 
 
@@ -39,13 +43,34 @@ class SendResult:
     external_id: str
 
 
+@dataclass(slots=True)
+class Participant:
+    id: str  # the IGSID - what send_text addresses
+    username: str | None
+
+
+@dataclass(slots=True)
+class Conversation:
+    id: str
+    participants: list[Participant]
+
+
 class InstagramClient:
     def __init__(
-        self, access_token: str, ig_user_id: str, base_url: str | None = None
+        self,
+        access_token: str,
+        ig_user_id: str,
+        base_url: str | None = None,
+        own_account_id: str | None = None,
     ) -> None:
         self._token = access_token
         self._ig_user_id = ig_user_id
         self._base_url = base_url or settings.instagram_graph_base_url
+        # The business's own Instagram account, which is a participant in
+        # every one of its own conversations and never the one to send to.
+        # Distinct from ig_user_id, which on the Facebook Login route is
+        # the Page id rather than the Instagram account.
+        self._own_account_id = own_account_id or ig_user_id
 
     @classmethod
     def for_connection(cls, connection) -> "InstagramClient":
@@ -61,8 +86,56 @@ class InstagramClient:
         token = decrypt(connection.access_token)
         page_id = extra.get("page_id")
         if extra.get("route") == "facebook_login" and page_id:
-            return cls(token, str(page_id), base_url=settings.graph_base_url)
+            return cls(
+                token,
+                str(page_id),
+                base_url=settings.graph_base_url,
+                own_account_id=connection.external_account_id,
+            )
         return cls(token, connection.external_account_id)
+
+    async def list_conversations(self, limit: int = 25) -> list[Conversation]:
+        """
+        Who this account is actually in a conversation with, and the IGSID
+        to reach each of them by.
+
+        This is the only supported way to learn an IGSID without waiting
+        for an inbound webhook: the ids Meta shows in the App Dashboard
+        are Instagram account ids, and sending to one of those is rejected
+        with "The requested user cannot be found" - confirmed live.
+        """
+        url = f"{self._base_url}/{self._ig_user_id}/conversations"
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            res = await client.get(
+                url,
+                params={
+                    "platform": "instagram",
+                    "fields": "id,participants",
+                    "limit": limit,
+                    "access_token": self._token,
+                },
+            )
+        if res.status_code != 200:
+            logger.error(
+                "instagram conversations failed id=%s status=%s body=%s",
+                self._ig_user_id, res.status_code, res.text[:500],
+            )
+            raise InstagramApiError(
+                f"Meta rejected the request ({res.status_code}): {res.text[:300]}"
+            )
+
+        conversations: list[Conversation] = []
+        for row in res.json().get("data") or []:
+            people = [
+                Participant(id=str(p.get("id")), username=p.get("username"))
+                for p in ((row.get("participants") or {}).get("data") or [])
+                if p.get("id") and str(p.get("id")) != str(self._own_account_id)
+            ]
+            if people:
+                conversations.append(
+                    Conversation(id=str(row.get("id") or ""), participants=people)
+                )
+        return conversations
 
     async def send_text(self, recipient_id: str, text: str) -> SendResult:
         url = f"{self._base_url}/{self._ig_user_id}/messages"
