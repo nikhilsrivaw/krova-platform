@@ -107,7 +107,7 @@ async def _send_instagram(draft: MessageDraft, business_id: uuid.UUID, text: str
     source = await db.get(Message, draft.in_reply_to_id) if draft.in_reply_to_id else None
     media = (source.media or {}) if source is not None else {}
     connection = await _active_connection(business_id, Channel.instagram, db)
-    client = InstagramClient(decrypt(connection.access_token), connection.external_account_id)
+    client = InstagramClient.for_connection(connection)
 
     if media.get("kind") == "comment" and media.get("comment_id"):
         occurred_at = source.occurred_at

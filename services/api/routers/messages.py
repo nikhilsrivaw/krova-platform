@@ -546,7 +546,7 @@ async def send_instagram_text(
             status_code=status.HTTP_409_CONFLICT, detail="Connect Instagram first"
         )
 
-    client = InstagramClient(decrypt(connection.access_token), connection.external_account_id)
+    client = InstagramClient.for_connection(connection)
     try:
         sent = await client.send_text(body.to, body.body)
     except InstagramSendError as exc:
