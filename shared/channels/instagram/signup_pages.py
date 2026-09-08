@@ -26,9 +26,11 @@ The flow:
      Page access token already included in the response.
   4. For each Page, check its instagram_business_account field to find
      which one (if any) has an Instagram Professional account linked.
-  5. Subscribe that Page to messages + comments webhooks explicitly, using
-     the Page's own access token - the same "do not assume it happened"
-     discipline as every other signup module here.
+  5. Subscribe that Page to the messages webhook explicitly, using the
+     Page's own access token - the same "do not assume it happened"
+     discipline as every other signup module here. Instagram comments are
+     not subscribed here: they arrive on the app-level `instagram` object
+     subscription, and naming them among a Page's fields fails the call.
 """
 
 from dataclasses import dataclass, field
@@ -268,9 +270,13 @@ async def complete_signup(code: str) -> PageSignupResult:
         page_token = chosen_page["access_token"]
 
         # 5 - subscribe this Page to messages + comments explicitly
+        # Page-level fields only. "comments" belongs to the app-level
+        # `instagram` object subscription, not here - Meta rejects the whole
+        # call when any one field is not in the Page's own list, so asking
+        # for it cost the `messages` subscription too.
         sub_res = await client.post(
             f"{base}/{page_id}/subscribed_apps",
-            params={"subscribed_fields": "messages,comments", "access_token": page_token},
+            params={"subscribed_fields": "messages", "access_token": page_token},
         )
         record("POST", f"/{page_id}/subscribed_apps", sub_res)
         subscribed = sub_res.status_code == 200 and bool(sub_res.json().get("success", False))
