@@ -198,11 +198,21 @@ async def complete_signup(code: str) -> PageSignupResult:
                 "instagram (fb login) debug_token status=%s granular_scopes=%s raw=%s",
                 debug_res.status_code, granular, debug_res.text[:500],
             )
+            # Any Instagram-scoped grant names the same account in its
+            # target_ids, so all of them are read rather than just one -
+            # which of these a given configuration includes is the
+            # dashboard's choice, not something to assume here.
+            ig_scopes = (
+                "instagram_basic",
+                "instagram_manage_messages",
+                "instagram_manage_comments",
+            )
             granted_ig_ids: list[str] = []
             for entry in granular:
-                if entry.get("scope") == "instagram_manage_comments":
-                    granted_ig_ids = [str(t) for t in (entry.get("target_ids") or [])]
-                    break
+                if entry.get("scope") in ig_scopes:
+                    for target in entry.get("target_ids") or []:
+                        if str(target) not in granted_ig_ids:
+                            granted_ig_ids.append(str(target))
             logger.info("instagram (fb login) candidate ig ids from granular scopes: %s", granted_ig_ids)
 
             # instagram_manage_comments was granted to the long-lived USER
@@ -211,6 +221,13 @@ async def complete_signup(code: str) -> PageSignupResult:
             # page-scoped permissions (pages_show_list, pages_messaging,
             # etc), not this one, which is why probing with pg["access_token"]
             # comes back "missing permissions" even for the right id.
+            # The probe is for the username only, and it needs instagram_basic
+            # to succeed - a grant that covers messaging or comments but not
+            # instagram_basic fails it with "cannot be loaded due to missing
+            # permissions" even though the id is right. The id itself comes
+            # from Meta's own granular_scopes, which is authoritative about
+            # what this grant covers, so a failed probe costs the username,
+            # never the connection.
             for candidate_ig_id in granted_ig_ids:
                 probe_res = await client.get(
                     f"{base}/{candidate_ig_id}",
@@ -221,25 +238,25 @@ async def complete_signup(code: str) -> PageSignupResult:
                     "instagram (fb login) probe ig=%s status=%s body=%s",
                     candidate_ig_id, probe_res.status_code, probe_res.text[:300],
                 )
+                ig_account_id = candidate_ig_id
                 if probe_res.status_code == 200:
-                    ig_account_id = candidate_ig_id
                     ig_username = probe_res.json().get("username")
-                    # The Page granted alongside this Instagram account in the
-                    # same OAuth grant - matched via pages_show_list's own
-                    # granular target, falling back to the only Page shared
-                    # if that scope wasn't present for some reason.
-                    page_ids = next(
-                        (
-                            [str(t) for t in (e.get("target_ids") or [])]
-                            for e in granular
-                            if e.get("scope") == "pages_show_list"
-                        ),
-                        [],
-                    )
-                    chosen_page = next(
-                        (pg for pg in pages if pg["id"] in page_ids), pages[0]
-                    )
-                    break
+                # The Page granted alongside this Instagram account in the
+                # same OAuth grant - matched via pages_show_list's own
+                # granular target, falling back to the only Page shared
+                # if that scope wasn't present for some reason.
+                page_ids = next(
+                    (
+                        [str(t) for t in (e.get("target_ids") or [])]
+                        for e in granular
+                        if e.get("scope") == "pages_show_list"
+                    ),
+                    [],
+                )
+                chosen_page = next(
+                    (pg for pg in pages if pg["id"] in page_ids), pages[0]
+                )
+                break
 
         if chosen_page is None:
             raise SignupError(
