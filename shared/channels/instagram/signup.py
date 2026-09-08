@@ -15,9 +15,14 @@ The flow, per Meta's Instagram API with Instagram Login docs:
 
 Step 5 mirrors the WhatsApp signup's most commonly missed step, on the same
 theory: if it is not confirmed, assume it silently didn't happen rather than
-assume it was automatic. Unlike WhatsApp's subscribed_apps call, this one has
-not been verified against a live account from this environment - the first
-real connection is the actual test, and this should be watched closely then.
+assume it was automatic.
+
+Verified live: the token exchange response's own "user_id" field is not the
+id webhooks or Meta's own dashboard ever address a connected account by -
+confirmed by comparing it against a real webhook delivery's entry.id and
+against the id shown in Meta's "API setup with Instagram Login" screen for
+the same account, both of which matched /me's own "user_id" field instead.
+See the id-reconciliation comment in complete_signup() below.
 """
 
 from dataclasses import dataclass, field
@@ -122,11 +127,30 @@ async def complete_signup(code: str) -> InstagramSignupResult:
         # 3 - which account this actually is
         me_res = await client.get(
             f"{settings.instagram_graph_base_url}/me",
-            params={"fields": "user_id,username,account_type"},
+            params={"fields": "id,user_id,username,account_type"},
             headers=auth,
         )
         record("GET", "/me", me_res)
         me = me_res.json() if me_res.status_code == 200 else {}
+
+        # The token exchange response's own "user_id" field is a different id
+        # space from the one Meta actually uses for messaging - confirmed live
+        # by comparing it against a real webhook's entry.id and against Meta's
+        # own "API setup with Instagram Login" dashboard, both of which match
+        # /me's "user_id" field instead, never the token exchange's. Every
+        # downstream use (webhook subscription, and the id stored so inbound
+        # webhooks can find this connection again) has to key off this one -
+        # subscribing or storing the token-exchange id would silently point
+        # at a node that is valid but is not what webhooks ever address.
+        me_user_id = str(me.get("user_id") or "")
+        if me_user_id and me_user_id != ig_user_id:
+            logger.warning(
+                "instagram token-exchange user_id (%s) differs from /me user_id (%s) - "
+                "using /me's, which is what webhooks and the dashboard actually use",
+                ig_user_id, me_user_id,
+            )
+        if me_user_id:
+            ig_user_id = me_user_id
 
         # 4 - subscribe to this account's webhooks explicitly - see module
         # docstring on why this is not assumed to be automatic.
