@@ -48,6 +48,7 @@ from services.api.routers import (
     signals,
     team,
     templates,
+    trust,
     voice_provisioning,
     webhooks,
     widget,
@@ -164,6 +165,7 @@ app.include_router(public_api.router, prefix=API_PREFIX)
 app.include_router(escalations.router, prefix=API_PREFIX)
 app.include_router(export.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
+app.include_router(trust.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)

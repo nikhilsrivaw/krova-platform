@@ -632,6 +632,10 @@ class AgentSettingsOut(BaseModel):
     # None means every call is customer-facing, today's exact behaviour -
     # see Business.owner_phone's own docstring.
     owner_phone: str | None
+    # False (the default) is today's exact behaviour: no public page.
+    # Business.settings key, not a column - see services/api/routers/
+    # trust.py, the endpoint this gates.
+    public_trust_page_enabled: bool
 
 
 def _agent_settings_out(connection: ChannelConnection, business: Business | None) -> AgentSettingsOut:
@@ -655,6 +659,7 @@ def _agent_settings_out(connection: ChannelConnection, business: Business | None
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
         owner_phone=business.owner_phone if business else None,
+        public_trust_page_enabled=bool((business.settings or {}).get("public_trust_page_enabled")) if business else False,
     )
 
 
@@ -679,6 +684,7 @@ class AgentSettingsIn(BaseModel):
     # staff_phone_number - lives on Business, not this connection's
     # extra, since it identifies a person, not a per-number setting.
     owner_phone: str | None = None
+    public_trust_page_enabled: bool | None = None
 
 
 @router.patch("/agent-settings", response_model=AgentSettingsOut)
@@ -767,6 +773,11 @@ async def update_agent_settings(
     business = await db.get(Business, current_user.business)
     if body.owner_phone is not None and business is not None:
         business.owner_phone = normalised_owner_number
+    if body.public_trust_page_enabled is not None and business is not None:
+        business.settings = {
+            **(business.settings or {}),
+            "public_trust_page_enabled": body.public_trust_page_enabled,
+        }
 
     await db.commit()
 

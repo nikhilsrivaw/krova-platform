@@ -246,6 +246,17 @@ class Call(UUIDMixin, Base):
     # plivo | whatsapp - the same agent serves both, at very different costs.
     transport: Mapped[str] = mapped_column(String(20), nullable=False, default="plivo")
 
+    # When Plivo's answer webhook first told us about this call - the
+    # genuine "ring started" moment, distinct from started_at/answered_at
+    # below (both stamped at the instant the AI's media stream actually
+    # connects, i.e. "the AI engaged"). Captured in
+    # shared/channels/voice/call_registry.py::remember(), the only place
+    # that timestamp exists to capture at all. Null for a call whose
+    # answer webhook predates this column, or where the registry lookup
+    # missed for any reason - never backfilled, never estimated.
+    ring_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     answered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

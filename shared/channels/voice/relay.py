@@ -443,6 +443,11 @@ async def stream(
                 remembered = recall_call(call_uuid) or {}
                 to_number = remembered.get("to") or _first(message, "to", "To")
                 from_number = remembered.get("from") or _first(message, "from", "From")
+                # Only ever set for a call whose /voice/answer webhook was
+                # captured under this same call_uuid - see call_registry.py's
+                # own docstring on why this is the one place it can be
+                # captured at all.
+                ring_started_at = remembered.get("ring_started_at")
 
                 async with AsyncSessionLocal() as db:
                     opening_line: str | None = None
@@ -518,6 +523,7 @@ async def stream(
                         direction=direction,
                         external_id=call_uuid,
                         transport="plivo",
+                        ring_started_at=ring_started_at,
                         started_at=datetime.now(timezone.utc),
                         answered_at=datetime.now(timezone.utc),
                     )
