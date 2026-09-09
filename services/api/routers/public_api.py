@@ -240,3 +240,57 @@ async def create_lifecycle_event(body: LifecycleEventIn, business: ApiKeyBusines
         id=str(lifecycle_event.id), customer_id=str(resolution.customer.id),
         event=lifecycle_event.event, occurred_at=lifecycle_event.occurred_at,
     )
+
+
+# ── Voice call ───────────────────────────────────────────────────────────
+#
+# A business's own backend placing an AI phone call directly - the voice-
+# only counterpart to /ask, for a business using nothing but the voice
+# channel. Reuses shared/channels/voice/outbound.py::place_adhoc_call
+# verbatim (the same function shared/care/commitment_deadline_calls.py's
+# sweep already calls) rather than a second implementation - the only
+# thing that differs between a sweep-triggered call and this one is who
+# decided to place it. Delivery of the outcome afterwards is not a new
+# endpoint: a business subscribes an existing OutboundWebhook
+# (services/api/routers/integrations.py) to call.completed/
+# call.voicemail/call.no_answer, already dispatched by
+# shared/channels/voice/relay.py and outbound.py today.
+
+class VoiceCallCustomerIn(BaseModel):
+    phone: str
+    name: str | None = None
+
+
+class VoiceCallIn(BaseModel):
+    customer: VoiceCallCustomerIn
+    # Plain language, exactly what CallCampaign.objective already means -
+    # not a script. shared/ai/outbound_opener.py drafts the actual
+    # opening line from this.
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class VoiceCallOut(BaseModel):
+    placed: bool
+    customer_id: str
+
+
+@router.post("/voice/call", response_model=VoiceCallOut, status_code=status.HTTP_201_CREATED)
+async def place_voice_call(body: VoiceCallIn, business: ApiKeyBusinessDep, db: DbDep) -> VoiceCallOut:
+    if not body.customer.phone.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "customer.phone is required")
+
+    resolution = await identity_resolver.resolve(
+        business.id, IdentityKind.phone, body.customer.phone, db, display_name=body.customer.name,
+    )
+    await db.flush()
+
+    from shared.channels.voice import outbound
+
+    placed = await outbound.place_adhoc_call(business.id, resolution.customer.id, body.reason.strip(), db)
+    await db.commit()
+
+    logger.info(
+        "public API voice call business=%s customer=%s placed=%s",
+        business.id, resolution.customer.id, placed,
+    )
+    return VoiceCallOut(placed=placed, customer_id=str(resolution.customer.id))
