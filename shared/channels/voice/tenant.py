@@ -15,6 +15,67 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.db.models import Business, Channel, ChannelConnection, ConnectionStatus
 
+# Speaker gender, Sarvam bulbul:v3's real published catalogue (never
+# invented) - the same lists services/api/routers/voice_provisioning.py
+# exposes as male_speakers/female_speakers, kept here too since this is
+# where a speaker's gender needs to be known to pick a grammatically
+# correct default greeting (see DEFAULT_GREETING_GENDERED below) before a
+# business has typed their own.
+MALE_SPEAKERS = [
+    "shubh", "aditya", "rahul", "rohan", "amit", "dev", "ratan", "varun",
+    "manan", "sumit", "kabir", "aayan", "ashutosh", "advait", "anand",
+    "tarun", "sunny", "mani", "gokul", "vijay", "mohit", "rehan", "soham",
+]
+FEMALE_SPEAKERS = [
+    "ritu", "priya", "neha", "pooja", "simran", "kavya", "ishita", "shreya",
+    "roopa", "tanya", "shruti", "suhani", "kavitha", "rupali",
+]
+
+# The un-customised, spoken-live default greeting - was hardcoded English
+# regardless of a business's chosen language, so a Hindi/Tamil/etc. agent
+# that hadn't typed its own greeting yet opened every real call in English.
+# Hindi, Marathi and Punjabi mark the speaker's own gender on "can help" -
+# see voice_provisioning.py's _PREVIEW_TEXT_GENDERED for the same split and
+# its full reasoning. Reviewed for plausibility, not confirmed by a native
+# speaker of each language - same honesty as the preview text.
+DEFAULT_GREETING: dict[str, str] = {
+    "en-IN": "Hello, thank you for calling {name}. How can I help you?",
+    "bn-IN": "নমস্কার, {name}-এ কল করার জন্য ধন্যবাদ। আমি আপনাকে কীভাবে সাহায্য করতে পারি?",
+    "gu-IN": "નમસ્તે, {name} પર કૉલ કરવા બદલ આભાર. હું તમારી કેવી રીતે મદદ કરી શકું?",
+    "kn-IN": "ನಮಸ್ಕಾರ, {name} ಗೆ ಕರೆ ಮಾಡಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದಗಳು. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?",
+    "ml-IN": "നമസ്കാരം, {name}-ലേക്ക് വിളിച്ചതിന് നന്ദി. ഞാൻ നിങ്ങളെ എങ്ങനെ സഹായിക്കും?",
+    "od-IN": "ନମସ୍କାର, {name} କୁ କଲ୍ କରିଥିବାରୁ ଧନ୍ୟବାଦ। ମୁଁ ଆପଣଙ୍କୁ କିପରି ସାହାଯ୍ୟ କରିପାରିବି?",
+    "ta-IN": "வணக்கம், {name}-ஐ அழைத்ததற்கு நன்றி. நான் உங்களுக்கு எப்படி உதவ முடியும்?",
+    "te-IN": "నమస్కారం, {name}కి కాల్ చేసినందుకు ధన్యవాదాలు. నేను మీకు ఎలా సహాయం చేయగలను?",
+}
+DEFAULT_GREETING_GENDERED: dict[str, dict[str, str]] = {
+    "hi-IN": {
+        "male": "नमस्ते, {name} को कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकता हूं?",
+        "female": "नमस्ते, {name} को कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकती हूं?",
+    },
+    "mr-IN": {
+        "male": "नमस्कार, {name} ला कॉल केल्याबद्दल धन्यवाद. मी तुम्हाला कशी मदत करू शकतो?",
+        "female": "नमस्कार, {name} ला कॉल केल्याबद्दल धन्यवाद. मी तुम्हाला कशी मदत करू शकते?",
+    },
+    "pa-IN": {
+        "male": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ, {name} ਨੂੰ ਕਾਲ ਕਰਨ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ?",
+        "female": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ, {name} ਨੂੰ ਕਾਲ ਕਰਨ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦੀ ਹਾਂ?",
+    },
+}
+
+
+def default_greeting(language: str, speaker: str, business_name: str) -> str:
+    """The greeting spoken when a business hasn't typed its own - correct
+    for the chosen language and, where the language's grammar requires it,
+    the chosen speaker's gender."""
+    gendered = DEFAULT_GREETING_GENDERED.get(language)
+    if gendered is not None:
+        gender = "female" if speaker in FEMALE_SPEAKERS else "male"
+        template = gendered[gender]
+    else:
+        template = DEFAULT_GREETING.get(language, DEFAULT_GREETING["en-IN"])
+    return template.format(name=business_name)
+
 
 @dataclass(slots=True)
 class VoiceRoute:
@@ -48,15 +109,17 @@ class VoiceRoute:
 def _build_route(business: Business, connection: ChannelConnection) -> VoiceRoute:
     """The one place a ChannelConnection's `extra` becomes a VoiceRoute - used by both lookup directions below."""
     extra = connection.extra or {}
+    language = extra.get("language", "en-IN")
+    speaker = extra.get("speaker", "shubh")
     return VoiceRoute(
         business_id=business.id,
         business_name=business.name,
         connection_id=connection.id,
         greeting=extra.get("greeting")
-        or f"Hello, thank you for calling {business.name}. How can I help you?",
-        language=extra.get("language", "en-IN"),
+        or default_greeting(language, speaker, business.name),
+        language=language,
         language_mode=extra.get("language_mode", "adaptive"),
-        speaker=extra.get("speaker", "shubh"),
+        speaker=speaker,
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
     )

@@ -22,6 +22,11 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
 from shared.channels.voice import compliance, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
+from shared.channels.voice.tenant import (
+    FEMALE_SPEAKERS,
+    MALE_SPEAKERS,
+    default_greeting,
+)
 from shared.config.settings import settings
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
 from shared.db.models import (
@@ -562,15 +567,9 @@ async def call_logs(
 # endpoints are that missing write path.
 
 # Sarvam bulbul:v3's real, published speaker catalogue - never invented.
-MALE_SPEAKERS = [
-    "shubh", "aditya", "rahul", "rohan", "amit", "dev", "ratan", "varun",
-    "manan", "sumit", "kabir", "aayan", "ashutosh", "advait", "anand",
-    "tarun", "sunny", "mani", "gokul", "vijay", "mohit", "rehan", "soham",
-]
-FEMALE_SPEAKERS = [
-    "ritu", "priya", "neha", "pooja", "simran", "kavya", "ishita", "shreya",
-    "roopa", "tanya", "shruti", "suhani", "kavitha", "rupali",
-]
+# Canonical in shared/channels/voice/tenant.py (needed there to pick a
+# grammatically gender-correct default greeting); imported rather than
+# redefined here to keep one source of truth.
 VALID_SPEAKERS = set(MALE_SPEAKERS) | set(FEMALE_SPEAKERS)
 VALID_LANGUAGE_MODES = {"adaptive", "fixed"}
 # Sarvam bulbul:v3's actual documented TTS language coverage (confirmed
@@ -634,12 +633,18 @@ class AgentSettingsOut(BaseModel):
 
 def _agent_settings_out(connection: ChannelConnection, business_name: str) -> AgentSettingsOut:
     extra = connection.extra or {}
+    language = extra.get("language", "en-IN")
+    speaker = extra.get("speaker", "shubh")
     return AgentSettingsOut(
+        # Same default a live call actually speaks (tenant.py's
+        # default_greeting) - this used to be a second, English-only copy
+        # of that fallback, so the settings page and a real call could
+        # show two different greetings for a non-English agent.
         greeting=extra.get("greeting")
-        or f"Hello, thank you for calling {business_name}. How can I help you?",
-        language=extra.get("language", "en-IN"),
+        or default_greeting(language, speaker, business_name),
+        language=language,
         language_mode=extra.get("language_mode", "adaptive"),
-        speaker=extra.get("speaker", "shubh"),
+        speaker=speaker,
         male_speakers=MALE_SPEAKERS,
         female_speakers=FEMALE_SPEAKERS,
         languages=[LanguageOption(**l) for l in SUPPORTED_LANGUAGES],
@@ -760,19 +765,55 @@ async def update_agent_settings(
 # reviewed for plausibility, not confirmed by a native speaker of each
 # language. Worth a real spot-check before leaning on this for anything
 # beyond letting a business owner sample a voice.
-_PREVIEW_TEXT = {
+#
+# Hindi, Marathi and Punjabi mark the speaker's own gender on the verb
+# ("can help" - सकता/सकती, शकतो/शकते, ਸਕਦਾ/ਸਕਦੀ) - a fixed masculine text
+# spoken by a female voice (e.g. "priya", "ritu") would be grammatically
+# wrong on every single call, not a translation nuance. Those three carry
+# both forms, picked by _preview_text()/_default_greeting() below via
+# MALE_SPEAKERS/FEMALE_SPEAKERS. Gujarati's own present-tense "can"
+# construction may or may not need the same split - left as one text,
+# same honesty as every other language here: not confirmed native.
+# Bengali, Odia, and the four Dravidian languages (Kannada, Malayalam,
+# Tamil, Telugu) do not mark gender on a first-person verb this way, so
+# one text genuinely covers both speaker genders in those.
+_PREVIEW_TEXT: dict[str, str] = {
     "en-IN": "Hello! Thank you for calling. How can I help you today?",
-    "hi-IN": "नमस्ते! कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकता हूं?",
     "bn-IN": "নমস্কার! কল করার জন্য ধন্যবাদ। আমি আপনাকে কীভাবে সাহায্য করতে পারি?",
     "gu-IN": "નમસ્તે! કૉલ કરવા બદલ આભાર. હું તમારી કેવી રીતે મદદ કરી શકું?",
     "kn-IN": "ನಮಸ್ಕಾರ! ಕರೆ ಮಾಡಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದಗಳು. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?",
     "ml-IN": "നമസ്കാരം! വിളിച്ചതിന് നന്ദി. ഞാൻ നിങ്ങളെ എങ്ങനെ സഹായിക്കും?",
-    "mr-IN": "नमस्कार! कॉल केल्याबद्दल धन्यवाद. मी तुम्हाला कशी मदत करू शकतो?",
     "od-IN": "ନମସ୍କାର! କଲ୍ କରିଥିବାରୁ ଧନ୍ୟବାଦ। ମୁଁ ଆପଣଙ୍କୁ କିପରି ସାହାଯ୍ୟ କରିପାରିବି?",
-    "pa-IN": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਕਾਲ ਕਰਨ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ?",
     "ta-IN": "வணக்கம்! அழைத்ததற்கு நன்றி. நான் உங்களுக்கு எப்படி உதவ முடியும்?",
     "te-IN": "నమస్కారం! కాల్ చేసినందుకు ధన్యవాదాలు. నేను మీకు ఎలా సహాయం చేయగలను?",
 }
+_PREVIEW_TEXT_GENDERED: dict[str, dict[str, str]] = {
+    "hi-IN": {
+        "male": "नमस्ते! कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकता हूं?",
+        "female": "नमस्ते! कॉल करने के लिए धन्यवाद। मैं आपकी कैसे मदद कर सकती हूं?",
+    },
+    "mr-IN": {
+        "male": "नमस्कार! कॉल केल्याबद्दल धन्यवाद. मी तुम्हाला कशी मदत करू शकतो?",
+        "female": "नमस्कार! कॉल केल्याबद्दल धन्यवाद. मी तुम्हाला कशी मदत करू शकते?",
+    },
+    "pa-IN": {
+        "male": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਕਾਲ ਕਰਨ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ?",
+        "female": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਕਾਲ ਕਰਨ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦੀ ਹਾਂ?",
+    },
+}
+
+
+def _speaker_gender(speaker: str) -> str:
+    return "female" if speaker in FEMALE_SPEAKERS else "male"
+
+
+def _localized_text(language: str, speaker: str) -> str:
+    """The gender-correct text for this language/speaker pair, falling
+    back to en-IN for anything neither table covers."""
+    gendered = _PREVIEW_TEXT_GENDERED.get(language)
+    if gendered is not None:
+        return gendered[_speaker_gender(speaker)]
+    return _PREVIEW_TEXT.get(language, _PREVIEW_TEXT["en-IN"])
 
 
 class VoicePreviewIn(BaseModel):
@@ -798,7 +839,7 @@ async def preview_voice(body: VoicePreviewIn, current_user: CurrentUserDep) -> V
             detail=f"language must be one of {sorted(VALID_LANGUAGES)}",
         )
 
-    text = _PREVIEW_TEXT.get(body.language, _PREVIEW_TEXT["en-IN"])
+    text = _localized_text(body.language, body.speaker)
     try:
         audio_base64 = await sarvam.generate_preview(
             text=text, speaker=body.speaker, language=body.language
