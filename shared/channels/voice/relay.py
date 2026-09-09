@@ -210,13 +210,22 @@ def _first(payload: dict, *keys: str) -> str | None:
 
 
 @router.websocket("/voice/stream")
-async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
+async def stream(
+    websocket: WebSocket,
+    recipient_id: str | None = None,
+    business_id: str | None = None,
+    customer_id: str | None = None,
+    reason: str | None = None,
+) -> None:
     """
     The socket Plivo's <Stream> element connects to for one call.
 
     `recipient_id` is present only for an outbound campaign call (see
     outbound.py's outbound_answer, which builds the wss:// URL with it) -
     None (the default) is every existing inbound call, unchanged.
+    `business_id`+`customer_id` together mark an adhoc call instead (see
+    outbound.py's adhoc_answer) - a proactive call with no CallCampaign
+    behind it, same outbound shape otherwise.
     """
     try:
         # Plivo signs the stream URL with a bare http:// scheme regardless of
@@ -455,6 +464,27 @@ async def stream(websocket: WebSocket, recipient_id: str | None = None) -> None:
                                 "outbound stream recipient=%s could not build a call "
                                 "context - hanging up",
                                 recipient_id,
+                            )
+                            await websocket.close()
+                            return
+                        route = outbound_context.route
+                        from_number = outbound_context.customer_phone
+                        opening_line = outbound_context.opening_line
+                        outbound_customer_id = outbound_context.customer_id
+                        direction = Direction.outbound
+                    elif business_id and customer_id:
+                        # Adhoc proactive call (shared/care/
+                        # commitment_deadline_calls.py today) - same shape
+                        # as the campaign branch above, minus the
+                        # CallCampaignRecipient lookup.
+                        outbound_context = await outbound.build_adhoc_context(
+                            uuid.UUID(business_id), uuid.UUID(customer_id), reason or "", db
+                        )
+                        if outbound_context is None:
+                            logger.warning(
+                                "adhoc stream business=%s customer=%s could not build a "
+                                "call context - hanging up",
+                                business_id, customer_id,
                             )
                             await websocket.close()
                             return

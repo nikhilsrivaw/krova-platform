@@ -302,6 +302,26 @@ async def sync_shiprocket() -> None:
         logger.exception("Shiprocket sync job failed")
 
 
+async def check_deadline_calls() -> None:
+    """
+    Place one proactive voice call per commitment approaching its due
+    date, opt-in per business - cross-vertical, not gated on any
+    capability the way check_clinic_commitments below is.
+    See shared/care/commitment_deadline_calls.py.
+    """
+    from shared.care import commitment_deadline_calls
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            placed = await commitment_deadline_calls.check_deadline_calls(db)
+            await db.commit()
+            if placed:
+                logger.info("placed %s proactive deadline call(s)", placed)
+    except Exception:
+        logger.exception("deadline call sweep failed")
+
+
 async def check_clinic_commitments() -> None:
     """
     Scan overdue commitments for clinic businesses and surface them on the
@@ -558,6 +578,14 @@ def build() -> AsyncIOScheduler:
         check_cod_call_failsafe,
         IntervalTrigger(minutes=30),
         id="check_cod_call_failsafe",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        check_deadline_calls,
+        IntervalTrigger(minutes=30),
+        id="check_deadline_calls",
         replace_existing=True,
         misfire_grace_time=1800,
     )

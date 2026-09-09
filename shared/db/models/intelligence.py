@@ -157,6 +157,16 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
     bug_fix_notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Dedupe for the proactive "your deadline is coming up" voice call
+    # (shared/care/commitment_deadline_calls.py) - deliberately its own
+    # column, not a reuse of reminder_sent_at above: that one is already
+    # spoken for by the clinic-only chronic-care WhatsApp recall
+    # (shared/scheduling/recall.py::send_due_recalls, kind=meeting only),
+    # and a commitment eligible for both would have one send block the
+    # other if they shared a column.
+    deadline_call_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         # The ledger's main query: what is open and overdue, soonest first.

@@ -31,6 +31,7 @@ not this module's job.
 
 import uuid
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Header, Request, Response, status
 from sqlalchemy import select
@@ -135,6 +136,47 @@ async def build_context(recipient_id: uuid.UUID, db: AsyncSession) -> OutboundCa
     )
 
 
+async def build_adhoc_context(
+    business_id: uuid.UUID, customer_id: uuid.UUID, reason: str, db: AsyncSession,
+) -> OutboundCallContext | None:
+    """
+    build_context's sibling for a call with no CallCampaign behind it - a
+    business event (shared/care/commitment_deadline_calls.py today) firing
+    a single proactive call directly, not a campaign someone created in the
+    UI. Same steps as build_context, minus the CallCampaignRecipient/
+    CallCampaign lookup: business_id/customer_id/reason arrive already
+    resolved rather than being read off a recipient row.
+    """
+    route = await resolve_by_business(business_id, db)
+    if route is None:
+        return None
+
+    phone = await _customer_phone(customer_id, db)
+    if not phone:
+        return None
+
+    context = await agent_context.build(business_id, customer_id, db)
+    opener = await outbound_opener.draft(context, reason=reason)
+    if opener.cost_paise:
+        usage.record(
+            business_id=business_id,
+            event_type=UsageEventType.ai_reply_generated,
+            channel="voice",
+            quantity=1,
+            unit="call",
+            krova_cost_paise=opener.cost_paise,
+            source_type="commitment",
+            db=db,
+        )
+
+    return OutboundCallContext(
+        route=route,
+        customer_id=customer_id,
+        customer_phone=phone,
+        opening_line=opener.text,
+    )
+
+
 async def place_call(recipient_id: uuid.UUID, db: AsyncSession) -> None:
     """
     Dial one campaign recipient. Marks the recipient `calling` on success,
@@ -199,6 +241,63 @@ async def place_call(recipient_id: uuid.UUID, db: AsyncSession) -> None:
 
     recipient.status = CallCampaignRecipientStatus.calling
     logger.info("outbound call placed recipient=%s to=%s", recipient.id, to_number)
+
+
+async def place_adhoc_call(
+    business_id: uuid.UUID, customer_id: uuid.UUID, reason: str, db: AsyncSession,
+) -> bool:
+    """
+    place_call's sibling for a call with no CallCampaignRecipient to stamp
+    - see build_adhoc_context. Same connection/subaccount/phone lookup,
+    verbatim, so the two never drift apart on what a valid voice
+    connection looks like. Returns whether the call was actually placed;
+    the caller (shared/scheduling/notify.py's _send_voice_call) owns its
+    own dedupe column, since there is no recipient row here to stamp.
+    """
+    to_number = await _customer_phone(customer_id, db)
+    if not to_number:
+        logger.info("adhoc call skipped business=%s customer=%s: no phone on file", business_id, customer_id)
+        return False
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.voice,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        logger.info("adhoc call skipped business=%s: no voice number connected", business_id)
+        return False
+
+    auth_id = (connection.extra or {}).get("subaccount_auth_id")
+    if not auth_id:
+        logger.warning("adhoc call skipped business=%s: voice connection missing subaccount id", business_id)
+        return False
+
+    base = settings.public_base_url.rstrip("/")
+    params = urlencode({
+        "business_id": str(business_id),
+        "customer_id": str(customer_id),
+        "reason": reason,
+    })
+    try:
+        await plivo_client.make_call(
+            auth_id=auth_id,
+            auth_token=decrypt(connection.access_token),
+            from_number=connection.external_account_id,
+            to_number=to_number,
+            answer_url=f"{base}/voice/adhoc-answer?{params}",
+            hangup_url=f"{base}/voice/adhoc-hangup",
+        )
+    except plivo_client.PlivoError as exc:
+        logger.warning("adhoc call failed to place business=%s customer=%s: %s", business_id, customer_id, exc)
+        return False
+
+    logger.info("adhoc call placed business=%s customer=%s to=%s", business_id, customer_id, to_number)
+    return True
 
 
 # ── webhooks ─────────────────────────────────────────────────────────────
@@ -310,4 +409,91 @@ async def outbound_hangup(
             )
         await db.commit()
 
+    return {"received": True}
+
+
+@router.post("/voice/adhoc-answer")
+async def adhoc_answer(
+    business_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    reason: str,
+    request: Request,
+    x_plivo_signature_ma_v3: str | None = Header(default=None),
+    x_plivo_signature_v3_nonce: str | None = Header(default=None),
+) -> Response:
+    """
+    outbound_answer's sibling for place_adhoc_call - identical shape, no
+    CallCampaignRecipient to resolve since business_id/customer_id/reason
+    already travelled here in the signed query string.
+    """
+    body = await request.form()
+    params = {k: str(v) for k, v in body.items()}
+
+    try:
+        verify(
+            uri=f"{settings.public_base_url.rstrip('/')}/voice/adhoc-answer?{request.url.query}",
+            signature=x_plivo_signature_ma_v3,
+            nonce=x_plivo_signature_v3_nonce,
+            method="POST",
+            params=params,
+        )
+    except InvalidSignature:
+        logger.warning("rejected /voice/adhoc-answer - bad plivo signature")
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    call_uuid = body.get("CallUUID") or body.get("callId")
+    to_number = body.get("To") or body.get("to")
+    from_number = body.get("From") or body.get("from")
+    if call_uuid:
+        remember(str(call_uuid), to_number=str(to_number or ""), from_number=str(from_number or ""))
+
+    async with AsyncSessionLocal() as db:
+        context = await build_adhoc_context(business_id, customer_id, reason, db)
+        await db.commit()
+
+    if context is None:
+        logger.warning(
+            "adhoc-answer for business=%s customer=%s could not build a call context",
+            business_id, customer_id,
+        )
+        return Response(content=hangup_response("could not build call context"), media_type="application/xml")
+
+    params_q = urlencode({
+        "business_id": str(business_id), "customer_id": str(customer_id), "reason": reason,
+    })
+    ws_url = (
+        f"{settings.public_base_url.replace('https://', 'wss://')}"
+        f"/voice/stream?{params_q}"
+    )
+    return Response(
+        content=stream_response(ws_url, status_callback_url=f"{settings.public_base_url}/voice/status"),
+        media_type="application/xml",
+    )
+
+
+@router.post("/voice/adhoc-hangup")
+async def adhoc_hangup(
+    request: Request,
+    x_plivo_signature_ma_v3: str | None = Header(default=None),
+    x_plivo_signature_v3_nonce: str | None = Header(default=None),
+) -> dict:
+    """
+    Plivo's hangup callback for an adhoc call - nothing to record beyond
+    what /voice/stream's own Call row already captures once connected;
+    exists only because make_call requires a hangup_url, same reasoning
+    as cod_hangup in cod_ivr.py.
+    """
+    body = await request.form()
+    params = {k: str(v) for k, v in body.items()}
+    try:
+        verify(
+            uri=f"{settings.public_base_url.rstrip('/')}/voice/adhoc-hangup?{request.url.query}",
+            signature=x_plivo_signature_ma_v3,
+            nonce=x_plivo_signature_v3_nonce,
+            method="POST",
+            params=params,
+        )
+    except InvalidSignature:
+        logger.warning("rejected /voice/adhoc-hangup - bad plivo signature")
+        return {"received": False}
     return {"received": True}

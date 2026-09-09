@@ -534,3 +534,27 @@ async def send_payment_failed_reminder(
             + (f"you can update your payment method here: {invoice_url}" if invoice_url else "please update your payment method to keep your account active.")
         ),
     )
+
+
+async def send_deadline_call(db: AsyncSession, *, business: Business, customer: Customer, reason: str) -> bool:
+    """
+    A proactive voice call rather than a message - opt-in per business
+    (shared/care/commitment_deadline_calls.py checks
+    Business.settings["proactive_deadline_calls_enabled"] before calling
+    this, the same settings-flag-gated shape send_review_requests already
+    uses for google_review_url), since a phone call is a meaningfully
+    bigger interruption than a WhatsApp/email nudge and must never fire by
+    default just because a voice number happens to be connected.
+
+    Delegates entirely to outbound.place_adhoc_call rather than
+    duplicating its connection/subaccount/phone lookup here - this
+    function's own job is only the "which business function calls this"
+    boundary every other public notify.* function in this module keeps,
+    not a second implementation of dialling. Public (not _-prefixed) like
+    every other function a sweep calls directly - unlike _send/
+    _send_whatsapp_or_email, which are internal to this module and never
+    called from outside it.
+    """
+    from shared.channels.voice import outbound
+
+    return await outbound.place_adhoc_call(business.id, customer.id, reason, db)
