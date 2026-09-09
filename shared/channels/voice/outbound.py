@@ -79,6 +79,10 @@ class OutboundCallContext:
     customer_id: uuid.UUID
     customer_phone: str
     opening_line: str
+    # None (the default) is every existing campaign call, unchanged - see
+    # CallCampaign.call_script_id's own docstring for what sets these two.
+    call_script_id: uuid.UUID | None = None
+    scripted_context: "agent_context.ScriptedContext | None" = None
 
 
 async def _customer_phone(customer_id: uuid.UUID, db: AsyncSession) -> str | None:
@@ -113,6 +117,32 @@ async def build_context(recipient_id: uuid.UUID, db: AsyncSession) -> OutboundCa
     phone = await _customer_phone(recipient.customer_id, db)
     if not phone:
         return None
+
+    if campaign.call_script_id is not None:
+        # A CallScript call skips outbound_opener's objective-based
+        # drafting entirely - there is no "why we're calling" to improvise,
+        # the questions themselves are the point. A short, fixed intro
+        # asking permission to continue, same as any cold call would open
+        # with; the real question-asking happens live once the caller says
+        # yes, driven by stream_scripted_reply.
+        from shared.db.models import CallScript
+
+        script = await db.get(CallScript, campaign.call_script_id)
+        if script is None:
+            return None
+        return OutboundCallContext(
+            route=route,
+            customer_id=recipient.customer_id,
+            customer_phone=phone,
+            opening_line=(
+                f"Hi, this is calling on behalf of {route.business_name} - "
+                "do you have a couple of minutes for a quick question or two?"
+            ),
+            call_script_id=script.id,
+            scripted_context=agent_context.ScriptedContext(
+                business_name=route.business_name, purpose=script.purpose, questions=list(script.questions or []),
+            ),
+        )
 
     context = await agent_context.build(campaign.business_id, recipient.customer_id, db)
     opener = await outbound_opener.draft(context, reason=campaign.objective)

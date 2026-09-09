@@ -677,3 +677,40 @@ async def build_owner(business_id: uuid.UUID, db: AsyncSession) -> OwnerContext:
         top_they_owe=top_they_owe,
         top_we_owe=top_we_owe,
     )
+
+
+@dataclass(slots=True)
+class ScriptedContext:
+    """
+    A CallScript in progress - what shared/ai/agent.py::stream_scripted_reply
+    needs to work through it conversationally. Deliberately not a state
+    machine tracking "question 3 of 5" - the model reasons over the
+    call's own history (passed alongside this, the same way OwnerContext's
+    caller passes recent_turns) to know what it has and hasn't asked yet,
+    the same "let the model reason over what it can see" shape that
+    already works for the owner interface.
+    """
+
+    business_name: str
+    purpose: str  # "lead_qualification" | "survey"
+    questions: list[str]
+
+    def render(self) -> str:
+        numbered = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(self.questions))
+        goal = (
+            "assess how good a fit this person is, so you can score the call at the end"
+            if self.purpose == "lead_qualification"
+            else "collect their honest answers"
+        )
+        return (
+            f"You are calling on behalf of {self.business_name}, working through a "
+            f"fixed list of questions to {goal}. Ask them naturally, one at a time, "
+            "in this order - never read them like a list, never ask more than one "
+            "at once:\n\n"
+            f"{numbered}\n\n"
+            "Work out from the conversation so far which of these have already been "
+            "answered (even if the person volunteered the answer to a later question "
+            "before you asked it) and ask the next one that hasn't. Once every "
+            "question has a real answer, thank them and end the call - do not keep "
+            "talking past that point."
+        )

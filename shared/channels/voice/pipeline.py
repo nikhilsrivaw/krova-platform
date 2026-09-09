@@ -112,7 +112,20 @@ class CallPipeline:
     # set only when the caller's number matched Business.owner_phone (see
     # relay.py) - _reply() branches to _owner_reply() instead, which never
     # touches booking/escalation-transfer/customer identity at all.
+    # "scripted" is set when the outbound call came from a CallCampaign
+    # with a CallScript attached - _reply() branches to _scripted_reply()
+    # instead, working through scripted_context.questions. Unlike "owner",
+    # a scripted call has a real Customer and IS persisted through
+    # ingest() normally - only the reply loop differs.
     mode: str = "customer"
+    # Set only alongside mode="scripted" - see shared/ai/context.py's
+    # ScriptedContext.
+    scripted_context: "agent_context.ScriptedContext | None" = None
+    # The CallScript row this call is running, if any - carried here so
+    # relay.py can pass it through to _analyze_call once the call ends,
+    # for the post-call structured extraction
+    # (shared/ai/call_script_extract.py).
+    call_script_id: uuid.UUID | None = None
 
     history: list[dict] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
@@ -255,6 +268,10 @@ class CallPipeline:
             # self.customer_id is never set for it, so this has to branch
             # before the check below, not after.
             await self._owner_reply()
+            return
+
+        if self.mode == "scripted" and self.scripted_context is not None:
+            await self._scripted_reply()
             return
 
         if self.customer_id is None:
@@ -515,6 +532,74 @@ class CallPipeline:
                 else "I don't have enough to answer that from the ledger right now."
             )
             await self._say_stream(_single_chunk(spoken), record=True)
+            return
+
+        reply_cost = {"paise": 0}
+
+        async def reply_text_chunks():
+            async for ev in events:
+                if isinstance(ev, agent_module.ReplyChunk):
+                    yield ev.text
+                elif isinstance(ev, agent_module.ReplyDone):
+                    reply_cost["paise"] = ev.cost_paise
+
+        await self._say_stream(reply_text_chunks(), record=True)
+        usage.record(
+            business_id=self.route.business_id,
+            event_type=UsageEventType.ai_reply_generated,
+            channel="voice",
+            quantity=1,
+            unit="call",
+            krova_cost_paise=reply_cost["paise"],
+            source_type="call",
+            source_id=self.call_row_id,
+            db=self.db,
+        )
+
+    async def _scripted_reply(self) -> None:
+        """
+        A CallScript's reply loop - agent_module.stream_scripted_reply's
+        counterpart to _reply() above. Same shape as _owner_reply (no
+        booking, no transfer), but unlike an owner call this one has a
+        real customer_id and IS persisted through ingest() normally -
+        _handle_utterance/_say_stream's own mode check already only
+        special-cases "owner", so nothing extra is needed here for that.
+        """
+        assert self.scripted_context is not None
+        events = agent_module.stream_scripted_reply(self.scripted_context, self.history)
+        try:
+            first = await events.__anext__()
+        except StopAsyncIteration:
+            logger.warning("stream_scripted_reply produced no events at all")
+            return
+
+        action = first.action if isinstance(first, agent_module.ReplyStart) else "escalate"
+
+        if action == "no_action":
+            async for _ in events:
+                pass
+            return
+
+        if action == "escalate":
+            cost_paise = 0
+            async for ev in events:
+                if isinstance(ev, agent_module.ReplyDone):
+                    cost_paise = ev.cost_paise
+            usage.record(
+                business_id=self.route.business_id,
+                event_type=UsageEventType.ai_reply_generated,
+                channel="voice",
+                quantity=1,
+                unit="call",
+                krova_cost_paise=cost_paise,
+                source_type="call",
+                source_id=self.call_row_id,
+                db=self.db,
+            )
+            await self._say_stream(
+                _single_chunk("Sorry, I think there's been some confusion - thank you for your time."),
+                record=True,
+            )
             return
 
         reply_cost = {"paise": 0}

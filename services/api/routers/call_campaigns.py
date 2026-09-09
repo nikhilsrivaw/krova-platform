@@ -33,6 +33,7 @@ from shared.db.models import (
     CallCampaignRecipient,
     CallCampaignRecipientStatus,
     CallCampaignStatus,
+    CallScript,
 )
 from shared.utils.logging import get_logger
 
@@ -75,6 +76,10 @@ class CallCampaignIn(BaseModel):
     audience: str
     audience_params: dict = {}
     objective: str
+    # Set to run a fixed CallScript instead of an improvised, objective-
+    # only call - see CallCampaign.call_script_id's own docstring. `objective`
+    # stays required either way, as the campaign's own descriptive label.
+    call_script_id: str | None = None
 
 
 class RecipientPreviewOut(BaseModel):
@@ -126,6 +131,7 @@ class CallCampaignOut(BaseModel):
     audience: str
     audience_label: str
     objective: str
+    call_script_id: str | None
     status: str
     recipients: int
     sent_count: int
@@ -143,6 +149,7 @@ def _out(campaign: CallCampaign) -> CallCampaignOut:
         audience=audience.value,
         audience_label=_AUDIENCE_LABELS[audience],
         objective=campaign.objective,
+        call_script_id=str(campaign.call_script_id) if campaign.call_script_id else None,
         status=campaign.status.value if hasattr(campaign.status, "value") else campaign.status,
         recipients=campaign.recipients,
         sent_count=campaign.sent_count,
@@ -163,6 +170,13 @@ async def create_call_campaign(body: CallCampaignIn, current_user: CurrentUserDe
     if not body.objective.strip():
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="objective is required")
 
+    call_script_uuid = None
+    if body.call_script_id:
+        call_script_uuid = uuid.UUID(body.call_script_id)
+        script = await db.get(CallScript, call_script_uuid)
+        if script is None or script.business_id != current_user.business:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call script not found")
+
     campaign = CallCampaign(
         business_id=current_user.business,
         name=body.name.strip(),
@@ -171,6 +185,7 @@ async def create_call_campaign(body: CallCampaignIn, current_user: CurrentUserDe
         objective=body.objective.strip(),
         status=CallCampaignStatus.draft,
         created_by_user_id=current_user.id,
+        call_script_id=call_script_uuid,
     )
     db.add(campaign)
     await db.commit()

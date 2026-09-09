@@ -21,6 +21,7 @@ from services.api.routers import (
     approvals,
     auth,
     call_campaigns,
+    call_scripts,
     campaigns,
     canned_responses,
     cases,
@@ -151,6 +152,7 @@ app.include_router(approvals.router, prefix=API_PREFIX)
 app.include_router(knowledge.router, prefix=API_PREFIX)
 app.include_router(campaigns.router, prefix=API_PREFIX)
 app.include_router(call_campaigns.router, prefix=API_PREFIX)
+app.include_router(call_scripts.router, prefix=API_PREFIX)
 app.include_router(analytics.router, prefix=API_PREFIX)
 app.include_router(migration.router, prefix=API_PREFIX)
 app.include_router(voice_provisioning.router, prefix=API_PREFIX)

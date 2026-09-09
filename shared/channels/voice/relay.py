@@ -47,6 +47,7 @@ from shared.config.settings import settings
 from shared.db.models import (
     Business,
     Call,
+    CallScriptResponse,
     ChannelConnection,
     Customer,
     CustomerIdentity,
@@ -453,6 +454,9 @@ async def stream(
                     opening_line: str | None = None
                     outbound_customer_id: uuid.UUID | None = None
                     direction = Direction.inbound
+                    pipeline_mode = "customer"
+                    scripted_context = None
+                    call_script_id: uuid.UUID | None = None
 
                     if recipient_id:
                         # Outbound campaign call - already knows business +
@@ -477,6 +481,10 @@ async def stream(
                         opening_line = outbound_context.opening_line
                         outbound_customer_id = outbound_context.customer_id
                         direction = Direction.outbound
+                        if outbound_context.call_script_id is not None:
+                            pipeline_mode = "scripted"
+                            scripted_context = outbound_context.scripted_context
+                            call_script_id = outbound_context.call_script_id
                     elif business_id and customer_id:
                         # Adhoc proactive call (shared/care/
                         # commitment_deadline_calls.py today) - same shape
@@ -509,8 +517,9 @@ async def stream(
                     # (an outbound/adhoc call is never the owner calling
                     # in), but only inbound calls can plausibly match it -
                     # route is guaranteed set past this point either way.
-                    pipeline_mode = "customer"
-                    if from_number and route.owner_phone:
+                    # Never overwrites an already-scripted mode from the
+                    # recipient_id branch above.
+                    if pipeline_mode == "customer" and from_number and route.owner_phone:
                         try:
                             if normalise(IdentityKind.phone.value, from_number) == route.owner_phone:
                                 pipeline_mode = "owner"
@@ -582,6 +591,8 @@ async def stream(
                         customer_id=outbound_customer_id,
                         detected_language=known_language,
                         mode=pipeline_mode,
+                        scripted_context=scripted_context,
+                        call_script_id=call_script_id,
                     )
 
                     logger.info(
@@ -686,6 +697,7 @@ async def stream(
                 call_row_id,
                 route.business_id if route else None,
                 transcript,
+                pipeline.call_script_id if pipeline else None,
             )
         )
         _cleanup_tasks.add(analytics_task)
@@ -873,6 +885,7 @@ async def _analyze_call(
     call_row_id: uuid.UUID | None,
     business_id: uuid.UUID | None,
     transcript: list[dict],
+    call_script_id: uuid.UUID | None = None,
 ) -> None:
     """
     Write a structured read on how the call went - outcome, sentiment,
@@ -948,6 +961,44 @@ async def _analyze_call(
                     source_id=call_row_id,
                     db=db,
                 )
+
+            if call_script_id is not None:
+                from shared.db.models import CallScript
+                from shared.ai import call_script_extract
+
+                script = await db.get(CallScript, call_script_id)
+                if script is not None and script.questions:
+                    extracted = await call_script_extract.extract(
+                        transcript, questions=list(script.questions), purpose=script.purpose,
+                        business_name=business_name,
+                    )
+                    if extracted is not None:
+                        db.add(CallScriptResponse(
+                            business_id=script.business_id,
+                            call_script_id=script.id,
+                            customer_id=call_row.customer_id,
+                            call_id=call_row_id,
+                            answers=extracted.answers,
+                            score=extracted.score,
+                            summary=extracted.summary,
+                            created_at=datetime.now(timezone.utc),
+                        ))
+                        if business_id is not None and extracted.cost_paise:
+                            usage.record(
+                                business_id=business_id,
+                                event_type=UsageEventType.ai_call_analysis,
+                                channel="voice",
+                                quantity=1,
+                                unit="call",
+                                krova_cost_paise=extracted.cost_paise,
+                                source_type="call",
+                                source_id=call_row_id,
+                                db=db,
+                            )
+                        logger.info(
+                            "call script extracted call=%s script=%s answers=%d score=%s",
+                            call_row_id, call_script_id, len(extracted.answers), extracted.score,
+                        )
 
             await db.commit()
     except Exception:

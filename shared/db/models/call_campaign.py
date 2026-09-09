@@ -104,6 +104,15 @@ class CallCampaign(UUIDMixin, TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     extra: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
+    # Null (the default) preserves this class's exact original behaviour -
+    # a free-objective call. Set means the call is structured instead: the
+    # agent works through CallScript.questions in order rather than
+    # improvising from `objective`, and a CallScriptResponse is written
+    # once the call ends. See CallScript's own docstring.
+    call_script_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("call_scripts.id", ondelete="SET NULL"), nullable=True
+    )
+
     __table_args__ = (
         Index("idx_call_campaigns_business", "business_id", "status", "created_at"),
     )
@@ -138,4 +147,81 @@ class CallCampaignRecipient(UUIDMixin, Base):
 
     __table_args__ = (
         Index("idx_call_campaign_recipients", "call_campaign_id", "status"),
+    )
+
+
+class CallScript(UUIDMixin, TimestampMixin, Base):
+    """
+    An ordered list of questions an outbound call works through - the
+    "lead qualification" / "feedback survey" shape neither a free-
+    objective CallCampaign (improvised, one AI-drafted opener, then a
+    normal open-ended conversation) nor any other flow in this codebase
+    covers today.
+
+    A call using one still goes through the exact same voice pipeline
+    (barge-in, Sarvam STT/TTS, Call row) - only the system prompt and the
+    post-call analysis differ (see shared/ai/agent.py's
+    SCRIPTED_SYSTEM_STREAM and shared/ai/call_script_extract.py). The
+    live agent works through `questions` conversationally, one at a time,
+    reasoning over the call's own history to know what has and hasn't
+    been covered yet - not a rigid state machine, the same "let the model
+    reason over what it can see" shape context.py's OwnerContext already
+    uses successfully.
+    """
+
+    __tablename__ = "call_scripts"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # "lead_qualification" scores the call at the end (fit for what this
+    # business sells); "survey" only captures answers, no score - see
+    # call_script_extract.py's own purpose-branch.
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False, default="survey")
+    # Ordered list of plain-language questions, e.g.
+    # ["What's your budget for this?", "When are you looking to start?"].
+    questions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (
+        Index("idx_call_scripts_business", "business_id"),
+    )
+
+
+class CallScriptResponse(UUIDMixin, Base):
+    """
+    One completed CallScript run - the structured result of a single
+    call, extracted from its transcript once it ends (never invented;
+    see call_script_extract.py's own citation discipline). A question
+    the transcript never actually covers is missing from `answers`
+    entirely, not filled in with a guess.
+    """
+
+    __tablename__ = "call_script_responses"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    call_script_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("call_scripts.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True
+    )
+    call_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("calls.id", ondelete="SET NULL"), nullable=True
+    )
+    # {question: answer} - only questions the transcript actually
+    # answered, in the script's own wording as the key so a question
+    # edited later doesn't silently orphan old answers under a stale id.
+    answers: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Only meaningful for purpose="lead_qualification" - null for a
+    # "survey" script, never a fabricated number for one that has no
+    # scoring rubric at all.
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("idx_call_script_responses_script", "call_script_id", "created_at"),
     )

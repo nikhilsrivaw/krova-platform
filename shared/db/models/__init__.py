@@ -16,6 +16,8 @@ from shared.db.models.call_campaign import (
     CallCampaignRecipient,
     CallCampaignRecipientStatus,
     CallCampaignStatus,
+    CallScript,
+    CallScriptResponse,
 )
 from shared.db.models.crm import CustomerNote, CustomerTag, TagStatus
 from shared.db.models.channel import (

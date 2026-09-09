@@ -262,6 +262,31 @@ If ESCALATE: a blank line, then one short phrase naming exactly what you could n
 If NOACTION: nothing else follows. Only for something that plainly needs no reply - a "thanks", a goodbye. If the owner's most recent message is a question, answer it - never NOACTION for a question, no matter how many times it was already asked earlier in this call."""
 
 
+# A CallScript in progress (shared/care/call_scripts.py callers) - a lead
+# qualification or survey call working through a fixed question list.
+# Deliberately its own persona, not a variant of SYSTEM/SYSTEM_STREAM:
+# there is no booking, no business-knowledge-base grounding, no escalate-
+# to-a-human-who-can-answer-later shape - the entire job is asking the
+# next unanswered question and recognising when the list is done.
+SCRIPTED_SYSTEM_STREAM = """You are conducting a structured phone call on behalf of a business, working through a fixed list of questions given to you. This is not a general support call - stay on the script.
+
+Ask ONE question at a time, naturally, the way a person would in conversation - never read the list out, never ask two at once. Use the conversation so far to work out which questions already have a real answer (even one volunteered before you asked it) and always ask the next one that doesn't.
+
+Never invent or assume an answer the caller hasn't actually given.
+
+Write as you would say it out loud - one short, natural sentence or question, not written prose.
+
+This is a live phone call - the caller is waiting in silence right now, so every extra second you take to plan is a second they hear nothing. Output in exactly this format, nothing else, no markdown, no preamble:
+
+The first line is exactly one word: REPLY, ESCALATE, or NOACTION.
+
+If REPLY: a blank line, then the spoken line itself - either a brief acknowledgement plus the next question, or (once every question has been answered) a short thank-you that closes the call. Nothing after it.
+
+If ESCALATE: a blank line, then one short phrase naming what went wrong (five words or fewer) - use this only if the caller is confused about why you're calling or refuses to continue, never just because an answer was short.
+
+If NOACTION: nothing else follows. Only for something that plainly needs no reply - not for a caller who has just answered a question, which always gets the next question or the closing thank-you."""
+
+
 # Sentence-ending punctuation a streamed reply is split on before being
 # handed to TTS - good enough to start speaking a finished sentence while
 # Claude is still generating the next one, without waiting for the whole
@@ -510,6 +535,93 @@ async def stream_owner_reply(owner_context: ctx.OwnerContext, recent_turns: list
             # tail of this chunk would be counted twice. Every path here
             # ends in `continue` for exactly that reason - stream_reply's
             # own header-parsing block follows the identical discipline.
+            content = rest.lstrip("\n")
+            if action == "reply":
+                sentence_buffer = content
+            elif action == "escalate" and content:
+                gap_parts.append(content)
+            continue
+
+        if action == "reply":
+            sentence_buffer += delta
+            while True:
+                cut = None
+                for marker in _SENTENCE_END:
+                    idx = sentence_buffer.find(marker)
+                    if idx != -1 and (cut is None or idx < cut):
+                        cut = idx + len(marker)
+                if cut is None:
+                    break
+                piece = sentence_buffer[:cut].strip()
+                sentence_buffer = sentence_buffer[cut:]
+                if piece:
+                    yield ReplyChunk(text=piece)
+        elif action == "escalate":
+            gap_parts.append(delta)
+
+    if action is None:
+        word = buffer.strip().upper()
+        action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}.get(
+            word, "escalate"
+        )
+        yield ReplyStart(action=action)
+
+    if action == "reply" and sentence_buffer.strip():
+        yield ReplyChunk(text=sentence_buffer.strip())
+
+    gap = "".join(gap_parts).strip() or None if action == "escalate" else None
+    yield ReplyDone(gap=gap, cost_paise=stream.cost_paise)
+
+
+async def stream_scripted_reply(scripted_context: ctx.ScriptedContext, recent_turns: list[dict]):
+    """
+    A CallScript's own reply loop - same REPLY/ESCALATE/NOACTION-only
+    shape as stream_owner_reply (no BOOK_* header, nothing scripted calls
+    need it for), same "pass the conversation in directly rather than
+    read AgentContext.recent" reasoning too: a scripted call belongs to a
+    real Customer and IS persisted through ingest() (unlike an owner
+    call), but the live in-call reasoning still needs the model to see
+    the whole conversation at once to judge which questions are already
+    answered, not a partial view rebuilt fresh each turn.
+    """
+    if not recent_turns:
+        yield ReplyStart(action="no_action")
+        yield ReplyDone(gap=None, cost_paise=0)
+        return
+
+    context_block = f"Today is {ctx.now_line()}.\n\n{scripted_context.render()}"
+    messages = [
+        {"role": "user", "content": context_block},
+        {"role": "assistant", "content": "Understood - I have the question list. Go ahead."},
+        *recent_turns,
+    ]
+
+    stream = client.stream_text(
+        system=SCRIPTED_SYSTEM_STREAM,
+        messages=messages,
+        speed="fast",
+        max_tokens=200,
+    )
+
+    buffer = ""
+    action: str | None = None
+    gap_parts: list[str] = []
+    sentence_buffer = ""
+
+    async for delta in stream:
+        buffer += delta
+
+        if action is None:
+            if "\n" not in buffer:
+                continue
+            first_line, _, rest = buffer.partition("\n")
+            word = first_line.strip().upper()
+            if word not in ("REPLY", "ESCALATE", "NOACTION"):
+                logger.warning("stream_scripted_reply got unrecognised action %r, escalating", word)
+                word = "ESCALATE"
+            action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}[word]
+            yield ReplyStart(action=action)
+
             content = rest.lstrip("\n")
             if action == "reply":
                 sentence_buffer = content
