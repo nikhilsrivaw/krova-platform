@@ -913,6 +913,30 @@ async def _analyze_call(
             call_row.summary = result.summary
 
             if business_id is not None:
+                from shared.db.models import WebhookEventType
+                from shared.integrations import webhooks
+                from shared.care import post_call_actions
+
+                try:
+                    await webhooks.dispatch_event(
+                        db, business_id=business_id, event_type=WebhookEventType.call_completed.value,
+                        payload={
+                            "call_id": str(call_row_id),
+                            "outcome": result.outcome,
+                            "customer_id": str(call_row.customer_id) if call_row.customer_id else None,
+                        },
+                    )
+                except Exception:
+                    logger.exception("call.completed webhook dispatch failed call=%s", call_row_id)
+                try:
+                    await post_call_actions.apply_rules(
+                        db, business_id=business_id, trigger_type=WebhookEventType.call_completed.value,
+                        customer_id=call_row.customer_id,
+                    )
+                except Exception:
+                    logger.exception("post-call action rules failed call=%s", call_row_id)
+
+            if business_id is not None:
                 usage.record(
                     business_id=business_id,
                     event_type=UsageEventType.ai_call_analysis,

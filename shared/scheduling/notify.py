@@ -70,6 +70,14 @@ NDR_RESCHEDULE_TEMPLATE_NAME = "ndr_reschedule_request"
 # email-origin branch, which does not go through this template mechanism
 # at all.
 BUG_FIXED_TEMPLATE_NAME = "bug_fixed_notification"
+# Voice roadmap round 5 (shared/care/post_call_actions.py's rules
+# engine). One variable, {{1}} - the rule's own action_config["message"]
+# fills it. A business creates and gets this approved once in Meta's
+# WhatsApp Manager, the same real prerequisite every other proactive
+# template on this list already has - there is no way to send free-form
+# WhatsApp text outside the 24h service window, a post-call followup is
+# exactly that case, and this codebase does not pretend otherwise.
+POST_CALL_FOLLOWUP_TEMPLATE_NAME = "post_call_followup"
 
 
 async def _send(
@@ -558,3 +566,17 @@ async def send_deadline_call(db: AsyncSession, *, business: Business, customer: 
     from shared.channels.voice import outbound
 
     return await outbound.place_adhoc_call(business.id, customer.id, reason, db)
+
+
+async def send_post_call_followup(db: AsyncSession, *, business: Business, customer: Customer, message: str) -> bool:
+    """
+    Fired by shared/care/post_call_actions.py for a "whatsapp_followup"
+    rule - see POST_CALL_FOLLOWUP_TEMPLATE_NAME's own comment on why this
+    goes through an approved template rather than free text.
+    """
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=POST_CALL_FOLLOWUP_TEMPLATE_NAME,
+        body_params=[message],
+        plain_text=message,
+    )

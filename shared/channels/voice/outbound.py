@@ -48,6 +48,7 @@ from shared.channels.voice.tenant import VoiceRoute, resolve_by_business
 from shared.channels.voice.xml import hangup_response, stream_response
 from shared.config.settings import settings
 from shared.db.models import (
+    Call,
     CallCampaign,
     CallCampaignRecipient,
     CallCampaignRecipientStatus,
@@ -395,6 +396,7 @@ async def outbound_hangup(
         return {"received": False}
 
     is_machine = (body.get("machine") or "").lower() == "true"
+    call_uuid = body.get("CallUUID") or body.get("callId")
 
     async with AsyncSessionLocal() as db:
         recipient = await db.get(CallCampaignRecipient, recipient_id)
@@ -407,6 +409,55 @@ async def outbound_hangup(
                 "outbound call finished recipient=%s outcome=%s",
                 recipient_id, recipient.status.value,
             )
+
+            # This handler fires for every outbound call regardless of
+            # whether it ever connected - a genuinely answered call already
+            # has its own Call row (created once /voice/stream connects)
+            # and already dispatched call.completed from relay.py's
+            # _analyze_call. Dispatching a voicemail/no_answer trigger here
+            # too, unconditionally, would double-fire for every real
+            # conversation - checked by whether a Call row exists for this
+            # call_uuid at all, not by is_machine alone.
+            existing_call_id = None
+            if call_uuid:
+                existing_call_id = (
+                    await db.execute(select(Call.id).where(Call.external_id == call_uuid).limit(1))
+                ).scalars().first()
+
+            if existing_call_id is None:
+                from shared.db.models import WebhookEventType
+                from shared.integrations import webhooks
+                from shared.care import post_call_actions
+
+                trigger = (
+                    WebhookEventType.call_voicemail.value if is_machine
+                    else WebhookEventType.call_no_answer.value
+                )
+                campaign = await db.get(CallCampaign, recipient.call_campaign_id)
+                if campaign is not None:
+                    try:
+                        await webhooks.dispatch_event(
+                            db, business_id=campaign.business_id, event_type=trigger,
+                            payload={
+                                "recipient_id": str(recipient.id),
+                                "customer_id": str(recipient.customer_id),
+                            },
+                        )
+                    except Exception:
+                        logger.exception(
+                            "post-call webhook dispatch failed recipient=%s trigger=%s",
+                            recipient.id, trigger,
+                        )
+                    try:
+                        await post_call_actions.apply_rules(
+                            db, business_id=campaign.business_id, trigger_type=trigger,
+                            customer_id=recipient.customer_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "post-call action rules failed recipient=%s trigger=%s",
+                            recipient.id, trigger,
+                        )
         await db.commit()
 
     return {"received": True}

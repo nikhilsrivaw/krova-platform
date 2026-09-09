@@ -34,6 +34,7 @@ from shared.db.models.integrations import (
     EmailSendConnection,
     GitHubConnection,
     OutboundWebhook,
+    PostCallActionRule,
     StripeConnection,
     WebhookEventType,
 )

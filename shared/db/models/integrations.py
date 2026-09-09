@@ -20,6 +20,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import ARRAY, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -184,6 +185,17 @@ class WebhookEventType(str, enum.Enum):
     # decide the deal, so this is deliberately real-time, not a nightly
     # sweep like every other Insight-kind check in this codebase.
     competitor_mentioned = "competitor.mentioned"
+    # Voice roadmap round 5 (shared/care/post_call_actions.py) - the two
+    # places a call's outcome actually exists in this codebase (confirmed,
+    # not unified): call_completed fires from relay.py's _analyze_call
+    # once Call.outcome is set (an answered call); call_voicemail and
+    # call_no_answer fire from outbound.py's outbound_hangup, the only
+    # place either outcome is ever recorded (no Call row exists for an
+    # unanswered/voicemail outbound attempt at all - see
+    # CallCampaignRecipientStatus instead).
+    call_completed = "call.completed"
+    call_voicemail = "call.voicemail"
+    call_no_answer = "call.no_answer"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):
@@ -250,3 +262,40 @@ class ApiKey(UUIDMixin, TimestampMixin, Base):
     rate_limit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (Index("idx_api_keys_business", "business_id"),)
+
+
+class PostCallActionRule(UUIDMixin, TimestampMixin, Base):
+    """
+    The voice-to-action bridge - "when a call ends this way, do that" -
+    business-configurable, unlike everything else conditional in this
+    codebase (recall.py, escalation_failsafe.py, ...), which is a fixed
+    Python function per condition. See shared/care/post_call_actions.py,
+    which interprets these rows.
+
+    trigger_type is a WebhookEventType value (call.completed/
+    call.voicemail/call.no_answer) - not FK-constrained to that enum
+    (nothing in this schema is, per OutboundWebhook.event_types' own
+    precedent), just validated at the API layer.
+
+    action_type is deliberately one of exactly two supported values for
+    v1, not an open-ended action language: "whatsapp_followup" (needs an
+    approved WhatsApp template - see notify.send_post_call_followup) and
+    "create_escalation_task" (reuses the existing Escalation model via
+    agent_module.notify_escalation, not a new Task concept).
+    """
+
+    __tablename__ = "post_call_action_rules"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    trigger_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # whatsapp_followup: {"message": "<text the approved template speaks>"}.
+    # create_escalation_task: {"reason": "<text shown on the Escalation row>"}.
+    action_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        Index("idx_post_call_rules_lookup", "business_id", "trigger_type", "is_active"),
+    )
