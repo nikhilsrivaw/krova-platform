@@ -108,6 +108,11 @@ class CallPipeline:
     # route.greeting. None (the default) preserves inbound behaviour
     # exactly: every existing call still opens with route.greeting.
     opening_line: str | None = None
+    # "customer" (default) is every existing call, unchanged. "owner" is
+    # set only when the caller's number matched Business.owner_phone (see
+    # relay.py) - _reply() branches to _owner_reply() instead, which never
+    # touches booking/escalation-transfer/customer identity at all.
+    mode: str = "customer"
 
     history: list[dict] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
@@ -128,6 +133,14 @@ class CallPipeline:
 
     async def start(self) -> None:
         """Greet the caller. The first thing anyone hears on the call."""
+        if self.mode == "owner":
+            # route.greeting is the customer-facing "thank you for calling"
+            # line - wrong register for the business's own owner.
+            await self._say_stream(
+                _single_chunk("Hi, this is KROVA. What would you like to know?"),
+                record=True,
+            )
+            return
         await self._say_stream(_single_chunk(self.opening_line or self.route.greeting), record=True)
 
     async def on_transcript(self, text: str, *, is_final: bool, language: str | None = None) -> None:
@@ -201,7 +214,14 @@ class CallPipeline:
         self.turns.append(Turn(role="caller", text=text))
         self.history.append({"role": "user", "content": text})
 
-        await self._store_turn(direction=Direction.inbound, text=text)
+        if self.mode != "owner":
+            # An owner call is not persisted through ingest() - see
+            # context.py's OwnerContext docstring on why: ingest() resolves
+            # a Customer from caller_phone, and the owner's own number must
+            # never become a Customer row. self.history above already
+            # carries this call's conversation in memory, which is what
+            # _owner_reply()/stream_owner_reply() actually read from.
+            await self._store_turn(direction=Direction.inbound, text=text)
 
         self._reply_task = asyncio.create_task(self._reply(started_at=time.monotonic()))
         try:
@@ -230,6 +250,13 @@ class CallPipeline:
         records the gap the same way a text escalation does, so the
         business's knowledge still compounds even though nothing was queued.
         """
+        if self.mode == "owner":
+            # An owner call has no Customer row at all (see relay.py) -
+            # self.customer_id is never set for it, so this has to branch
+            # before the check below, not after.
+            await self._owner_reply()
+            return
+
         if self.customer_id is None:
             logger.warning("reply requested with no resolved customer, skipping")
             return
@@ -439,6 +466,79 @@ class CallPipeline:
             db=self.db,
         )
 
+    async def _owner_reply(self) -> None:
+        """
+        The owner voice interface's reply loop - agent_module.
+        stream_owner_reply's counterpart to _reply() above, much simpler:
+        no booking, no customer-escalation transfer, no gap-recording,
+        since none of that applies to an owner asking about their own
+        ledger. self.history (not a DB-refreshed AgentContext.recent, the
+        customer path's source) is what carries the conversation so far -
+        see stream_owner_reply's own docstring for why.
+        """
+        context = await agent_context.build_owner(self.route.business_id, self.db)
+        events = agent_module.stream_owner_reply(context, self.history)
+        try:
+            first = await events.__anext__()
+        except StopAsyncIteration:
+            logger.warning("stream_owner_reply produced no events at all")
+            return
+
+        action = first.action if isinstance(first, agent_module.ReplyStart) else "escalate"
+
+        if action == "no_action":
+            async for _ in events:
+                pass
+            return
+
+        if action == "escalate":
+            gap: str | None = None
+            cost_paise = 0
+            async for ev in events:
+                if isinstance(ev, agent_module.ReplyDone):
+                    gap = ev.gap
+                    cost_paise = ev.cost_paise
+            usage.record(
+                business_id=self.route.business_id,
+                event_type=UsageEventType.ai_reply_generated,
+                channel="voice",
+                quantity=1,
+                unit="call",
+                krova_cost_paise=cost_paise,
+                source_type="call",
+                source_id=self.call_row_id,
+                db=self.db,
+            )
+            spoken = (
+                f"I don't have {gap} on hand right now."
+                if gap
+                else "I don't have enough to answer that from the ledger right now."
+            )
+            await self._say_stream(_single_chunk(spoken), record=True)
+            return
+
+        reply_cost = {"paise": 0}
+
+        async def reply_text_chunks():
+            async for ev in events:
+                if isinstance(ev, agent_module.ReplyChunk):
+                    yield ev.text
+                elif isinstance(ev, agent_module.ReplyDone):
+                    reply_cost["paise"] = ev.cost_paise
+
+        await self._say_stream(reply_text_chunks(), record=True)
+        usage.record(
+            business_id=self.route.business_id,
+            event_type=UsageEventType.ai_reply_generated,
+            channel="voice",
+            quantity=1,
+            unit="call",
+            krova_cost_paise=reply_cost["paise"],
+            source_type="call",
+            source_id=self.call_row_id,
+            db=self.db,
+        )
+
     async def request_transfer(self) -> None:
         """
         The caller pressed the keypad's escape-hatch digit (0) asking for a
@@ -592,7 +692,7 @@ class CallPipeline:
                     self.provider_call_id,
                     t_first_chunk - t_start,
                 )
-            if record and turn.text.strip():
+            if record and turn.text.strip() and self.mode != "owner":
                 await self._store_turn(
                     direction=Direction.outbound,
                     text=turn.text[: self._spoken_chars] if not turn.complete else turn.text,

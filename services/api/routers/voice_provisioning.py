@@ -629,12 +629,16 @@ class AgentSettingsOut(BaseModel):
     # use - the default, and what preserves today's behaviour exactly.
     staff_phone_number: str | None
     copilot_mode: bool
+    # None means every call is customer-facing, today's exact behaviour -
+    # see Business.owner_phone's own docstring.
+    owner_phone: str | None
 
 
-def _agent_settings_out(connection: ChannelConnection, business_name: str) -> AgentSettingsOut:
+def _agent_settings_out(connection: ChannelConnection, business: Business | None) -> AgentSettingsOut:
     extra = connection.extra or {}
     language = extra.get("language", "en-IN")
     speaker = extra.get("speaker", "shubh")
+    business_name = business.name if business else "your business"
     return AgentSettingsOut(
         # Same default a live call actually speaks (tenant.py's
         # default_greeting) - this used to be a second, English-only copy
@@ -650,6 +654,7 @@ def _agent_settings_out(connection: ChannelConnection, business_name: str) -> Ag
         languages=[LanguageOption(**l) for l in SUPPORTED_LANGUAGES],
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
+        owner_phone=business.owner_phone if business else None,
     )
 
 
@@ -657,7 +662,7 @@ def _agent_settings_out(connection: ChannelConnection, business_name: str) -> Ag
 async def get_agent_settings(current_user: CurrentUserDep, db: DbDep) -> AgentSettingsOut:
     connection = await _voice_connection(current_user.business, db)
     business = await db.get(Business, current_user.business)
-    return _agent_settings_out(connection, business.name if business else "your business")
+    return _agent_settings_out(connection, business)
 
 
 class AgentSettingsIn(BaseModel):
@@ -670,6 +675,10 @@ class AgentSettingsIn(BaseModel):
     # optional-field convention every other field on this model follows.
     staff_phone_number: str | None = None
     copilot_mode: bool | None = None
+    # Same "" clears / omit leaves untouched convention as
+    # staff_phone_number - lives on Business, not this connection's
+    # extra, since it identifies a person, not a per-number setting.
+    owner_phone: str | None = None
 
 
 @router.patch("/agent-settings", response_model=AgentSettingsOut)
@@ -709,6 +718,16 @@ async def update_agent_settings(
                 detail=f"staff_phone_number: {exc}",
             ) from exc
 
+    normalised_owner_number: str | None = None
+    if body.owner_phone is not None and body.owner_phone.strip():
+        try:
+            normalised_owner_number = normalise_phone(body.owner_phone)
+        except InvalidIdentifier as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"owner_phone: {exc}",
+            ) from exc
+
     extra = dict(connection.extra or {})
 
     # Checked against the state this request actually RESULTS in, not just
@@ -744,6 +763,11 @@ async def update_agent_settings(
     if body.copilot_mode is not None:
         extra["copilot_mode"] = body.copilot_mode
     connection.extra = extra
+
+    business = await db.get(Business, current_user.business)
+    if body.owner_phone is not None and business is not None:
+        business.owner_phone = normalised_owner_number
+
     await db.commit()
 
     logger.info(
@@ -752,8 +776,7 @@ async def update_agent_settings(
         [k for k, v in body.model_dump().items() if v is not None],
     )
 
-    business = await db.get(Business, current_user.business)
-    return _agent_settings_out(connection, business.name if business else "your business")
+    return _agent_settings_out(connection, business)
 
 
 # 37 real speaker names tell a business owner nothing - this is what lets

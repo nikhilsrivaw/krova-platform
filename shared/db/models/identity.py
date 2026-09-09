@@ -146,6 +146,16 @@ class Business(UUIDMixin, TimestampMixin, Base):
     # is how a leaked/shared kiosk link gets revoked.
     kiosk_token: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
 
+    # E.164 without the leading "+" (matching CustomerIdentity's own phone
+    # storage convention) - the owner's own number, so a call arriving from
+    # it on the business's voice line gets the owner-facing "check on my own
+    # business" persona instead of the customer-facing one (see
+    # shared/channels/voice/relay.py). Null (the default) means every call
+    # is treated as a customer call, exactly today's behaviour - opt-in, not
+    # inferred, since guessing wrong here means a real customer accidentally
+    # hearing internal ledger figures.
+    owner_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     members: Mapped[list["BusinessMember"]] = relationship(
         back_populates="business", cascade="all, delete-orphan"
     )

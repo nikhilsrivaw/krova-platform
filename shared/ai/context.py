@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
+from shared.care import ledger_queries
 from shared.db.models import (
     Appointment,
     Business,
@@ -588,3 +589,91 @@ async def build_anonymous(
 def now_line() -> str:
     """Today's date, so the agent can reason about 'Friday' and 'next week'."""
     return datetime.now(timezone.utc).strftime("%A, %d %B %Y")
+
+
+def _paise_to_rupees(paise: int | None) -> str:
+    if not paise:
+        return "₹0"
+    return f"₹{paise / 100:,.0f}"
+
+
+@dataclass(slots=True)
+class OwnerContext:
+    """
+    What the owner voice interface (shared/ai/agent.py::stream_owner_reply)
+    needs - cross-customer, unlike AgentContext above, and deliberately
+    small: only the commitment ledger, the one business-wide dataset that
+    already has a real, correct query to build on (shared/care/
+    ledger_queries.py). "Revenue yesterday" and anything else not tracked
+    anywhere in this codebase is explicitly not here - render() below says
+    so plainly rather than the model guessing.
+    """
+
+    business_name: str
+    totals: ledger_queries.LedgerTotals
+    top_they_owe: list[ledger_queries.OpenCommitmentRow]
+    top_we_owe: list[ledger_queries.OpenCommitmentRow]
+
+    def render(self) -> str:
+        lines = [
+            f"You are helping the owner of {self.business_name} check their "
+            "commitment ledger over a live phone call."
+        ]
+        lines.append(
+            f"\nCustomers owe you {_paise_to_rupees(self.totals.owed_to_us_paise)} "
+            f"across open commitments. You owe customers "
+            f"{_paise_to_rupees(self.totals.owed_by_us_paise)}."
+        )
+        lines.append(
+            f"{self.totals.overdue_count} item(s) are overdue, totalling "
+            f"{_paise_to_rupees(self.totals.overdue_paise)}."
+        )
+        if self.totals.unconfirmed_count:
+            lines.append(
+                f"{self.totals.unconfirmed_count} commitment(s) are unconfirmed - "
+                "extracted from a conversation but not yet verified. Never state these as fact."
+            )
+
+        def _row_line(row: ledger_queries.OpenCommitmentRow) -> str:
+            amount = _paise_to_rupees(row.amount_paise) if row.amount_paise else "an unspecified amount"
+            due = row.due_at.strftime("%d %b") if row.due_at else "no due date"
+            return f"- {row.customer_name or 'a customer'}: {row.description} ({amount}, due {due})"
+
+        if self.top_they_owe:
+            lines.append("\nWhat customers owe you, most urgent first:")
+            lines.extend(_row_line(r) for r in self.top_they_owe)
+        if self.top_we_owe:
+            lines.append("\nWhat you owe customers, most urgent first:")
+            lines.extend(_row_line(r) for r in self.top_we_owe)
+
+        lines.append(
+            "\nThis is everything you have access to right now. Revenue, expenses, "
+            "and anything not listed above is not tracked yet - say so plainly if "
+            "asked, never guess or estimate a number."
+        )
+        return "\n".join(lines)
+
+
+async def build_owner(business_id: uuid.UUID, db: AsyncSession) -> OwnerContext:
+    """
+    Cross-customer, unlike build() above - the owner voice interface's own
+    context, read from the ledger the owner already sees on their
+    dashboard (services/api/routers/ledger.py), via the same queries that
+    endpoint itself now delegates to.
+    """
+    from shared.db.models import CommitmentDirection
+
+    business = await db.get(Business, business_id)
+    totals = await ledger_queries.totals(business_id, db)
+    top_they_owe = await ledger_queries.top_open_commitments(
+        business_id, db, direction=CommitmentDirection.they_owe
+    )
+    top_we_owe = await ledger_queries.top_open_commitments(
+        business_id, db, direction=CommitmentDirection.we_owe
+    )
+    return OwnerContext(
+        business_name=business.name if business is not None else "your business",
+        totals=totals,
+        top_they_owe=top_they_owe,
+        top_we_owe=top_we_owe,
+    )

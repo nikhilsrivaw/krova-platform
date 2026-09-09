@@ -104,6 +104,11 @@ class VoiceRoute:
     # Meaningless without staff_phone_number also being set; the caller
     # (answer.py) checks both together.
     copilot_mode: bool
+    # Business.owner_phone, carried onto the route so relay.py can compare
+    # it against an inbound caller's number without a second DB fetch -
+    # see relay.py's own use of this for the owner voice interface. None
+    # (the default) means no owner number is configured, same as today.
+    owner_phone: str | None
 
 
 def _build_route(business: Business, connection: ChannelConnection) -> VoiceRoute:
@@ -122,6 +127,7 @@ def _build_route(business: Business, connection: ChannelConnection) -> VoiceRout
         speaker=speaker,
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
+        owner_phone=business.owner_phone,
     )
 
 

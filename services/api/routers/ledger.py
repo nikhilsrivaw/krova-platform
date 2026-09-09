@@ -39,6 +39,7 @@ from shared.db.models import (
     Message,
     TagStatus,
 )
+from shared.care import ledger_queries
 from shared.identity import importer
 from shared.reports import tally_export
 
@@ -124,46 +125,20 @@ async def ledger_summary(current_user: CurrentUserDep, db: DbDep) -> LedgerSumma
 
     Only confirmed, open commitments count toward money. An unconfirmed
     extraction is a question, not a receivable.
+
+    Delegates to shared/care/ledger_queries.py rather than querying
+    directly - the same numbers this endpoint has always returned, now
+    also readable by a non-HTTP caller (the owner voice interface's
+    shared/ai/context.py::build_owner()).
     """
-    business_id = current_user.business
-    now = datetime.now(timezone.utc)
-
-    open_only = (
-        Commitment.business_id == business_id,
-        Commitment.status == CommitmentStatus.open,
-    )
-
-    async def total(direction: CommitmentDirection) -> int:
-        result = await db.execute(
-            select(func.coalesce(func.sum(Commitment.amount_paise), 0)).where(
-                *open_only, Commitment.direction == direction
-            )
-        )
-        return int(result.scalar_one())
-
-    overdue = await db.execute(
-        select(
-            func.count(Commitment.id),
-            func.coalesce(func.sum(Commitment.amount_paise), 0),
-        ).where(*open_only, Commitment.due_at < now)
-    )
-    overdue_count, overdue_paise = overdue.one()
-
-    open_count = await db.execute(select(func.count(Commitment.id)).where(*open_only))
-    unconfirmed = await db.execute(
-        select(func.count(Commitment.id)).where(
-            Commitment.business_id == business_id,
-            Commitment.status == CommitmentStatus.unconfirmed,
-        )
-    )
-
+    t = await ledger_queries.totals(current_user.business, db)
     return LedgerSummary(
-        owed_to_us_paise=await total(CommitmentDirection.they_owe),
-        owed_by_us_paise=await total(CommitmentDirection.we_owe),
-        overdue_count=int(overdue_count),
-        overdue_paise=int(overdue_paise),
-        open_count=int(open_count.scalar_one()),
-        unconfirmed_count=int(unconfirmed.scalar_one()),
+        owed_to_us_paise=t.owed_to_us_paise,
+        owed_by_us_paise=t.owed_by_us_paise,
+        overdue_count=t.overdue_count,
+        overdue_paise=t.overdue_paise,
+        open_count=t.open_count,
+        unconfirmed_count=t.unconfirmed_count,
     )
 
 

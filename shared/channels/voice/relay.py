@@ -500,6 +500,18 @@ async def stream(
                             await websocket.close()
                             return
 
+                    # Own-number check applies to every branch above too
+                    # (an outbound/adhoc call is never the owner calling
+                    # in), but only inbound calls can plausibly match it -
+                    # route is guaranteed set past this point either way.
+                    pipeline_mode = "customer"
+                    if from_number and route.owner_phone:
+                        try:
+                            if normalise(IdentityKind.phone.value, from_number) == route.owner_phone:
+                                pipeline_mode = "owner"
+                        except InvalidIdentifier:
+                            pass
+
                     call_row = Call(
                         business_id=route.business_id,
                         connection_id=route.connection_id,
@@ -525,7 +537,11 @@ async def stream(
                     # with no history simply leaves this None, today's
                     # exact behavior.
                     known_language: str | None = None
-                    if outbound_customer_id is not None:
+                    if pipeline_mode == "owner":
+                        # No Customer row is ever looked up for an owner
+                        # call - see CallPipeline.mode's own docstring.
+                        pass
+                    elif outbound_customer_id is not None:
                         known_customer = await db.get(Customer, outbound_customer_id)
                         known_language = known_customer.preferred_language if known_customer else None
                     elif from_number:
@@ -559,6 +575,7 @@ async def stream(
                         opening_line=opening_line,
                         customer_id=outbound_customer_id,
                         detected_language=known_language,
+                        mode=pipeline_mode,
                     )
 
                     logger.info(

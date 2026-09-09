@@ -237,6 +237,31 @@ NOACTION is only for a message that is not a question and does not need \
 a reply at all - never for a repeated question, no matter how repeated."""
 
 
+# The owner voice interface's own persona - a business owner checking on
+# their own ledger, never a customer. Deliberately a separate constant
+# rather than a variant of SYSTEM above: no booking, no "match the
+# customer's tone" framing, and a much stricter "only state what you were
+# given" rule, since the whole content here is preloaded ledger figures
+# with nothing else to draw on.
+OWNER_SYSTEM_STREAM = """You are helping the OWNER of a business check their own commitment ledger, over a live phone call - not a customer.
+
+You are given the business's real, current ledger position: what customers owe them, what they owe customers, what is overdue, and what is still unconfirmed. This is the only data you have.
+
+Never invent a number. Every figure you say must come directly from the ledger data you were given - if the owner asks about anything not covered there (revenue, expenses, staff, anything outside the ledger), say plainly that this isn't tracked yet. A wrong number is worse than admitting you don't have it.
+
+Write as you would say it out loud - one or two short, natural sentences, not a written report.
+
+This is a live phone call - the owner is waiting in silence right now, so every extra second you take to plan is a second they hear nothing. Output in exactly this format, nothing else, no markdown, no preamble:
+
+The first line is exactly one word: REPLY, ESCALATE, or NOACTION.
+
+If REPLY: a blank line, then the spoken reply itself - one or two short sentences, the way a person would actually say it out loud. Nothing after it.
+
+If ESCALATE: a blank line, then one short phrase naming exactly what you could not answer (five words or fewer).
+
+If NOACTION: nothing else follows. Only for something that plainly needs no reply - a "thanks", a goodbye. If the owner's most recent message is a question, answer it - never NOACTION for a question, no matter how many times it was already asked earlier in this call."""
+
+
 # Sentence-ending punctuation a streamed reply is split on before being
 # handed to TTS - good enough to start speaking a finished sentence while
 # Claude is still generating the next one, without waiting for the whole
@@ -410,6 +435,106 @@ async def stream_reply(agent_context: ctx.AgentContext):
     if action is None:
         # The stream ended before a single newline ever arrived - a very
         # short or malformed output. Treat as escalate rather than silence.
+        word = buffer.strip().upper()
+        action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}.get(
+            word, "escalate"
+        )
+        yield ReplyStart(action=action)
+
+    if action == "reply" and sentence_buffer.strip():
+        yield ReplyChunk(text=sentence_buffer.strip())
+
+    gap = "".join(gap_parts).strip() or None if action == "escalate" else None
+    yield ReplyDone(gap=gap, cost_paise=stream.cost_paise)
+
+
+async def stream_owner_reply(owner_context: ctx.OwnerContext, recent_turns: list[dict]):
+    """
+    stream_reply's owner-facing sibling - a business owner asking about
+    their own ledger on a live call, never a customer. Deliberately its
+    own function rather than a branch inside stream_reply: no booking, no
+    BOOK_* header, and pipeline.py's owner-mode caller has none of
+    stream_reply's customer-escalation/transfer/gap-recording machinery
+    to wire up, so a simpler REPLY/ESCALATE/NOACTION-only format is
+    enough here - there is nothing for a BOOK_* header to mean on an
+    owner call.
+
+    Unlike stream_reply, which reads the conversation out of
+    agent_context.recent (DB-backed, refreshed each turn by re-querying
+    Message), an owner call is not persisted through ingest() - see
+    context.py's OwnerContext docstring - so the conversation so far is
+    passed in directly, the same in-memory list pipeline.py's CallPipeline
+    already keeps as self.history regardless of DB persistence.
+    """
+    if not recent_turns:
+        yield ReplyStart(action="no_action")
+        yield ReplyDone(gap=None, cost_paise=0)
+        return
+
+    context_block = f"Today is {ctx.now_line()}.\n\n{owner_context.render()}"
+    messages = [
+        {"role": "user", "content": context_block},
+        {"role": "assistant", "content": "Understood - I have the ledger position. Go ahead."},
+        *recent_turns,
+    ]
+
+    stream = client.stream_text(
+        system=OWNER_SYSTEM_STREAM,
+        messages=messages,
+        speed="fast",
+        max_tokens=200,
+    )
+
+    buffer = ""
+    action: str | None = None
+    gap_parts: list[str] = []
+    sentence_buffer = ""
+
+    async for delta in stream:
+        buffer += delta
+
+        if action is None:
+            if "\n" not in buffer:
+                continue
+            first_line, _, rest = buffer.partition("\n")
+            word = first_line.strip().upper()
+            if word not in ("REPLY", "ESCALATE", "NOACTION"):
+                logger.warning("stream_owner_reply got unrecognised action %r, escalating", word)
+                word = "ESCALATE"
+            action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}[word]
+            yield ReplyStart(action=action)
+
+            # `rest` already holds everything after the action line that
+            # arrived in this same delta - the sentence-splitting loop
+            # below must start from it, not from `delta` again, or the
+            # tail of this chunk would be counted twice. Every path here
+            # ends in `continue` for exactly that reason - stream_reply's
+            # own header-parsing block follows the identical discipline.
+            content = rest.lstrip("\n")
+            if action == "reply":
+                sentence_buffer = content
+            elif action == "escalate" and content:
+                gap_parts.append(content)
+            continue
+
+        if action == "reply":
+            sentence_buffer += delta
+            while True:
+                cut = None
+                for marker in _SENTENCE_END:
+                    idx = sentence_buffer.find(marker)
+                    if idx != -1 and (cut is None or idx < cut):
+                        cut = idx + len(marker)
+                if cut is None:
+                    break
+                piece = sentence_buffer[:cut].strip()
+                sentence_buffer = sentence_buffer[cut:]
+                if piece:
+                    yield ReplyChunk(text=piece)
+        elif action == "escalate":
+            gap_parts.append(delta)
+
+    if action is None:
         word = buffer.strip().upper()
         action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}.get(
             word, "escalate"
