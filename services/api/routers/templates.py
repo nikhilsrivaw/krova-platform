@@ -46,7 +46,7 @@ MAX_EDITS_PER_WINDOW = 10
 
 
 class ButtonIn(BaseModel):
-    type: Literal["QUICK_REPLY", "URL", "PHONE_NUMBER"]
+    type: Literal["QUICK_REPLY", "URL", "PHONE_NUMBER", "ORDER_DETAILS"]
     text: str = Field(max_length=25)
     url: str | None = None
     phone_number: str | None = None

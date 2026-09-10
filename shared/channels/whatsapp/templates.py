@@ -120,7 +120,11 @@ def variables_in(text: str) -> list[str]:
 
 @dataclass(slots=True)
 class Button:
-    type: Literal["QUICK_REPLY", "URL", "PHONE_NUMBER"]
+    # ORDER_DETAILS: WhatsApp Payments (India) - a template with this
+    # button becomes sendable via WhatsAppClient.send_order_details().
+    # UNVERIFIED end-to-end against a live WABA - see that method's own
+    # docstring in shared/channels/whatsapp/client.py.
+    type: Literal["QUICK_REPLY", "URL", "PHONE_NUMBER", "ORDER_DETAILS"]
     text: str
     url: str | None = None
     phone_number: str | None = None

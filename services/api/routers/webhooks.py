@@ -350,6 +350,94 @@ async def _apply_status(update: webhook.StatusUpdate, db) -> None:
             update.errors,
         )
 
+    payment = update.raw.get("payment")
+    if payment:
+        await _apply_payment_status(update, payment, db)
+
+
+async def _apply_payment_status(update: webhook.StatusUpdate, payment: dict, db) -> None:
+    """
+    A WhatsApp Payments (India) status update - deliberately does NOT trust
+    this webhook's own status field. Meta's own guidance (confirmed via
+    360dialog's real India payments implementation, no first-party page
+    gave the exact wording): a business "should not rely solely on the
+    status of the transaction provided in the webhook and must use
+    payment lookup API to retrieve the statuses directly from WhatsApp."
+    So this only ever uses the webhook as a trigger to go verify, never
+    as the source of truth for closing a real ledger commitment.
+
+    UNVERIFIED AGAINST A LIVE WABA - the raw shape this reads
+    (`update.raw["payment"]["reference_id"]`) follows Meta's general
+    payment-status webhook pattern but was not observed on a real
+    payment. If this key doesn't actually appear, this function simply
+    never triggers - it fails closed, not into a wrong auto-close.
+    """
+    from shared.auth.encryption import decrypt
+    from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
+    from shared.db.models import (
+        Channel, ChannelConnection, Commitment, CommitmentStatus, ConnectionStatus,
+    )
+
+    reference_id = payment.get("reference_id")
+    if not reference_id:
+        logger.info("payment status webhook with no reference_id, ignoring: %r", payment)
+        return
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.channel == Channel.whatsapp,
+                ChannelConnection.external_account_id == update.phone_number_id,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    payment_configuration_id = (connection.extra or {}).get("payment_configuration_id") if connection else None
+    if connection is None or not connection.access_token or not payment_configuration_id:
+        logger.warning(
+            "payment webhook for reference_id=%s but no active connection/payment config", reference_id,
+        )
+        return
+
+    try:
+        client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+        verified = await client.get_payment_status(payment_configuration_id, reference_id)
+    except WhatsAppError as exc:
+        logger.warning("payment lookup failed for reference_id=%s: %s", reference_id, exc)
+        return
+
+    verified_status = (verified.get("transaction") or {}).get("status") or verified.get("status")
+    if verified_status != "captured":
+        logger.info(
+            "payment reference_id=%s lookup returned %r, not marking anything paid",
+            reference_id, verified_status,
+        )
+        return
+
+    try:
+        commitment_id = uuid.UUID(reference_id)
+    except ValueError:
+        logger.warning("payment reference_id=%s is not a commitment id, ignoring", reference_id)
+        return
+
+    commitment = await db.get(Commitment, commitment_id)
+    if (
+        commitment is None
+        or commitment.business_id != connection.business_id
+        or commitment.status != CommitmentStatus.open
+    ):
+        logger.info(
+            "verified payment for reference_id=%s but no matching open commitment", reference_id,
+        )
+        return
+
+    commitment.status = CommitmentStatus.met
+    commitment.resolved_at = datetime.now(timezone.utc)
+    logger.info(
+        "commitment %s marked met from a Meta-verified WhatsApp payment (business=%s)",
+        commitment.id, connection.business_id,
+    )
+
 
 async def _record_native_order(
     business_id: uuid.UUID, customer_id: uuid.UUID, order_data: dict,

@@ -258,6 +258,100 @@ class WhatsAppClient:
         )
         return self._result(payload)
 
+    async def send_order_details(
+        self,
+        to: str,
+        template_name: str,
+        *,
+        language: str = "en",
+        reference_id: str,
+        payment_configuration: str,
+        amount_paise: int,
+        description: str,
+        currency: str = "INR",
+    ) -> SendResult:
+        """
+        Send an approved order-details template with a real Meta-native
+        payment button attached - WhatsApp Payments (India), not a link
+        Krova generates itself. See docs/whatsapp-hub-fixes-and-gaps.md
+        for why: the business set the payment method up directly with
+        Meta, this only ever references the id they got back.
+
+        UNVERIFIED AGAINST A LIVE WABA - built from Meta's own published
+        JSON examples (developers.facebook.com's order-details template
+        docs) since no payments-enabled test account was available this
+        session. The `order_details` action shape itself is high
+        confidence; the exact button-parameter wrapping around it
+        follows Meta's general template-button-parameter convention but
+        was not observed on a real send. Confirm against a real test
+        send before trusting this with a real customer's payment.
+
+        `amount_paise` maps straight onto Meta's value/offset pair - INR
+        with offset 100 means value is already in paise, exactly what
+        Commitment.amount_paise already stores, no conversion needed.
+        """
+        order_details = {
+            "reference_id": reference_id,
+            "type": "digital-goods",
+            "payment_type": "upi",
+            "payment_configuration": payment_configuration,
+            "currency": currency,
+            "total_amount": {"offset": 100, "value": amount_paise},
+            "order": {
+                "status": "pending",
+                "items": [
+                    {
+                        "name": description[:60] or "Payment due",
+                        "quantity": 1,
+                        "retailer_id": reference_id,
+                        "amount": {"offset": 100, "value": amount_paise},
+                    }
+                ],
+            },
+        }
+
+        payload = await self._post(
+            "messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "template",
+                "template": {
+                    "name": template_name,
+                    "language": {"code": language},
+                    "components": [
+                        {
+                            "type": "button",
+                            "sub_type": "order_details",
+                            "index": "0",
+                            "parameters": [{"type": "action", "action": order_details}],
+                        }
+                    ],
+                },
+            },
+        )
+        return self._result(payload)
+
+    async def get_payment_status(self, payment_configuration: str, reference_id: str) -> dict:
+        """
+        The lookup Meta itself says to use rather than trusting a webhook
+        alone: GET /{phone_number_id}/payments/{payment_configuration}/
+        {reference_id}. Call this before marking anything paid - never
+        act on a webhook's own status field directly.
+
+        UNVERIFIED AGAINST A LIVE WABA - same caveat as send_order_details.
+        """
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(
+                f"{self._base}/payments/{payment_configuration}/{reference_id}",
+                headers=self._headers,
+            )
+        payload = response.json() if response.content else {}
+        if response.status_code != 200:
+            raise _explain(payload)
+        return payload
+
     async def send_interactive_buttons(
         self, to: str, body: str, buttons: list[tuple[str, str]]
     ) -> SendResult:

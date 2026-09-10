@@ -27,21 +27,30 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.auth.encryption import decrypt
+from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
 from shared.db.models import (
+    Channel,
+    ChannelConnection,
     Commitment,
     CommitmentDirection,
     CommitmentKind,
     CommitmentStatus,
+    ConnectionStatus,
     Customer,
     CustomerIdentity,
     CustomerIntelligence,
     CustomerTag,
+    IdentityKind,
     Message,
     TagStatus,
 )
 from shared.care import ledger_queries
 from shared.identity import importer
 from shared.reports import tally_export
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -277,6 +286,100 @@ async def resolve_commitment(
     customer = await db.get(Customer, commitment.customer_id)
     return _to_out(commitment, customer.display_name if customer else None,
                    datetime.now(timezone.utc))
+
+
+class RequestPaymentBody(BaseModel):
+    # Which approved order-details template to send - explicit, not
+    # auto-detected, the same "you choose" discipline campaigns already
+    # use for picking a template.
+    template_name: str
+    template_language: str = "en"
+
+
+@router.post("/commitments/{commitment_id}/request-payment")
+async def request_payment(
+    commitment_id: uuid.UUID, body: RequestPaymentBody, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    Send a real, Meta-native WhatsApp payment request against an open
+    they-owe commitment - not a link Krova generates, a payment button
+    inside the chat itself.
+
+    UNVERIFIED AGAINST A LIVE WABA - see WhatsAppClient.send_order_details's
+    own docstring. Confirm with a real test send before trusting this
+    with a real customer's money.
+    """
+    commitment = await _owned(commitment_id, current_user.business, db)
+    if commitment.direction != CommitmentDirection.they_owe:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Only a commitment where the customer owes you can request payment",
+        )
+    if commitment.status != CommitmentStatus.open:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"This commitment is already {commitment.status.value}"
+        )
+    if not commitment.amount_paise:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "This commitment has no amount to request"
+        )
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == current_user.business,
+                ChannelConnection.channel == Channel.whatsapp,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Connect WhatsApp first")
+
+    payment_configuration_id = (connection.extra or {}).get("payment_configuration_id")
+    if not payment_configuration_id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Set up WhatsApp Payments on the WhatsApp Hub page first - "
+            "Meta hands you a Payment Configuration ID once you add a "
+            "payment method on your own Facebook Business Account.",
+        )
+
+    phone = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == commitment.customer_id,
+                CustomerIdentity.kind == IdentityKind.phone,
+            )
+        )
+    ).scalars().first()
+    if not phone:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "This customer has no phone number on file"
+        )
+
+    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+    try:
+        result = await client.send_order_details(
+            phone,
+            body.template_name,
+            language=body.template_language,
+            # The commitment's own id is the reference_id - the same
+            # value the payment-status webhook/lookup will echo back,
+            # so a payment can be matched to exactly one promise.
+            reference_id=str(commitment.id),
+            payment_configuration=payment_configuration_id,
+            amount_paise=commitment.amount_paise,
+            description=commitment.description or "Payment due",
+        )
+    except WhatsAppError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    logger.info(
+        "payment request sent business=%s commitment=%s message=%s",
+        current_user.business, commitment.id, result.external_id,
+    )
+    return {"sent": True, "message_id": result.external_id}
 
 
 @router.get("/customers", response_model=list[dict])
