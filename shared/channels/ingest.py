@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.billing import usage
+from shared.integrations import webhooks
 from shared.db import queue
 from shared.db.models import (
     Channel,
@@ -191,6 +192,21 @@ async def ingest(
             source_id=message.id,
             occurred_at=occurred_at,
             db=db,
+        )
+        # Every channel funnels through here, so this one call is what
+        # makes "message.received" work for WhatsApp, Instagram and email
+        # alike - not something each channel's own handler needs its own
+        # copy of. Outbound sends never reach this branch, deliberately.
+        await webhooks.dispatch_event(
+            db,
+            business_id=business_id,
+            event_type="message.received",
+            payload={
+                "customer_id": str(customer.id),
+                "channel": channel.value if isinstance(channel, Channel) else str(channel),
+                "text": text,
+                "occurred_at": occurred_at.isoformat(),
+            },
         )
 
     if enqueue_analysis and not customer.is_private:

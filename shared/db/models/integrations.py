@@ -196,6 +196,12 @@ class WebhookEventType(str, enum.Enum):
     call_completed = "call.completed"
     call_voicemail = "call.voicemail"
     call_no_answer = "call.no_answer"
+    # Fired from shared/channels/ingest.py::ingest() - the one function
+    # every channel (WhatsApp, Instagram, email) already funnels inbound
+    # messages through, so this one event type covers all of them, not
+    # just WhatsApp. Outbound sends don't fire this - a business's own
+    # system already knows what it sent.
+    message_received = "message.received"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):
