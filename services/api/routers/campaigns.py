@@ -224,9 +224,12 @@ async def preview(
 
     limit_note = None
     used = await audience_module.sent_today(business_id, db)
-    tier = (await _connection(business_id, db)).extra or {}
+    # Nested under "health" - shared/channels/whatsapp/health_monitor.py's
+    # own write shape. A flat top-level key here was never written by
+    # anything, which silently made this whole guard a no-op.
+    health = ((await _connection(business_id, db)).extra or {}).get("health") or {}
     daily = {"TIER_250": 250, "TIER_1K": 1000, "TIER_10K": 10000}.get(
-        tier.get("messaging_limit_tier", ""), None
+        health.get("messaging_limit_tier", ""), None
     )
     if daily and used + result.count > daily:
         limit_note = (

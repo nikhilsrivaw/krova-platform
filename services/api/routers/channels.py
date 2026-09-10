@@ -139,7 +139,15 @@ async def whatsapp_embedded_signup(
         **(connection.extra or {}),
         "waba_id": result.waba_id,
         "verified_name": result.verified_name,
-        "quality_rating": result.quality_rating,
+        # Seeded here under the same "health" key the background monitor
+        # (shared/channels/whatsapp/health_monitor.py) updates on every
+        # later run - a business sees this initial value immediately,
+        # and the monitor's real updates land in the same place reads
+        # already look, rather than a second, never-read key.
+        "health": {
+            **((connection.extra or {}).get("health") or {}),
+            "quality_rating": result.quality_rating,
+        },
         # Encrypted: it is the number's two-step PIN, not a display value.
         "two_step_pin": encrypt(result.registration_pin or ""),
     }
@@ -201,7 +209,19 @@ async def list_channels(current_user: CurrentUserDep, db: DbDep) -> list[dict]:
             # a page load should not cost a Graph call.
             "waba_id": (c.extra or {}).get("waba_id"),
             "verified_name": (c.extra or {}).get("verified_name"),
-            "quality_rating": (c.extra or {}).get("quality_rating"),
+            # Nested under "health" first - that's the key the background
+            # monitor (health_monitor.py) actually keeps current; a flat
+            # top-level "quality_rating" only ever exists as a fallback for
+            # a connection made before that key existed, seeded once at
+            # signup and never updated again.
+            "quality_rating": (
+                (c.extra or {}).get("health", {}).get("quality_rating")
+                or (c.extra or {}).get("quality_rating")
+            ),
+            # Matches the frontend's own long-declared ChannelConnection.tier
+            # field (lib/api.ts) - present in the type since before this fix,
+            # just never actually populated by anything until now.
+            "tier": (c.extra or {}).get("health", {}).get("messaging_limit_tier"),
         }
         for c in result.scalars().all()
     ]
