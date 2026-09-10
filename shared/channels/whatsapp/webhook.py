@@ -255,6 +255,21 @@ def _extract_text(message: dict) -> tuple[str | None, dict]:
         case "order":
             return "Placed an order", {"kind": "order", "order": message.get("order")}
 
+        case "order_status":
+            # A payment gateway's own status update on a WhatsApp Payments
+            # (India) order-details message - arrives as an inbound message
+            # of this type, not (only) inside the statuses array. UNVERIFIED
+            # exact field nesting against a live send - the raw payload is
+            # kept in full either way, so nothing is lost even if the
+            # specific keys read here turn out wrong; see
+            # services/api/routers/webhooks.py::_apply_payment_status.
+            os_ = message.get("order_status", {}) or {}
+            return "Order status update", {
+                "kind": "order_status",
+                "reference_id": os_.get("reference_id") or (os_.get("order") or {}).get("reference_id"),
+                "order_status": os_,
+            }
+
         case _:
             logger.info("unhandled WhatsApp message type %r - stored raw", kind)
             return None, media

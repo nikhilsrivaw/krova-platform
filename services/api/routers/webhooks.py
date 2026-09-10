@@ -311,6 +311,13 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                         await _mark_flow_completed(
                             connection.business_id, media_info["flow_token"], message.occurred_at, db,
                         )
+                    # WhatsApp Payments (India) - entry point #2, see
+                    # _verify_and_close_payment's own docstring for why
+                    # there are two.
+                    if media_info.get("kind") == "order_status" and media_info.get("reference_id"):
+                        await _verify_and_close_payment(
+                            connection, media_info["reference_id"], db,
+                        )
 
             for update in parsed.statuses:
                 await _apply_status(update, db)
@@ -357,26 +364,12 @@ async def _apply_status(update: webhook.StatusUpdate, db) -> None:
 
 async def _apply_payment_status(update: webhook.StatusUpdate, payment: dict, db) -> None:
     """
-    A WhatsApp Payments (India) status update - deliberately does NOT trust
-    this webhook's own status field. Meta's own guidance (confirmed via
-    360dialog's real India payments implementation, no first-party page
-    gave the exact wording): a business "should not rely solely on the
-    status of the transaction provided in the webhook and must use
-    payment lookup API to retrieve the statuses directly from WhatsApp."
-    So this only ever uses the webhook as a trigger to go verify, never
-    as the source of truth for closing a real ledger commitment.
-
-    UNVERIFIED AGAINST A LIVE WABA - the raw shape this reads
-    (`update.raw["payment"]["reference_id"]`) follows Meta's general
-    payment-status webhook pattern but was not observed on a real
-    payment. If this key doesn't actually appear, this function simply
-    never triggers - it fails closed, not into a wrong auto-close.
+    Entry point #1: a payment update nested inside the ordinary statuses
+    array (`update.raw["payment"]`) - one of two plausible shapes Meta
+    might use; see _verify_and_close_payment's own docstring for why
+    covering both, rather than guessing one, is the honest choice here.
     """
-    from shared.auth.encryption import decrypt
-    from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
-    from shared.db.models import (
-        Channel, ChannelConnection, Commitment, CommitmentStatus, ConnectionStatus,
-    )
+    from shared.db.models import Channel, ChannelConnection, ConnectionStatus
 
     reference_id = payment.get("reference_id")
     if not reference_id:
@@ -392,10 +385,46 @@ async def _apply_payment_status(update: webhook.StatusUpdate, payment: dict, db)
             )
         )
     ).scalars().first()
-    payment_configuration_id = (connection.extra or {}).get("payment_configuration_id") if connection else None
-    if connection is None or not connection.access_token or not payment_configuration_id:
+    if connection is None:
+        logger.warning("payment webhook for reference_id=%s but no active connection", reference_id)
+        return
+    await _verify_and_close_payment(connection, reference_id, db)
+
+
+async def _verify_and_close_payment(connection, reference_id: str, db) -> None:
+    """
+    The one place that actually closes a ledger commitment from a
+    WhatsApp payment - deliberately never trusts a webhook's own status
+    field first. Meta's own guidance (confirmed via 360dialog's real
+    India payments implementation, no first-party page gave the exact
+    wording): a business "should not rely solely on the status of the
+    transaction provided in the webhook and must use payment lookup API
+    to retrieve the statuses directly from WhatsApp." So a webhook -
+    whichever shape it arrives in - is only ever a trigger to go verify,
+    never the source of truth.
+
+    UNVERIFIED AGAINST A LIVE WABA, and specifically: which of two
+    plausible delivery shapes Meta actually uses for a payment status
+    update is not confirmed - either nested inside the ordinary
+    `statuses` array (see _apply_payment_status, entry point #1) or as
+    its own inbound message of type `order_status` (see
+    _process_whatsapp's `order_status` branch, entry point #2, added
+    after confirming via the real Meta App Dashboard webhook field list
+    that no distinct "payment status" field exists to subscribe to -
+    `payment_configuration_update` is a different thing, about the
+    payment method setup changing, not a transaction). Both entry points
+    call this same function, so whichever shape turns out real, the
+    verified-lookup logic itself only has to be correct once.
+    """
+    from shared.auth.encryption import decrypt
+    from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
+    from shared.db.models import Commitment, CommitmentStatus
+
+    payment_configuration_id = (connection.extra or {}).get("payment_configuration_id")
+    if not connection.access_token or not payment_configuration_id:
         logger.warning(
-            "payment webhook for reference_id=%s but no active connection/payment config", reference_id,
+            "payment reference_id=%s but no access token/payment config on connection=%s",
+            reference_id, connection.id,
         )
         return
 
