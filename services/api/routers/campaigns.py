@@ -202,12 +202,12 @@ async def preview(
     """
     business_id = current_user.business
     template = await _template(business_id, body.template_name, body.template_language, db)
+    category = _value(template.category)
 
     result = await audience_module.resolve(
-        business_id, Audience(body.audience), body.audience_params, db
+        business_id, Audience(body.audience), body.audience_params, db,
+        require_marketing_opt_in=(category == "MARKETING"),
     )
-
-    category = _value(template.category)
     if category == "MARKETING":
         cost_note = (
             "Marketing templates are always charged by Meta, and are the most "
@@ -332,12 +332,19 @@ async def send_campaign(
     )
 
     result = await audience_module.resolve(
-        current_user.business, campaign.audience, campaign.audience_params, db
+        current_user.business, campaign.audience, campaign.audience_params, db,
+        require_marketing_opt_in=(_value(template.category) == "MARKETING"),
     )
 
     used = await audience_module.sent_today(current_user.business, db)
+    # Nested under "health" - same fix as the preview endpoint's own copy
+    # of this lookup (see the messaging-tier bug fix). A second, separate
+    # instance of the same flat-key bug, in the path that actually caps
+    # real sends rather than just warning about them - found while
+    # working on opt-in enforcement in this same function.
+    health = (connection.extra or {}).get("health") or {}
     daily = {"TIER_250": 250, "TIER_1K": 1000, "TIER_10K": 10000}.get(
-        (connection.extra or {}).get("messaging_limit_tier", ""), 250
+        health.get("messaging_limit_tier", ""), 250
     )
     remaining = max(0, daily - used)
 

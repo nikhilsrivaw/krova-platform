@@ -68,6 +68,12 @@ async def resolve(
     db: AsyncSession,
     *,
     limit: int = 1000,
+    # True for a MARKETING-category template - WhatsApp policy (and
+    # India's own DPDPA) requires documented consent before one of those
+    # reaches a number, which ordinary conversation does not establish.
+    # UTILITY/AUTHENTICATION sends leave this false - a transactional
+    # message like a payment reminder isn't "marketing".
+    require_marketing_opt_in: bool = False,
 ) -> AudienceResult:
     """
     Turn an audience question into people, with their own figures attached.
@@ -180,6 +186,16 @@ async def resolve(
                     "customer_id": str(customer.id),
                     "name": customer.display_name,
                     "reason": "No phone number on file",
+                }
+            )
+            continue
+
+        if require_marketing_opt_in and not customer.marketing_opt_in:
+            skipped.append(
+                {
+                    "customer_id": str(customer.id),
+                    "name": customer.display_name,
+                    "reason": "Not opted in to marketing messages",
                 }
             )
             continue

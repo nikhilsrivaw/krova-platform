@@ -257,6 +257,19 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     # the one thing here nothing in a conversation could tell us.
     deal_value_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # WhatsApp policy (and India's own DPDPA) requires documented consent
+    # before a MARKETING-category template goes to this person - and
+    # ordinary conversation does NOT count as that consent, so this is
+    # never set by the agent or by ingest(). Only two honest sources set
+    # it: an explicit checkbox on whatever form fed this customer in, or a
+    # person manually confirming it (e.g. verbal consent, logged from the
+    # Customers CRM page). Defaults false - opt-out by default, the only
+    # posture that doesn't have to guess.
+    marketing_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    marketing_opt_in_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     identities: Mapped[list["CustomerIdentity"]] = relationship(
         back_populates="customer", cascade="all, delete-orphan"
     )

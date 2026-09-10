@@ -299,6 +299,33 @@ async def set_deal_value(
     return {"customer_id": str(customer_id), "deal_value_paise": customer.deal_value_paise}
 
 
+class MarketingOptInIn(BaseModel):
+    opt_in: bool
+
+
+@router.patch("/customers/{customer_id}/marketing-opt-in", response_model=dict)
+async def set_marketing_opt_in(
+    customer_id: uuid.UUID, body: MarketingOptInIn, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    A person, confirming this actually happened - shared/campaigns/
+    audience.py's own enforcement is only as honest as what set this flag.
+    Never called from anywhere automated (ingest, the agent) - see
+    Customer.marketing_opt_in's own comment for why ordinary conversation
+    doesn't count as consent.
+    """
+    customer = await _owned_customer(customer_id, current_user.business, db)
+    customer.marketing_opt_in = body.opt_in
+    customer.marketing_opt_in_at = datetime.now(timezone.utc) if body.opt_in else None
+    return {
+        "customer_id": str(customer_id),
+        "marketing_opt_in": customer.marketing_opt_in,
+        "marketing_opt_in_at": (
+            customer.marketing_opt_in_at.isoformat() if customer.marketing_opt_in_at else None
+        ),
+    }
+
+
 DEFAULT_PIPELINE_STAGES = ["New", "Contacted", "Qualified", "Won", "Lost"]
 
 

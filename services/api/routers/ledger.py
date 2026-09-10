@@ -354,6 +354,7 @@ async def list_customers(
                 "outstanding_paise": intel.outstanding_paise if intel else 0,
                 "summary": intel.summary if intel else None,
                 "preferred_channel": intel.preferred_channel if intel else None,
+                "marketing_opt_in": c.marketing_opt_in,
             }
         )
     return out
