@@ -103,6 +103,11 @@ async def list_conversations(
     db: DbDep,
     limit: int = Query(default=50, le=200),
     include_private: bool = False,
+    # Unlike the frontend's own name/phone/last-message filter (instant,
+    # client-side, but only ever sees the one message it already fetched),
+    # this searches the actual message content in the database - the only
+    # way to find a thread by something said three messages ago.
+    q: str | None = Query(default=None, min_length=1, max_length=200),
 ) -> list[ConversationSummary]:
     """
     Every conversation, most recent first.
@@ -115,6 +120,19 @@ async def list_conversations(
     conditions = [Customer.business_id == business_id]
     if not include_private:
         conditions.append(Customer.is_private == False)  # noqa: E712
+
+    if q:
+        pattern = f"%{q}%"
+        matching_ids = (
+            await db.execute(
+                select(Message.customer_id)
+                .where(Message.business_id == business_id, Message.content.ilike(pattern))
+                .distinct()
+            )
+        ).scalars().all()
+        conditions.append(
+            (Customer.display_name.ilike(pattern)) | (Customer.id.in_(matching_ids))
+        )
 
     result = await db.execute(
         select(Customer)
