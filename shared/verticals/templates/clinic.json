@@ -31,5 +31,64 @@
     "Any message describing severe pain, bleeding, or an emergency",
     "Any request to change or interpret a prescription",
     "Any complaint about treatment received"
+  ],
+  "flow_templates": [
+    {
+      "key": "book_followup",
+      "name": "Book a follow-up",
+      "description": "Patient picks a reason and a preferred date for a follow-up visit - lands as one structured request instead of a back-and-forth.",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "cta": "Book",
+      "body": "Let's get your follow-up booked:",
+      "screen": "BOOK_FOLLOWUP",
+      "flow_json": {
+        "version": "5.0",
+        "screens": [
+          {
+            "id": "BOOK_FOLLOWUP",
+            "title": "Book a follow-up",
+            "terminal": true,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
+                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "reason",
+                      "label": "Reason for the visit",
+                      "required": true,
+                      "data-source": [
+                        {"id": "followup", "title": "Scheduled follow-up"},
+                        {"id": "report", "title": "Report or prescription review"},
+                        {"id": "new", "title": "New concern"}
+                      ]
+                    },
+                    {"type": "DatePicker", "name": "preferred_date", "label": "Preferred date", "required": true},
+                    {
+                      "type": "Footer",
+                      "label": "Request slot",
+                      "on-click-action": {
+                        "name": "complete",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "reason": "${form.reason}",
+                          "preferred_date": "${form.preferred_date}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
   ]
 }

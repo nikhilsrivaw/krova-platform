@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared import verticals
 from shared.auth.encryption import decrypt
 from shared.channels import ingest
 from shared.channels.whatsapp import flows as flows_api
@@ -25,6 +26,7 @@ from shared.channels.whatsapp.client import (
     within_service_window,
 )
 from shared.db.models import (
+    Business,
     Channel,
     ChannelConnection,
     ConnectionStatus,
@@ -102,6 +104,38 @@ async def list_flows(current_user: CurrentUserDep, db: DbDep) -> list[FlowOut]:
         select(WhatsAppFlow).where(WhatsAppFlow.business_id == current_user.business)
     )
     return [_out(f) for f in rows.scalars().all()]
+
+
+class FlowTemplateOut(BaseModel):
+    key: str
+    name: str
+    description: str
+    categories: list[str]
+    cta: str
+    body: str
+    screen: str
+    flow_json: dict
+
+
+@router.get("/templates", response_model=list[FlowTemplateOut])
+async def list_flow_templates(current_user: CurrentUserDep, db: DbDep) -> list[FlowTemplateOut]:
+    """
+    Ready-made Flow JSON for this business's own vertical - a starting point
+    to lightly edit and publish, not a fixed builder (shared/verticals/
+    __init__.py's own stated philosophy: a template per vertical, not an
+    empty canvas). Registered before /{flow_id} so "templates" is never
+    swallowed as a flow id.
+
+    Empty for a vertical that doesn't have one yet - that's an honest gap,
+    not a bug to hide behind a fallback.
+    """
+    business = await db.get(Business, current_user.business)
+    vertical_key = business.vertical if business else verticals.FALLBACK
+    try:
+        template = verticals.get(vertical_key)
+    except verticals.UnknownVertical:
+        return []
+    return [FlowTemplateOut(**t) for t in template.get("flow_templates", [])]
 
 
 @router.get("/{flow_id}", response_model=FlowOut)

@@ -31,5 +31,52 @@
     "Any request for a refund or replacement outside the stated return window",
     "Any payment dispute or chargeback mention",
     "A customer disputing a COD order they say they never placed - a real fraud signal, not routine cancellation"
+  ],
+  "flow_templates": [
+    {
+      "key": "track_order",
+      "name": "Track my order",
+      "description": "Customer types their order number once, structured - not pasted mid-sentence where it's easy to misread. The agent answers from the order data once submitted, same as it would from typed text.",
+      "categories": ["CUSTOMER_SUPPORT"],
+      "cta": "Check status",
+      "body": "Share your order number and I'll check it:",
+      "screen": "TRACK_ORDER",
+      "flow_json": {
+        "version": "5.0",
+        "screens": [
+          {
+            "id": "TRACK_ORDER",
+            "title": "Track your order",
+            "terminal": true,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "TextInput",
+                      "name": "order_number",
+                      "label": "Order number",
+                      "required": true,
+                      "helper-text": "Found in your order confirmation"
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Check status",
+                      "on-click-action": {
+                        "name": "complete",
+                        "payload": {"order_number": "${form.order_number}"}
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
   ]
 }

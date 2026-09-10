@@ -30,5 +30,66 @@
     "Any complaint about a previous deal, deposit, or refund",
     "Any dispute about brokerage or commission",
     "Any question casting doubt on a project's legitimacy or RERA status"
+  ],
+  "flow_templates": [
+    {
+      "key": "schedule_viewing",
+      "name": "Schedule a site visit",
+      "description": "Buyer names the property, a preferred date, and time of day - a structured lead instead of a detail buried mid-chat.",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "cta": "Schedule",
+      "body": "Let's set up a time to see it:",
+      "screen": "SCHEDULE_VISIT",
+      "flow_json": {
+        "version": "5.0",
+        "screens": [
+          {
+            "id": "SCHEDULE_VISIT",
+            "title": "Schedule a visit",
+            "terminal": true,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
+                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {"type": "TextInput", "name": "property", "label": "Which property?", "required": true},
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "time_of_day",
+                      "label": "Preferred time",
+                      "required": true,
+                      "data-source": [
+                        {"id": "morning", "title": "Morning"},
+                        {"id": "afternoon", "title": "Afternoon"},
+                        {"id": "evening", "title": "Evening"}
+                      ]
+                    },
+                    {"type": "DatePicker", "name": "preferred_date", "label": "Preferred date", "required": true},
+                    {
+                      "type": "Footer",
+                      "label": "Request visit",
+                      "on-click-action": {
+                        "name": "complete",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "property": "${form.property}",
+                          "time_of_day": "${form.time_of_day}",
+                          "preferred_date": "${form.preferred_date}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
   ]
 }
