@@ -10,6 +10,8 @@ from shared.db.models.campaign import (
     Campaign,
     CampaignRecipient,
     CampaignStatus,
+    CampaignStep,
+    CampaignStepRecipient,
 )
 from shared.db.models.call_campaign import (
     CallCampaign,
@@ -110,6 +112,8 @@ __all__ = [
     "Campaign",
     "CampaignRecipient",
     "CampaignStatus",
+    "CampaignStep",
+    "CampaignStepRecipient",
     "CannedResponse",
     "Channel",
     "ChannelConnection",

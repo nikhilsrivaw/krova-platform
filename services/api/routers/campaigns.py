@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
@@ -30,6 +30,8 @@ from shared.db.models import (
     Campaign,
     CampaignRecipient,
     CampaignStatus,
+    CampaignStep,
+    CampaignStepRecipient,
     Channel,
     ChannelConnection,
     ConnectionStatus,
@@ -304,6 +306,147 @@ async def create_campaign(
     db.add(campaign)
     await db.flush()
     return _out(campaign)
+
+
+class CampaignStepIn(BaseModel):
+    delay_days: int = Field(ge=1, le=90)
+    # "always" fires regardless; "no_reply" only if the recipient hasn't
+    # written back since their previous step - the one real condition a
+    # drip sequence needs, not an authored expression.
+    condition: Literal["always", "no_reply"] = "no_reply"
+    stop_on_reply: bool = True
+    template_name: str
+    template_language: str = "en"
+    variable_mapping: list[str] = Field(default_factory=list)
+    carousel_cards: list[CampaignCardIn] = Field(default_factory=list)
+
+
+class CampaignStepOut(BaseModel):
+    id: str
+    step_order: int
+    delay_days: int
+    condition: str
+    stop_on_reply: bool
+    template_name: str
+    template_language: str
+    sent_count: int
+    failed_count: int
+    skipped_count: int
+
+
+def _step_out(step: CampaignStep, counts: dict[str, int]) -> CampaignStepOut:
+    return CampaignStepOut(
+        id=str(step.id),
+        step_order=step.step_order,
+        delay_days=step.delay_days,
+        condition=step.condition,
+        stop_on_reply=step.stop_on_reply,
+        template_name=step.template_name,
+        template_language=step.template_language,
+        sent_count=counts.get("sent", 0),
+        failed_count=counts.get("failed", 0),
+        skipped_count=counts.get("skipped", 0),
+    )
+
+
+async def _owned_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> Campaign:
+    campaign = await db.get(Campaign, campaign_id)
+    if campaign is None or campaign.business_id != current_user.business:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
+
+
+@router.post(
+    "/{campaign_id}/steps", response_model=CampaignStepOut, status_code=status.HTTP_201_CREATED
+)
+async def add_campaign_step(
+    campaign_id: uuid.UUID, body: CampaignStepIn, current_user: CurrentUserDep, db: DbDep
+) -> CampaignStepOut:
+    """
+    Add one follow-up step to a not-yet-sent campaign - a drip sequence is
+    nothing more than several of these in order. See
+    shared/campaigns/sequencer.py for how a step actually fires: it
+    re-asks the campaign's own audience question rather than freezing a
+    list, so someone who has since paid or replied drops out on their own.
+
+    Only while the campaign is still draft - once step 0 has gone out,
+    changing what a later step will say would retroactively surprise
+    whoever's step already landed differently.
+    """
+    campaign = await _owned_campaign(campaign_id, current_user, db)
+    if campaign.status != CampaignStatus.draft:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Steps can only be added before the campaign is sent"
+        )
+    template = await _template(current_user.business, body.template_name, body.template_language, db)
+    if template.status != TemplateStatus.approved:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"That template is {_value(template.status).lower()}. Only approved templates can be used in a step.",
+        )
+
+    existing_max = (
+        await db.execute(
+            select(func.max(CampaignStep.step_order)).where(CampaignStep.campaign_id == campaign_id)
+        )
+    ).scalar()
+    step = CampaignStep(
+        campaign_id=campaign_id,
+        step_order=(existing_max or 0) + 1,
+        delay_days=body.delay_days,
+        condition=body.condition,
+        stop_on_reply=body.stop_on_reply,
+        template_name=body.template_name,
+        template_language=body.template_language,
+        variable_mapping=body.variable_mapping,
+        carousel_cards=[
+            {"media_id": c.media_id, "variable_mapping": c.variable_mapping} for c in body.carousel_cards
+        ],
+    )
+    db.add(step)
+    await db.flush()
+    return _step_out(step, {})
+
+
+@router.get("/{campaign_id}/steps", response_model=list[CampaignStepOut])
+async def list_campaign_steps(
+    campaign_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+) -> list[CampaignStepOut]:
+    await _owned_campaign(campaign_id, current_user, db)
+    steps = (
+        await db.execute(
+            select(CampaignStep)
+            .where(CampaignStep.campaign_id == campaign_id)
+            .order_by(CampaignStep.step_order)
+        )
+    ).scalars().all()
+
+    out = []
+    for step in steps:
+        rows = (
+            await db.execute(
+                select(CampaignStepRecipient.status, func.count())
+                .where(CampaignStepRecipient.step_id == step.id)
+                .group_by(CampaignStepRecipient.status)
+            )
+        ).all()
+        out.append(_step_out(step, dict(rows)))
+    return out
+
+
+@router.delete("/{campaign_id}/steps/{step_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_campaign_step(
+    campaign_id: uuid.UUID, step_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+) -> None:
+    campaign = await _owned_campaign(campaign_id, current_user, db)
+    if campaign.status != CampaignStatus.draft:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Steps can only be removed before the campaign is sent"
+        )
+    step = await db.get(CampaignStep, step_id)
+    if step is None or step.campaign_id != campaign_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Step not found")
+    await db.delete(step)
 
 
 @router.post("/{campaign_id}/send", response_model=CampaignOut)

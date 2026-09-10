@@ -257,6 +257,25 @@ async def check_cod_call_failsafe() -> None:
         logger.exception("COD call failsafe job failed")
 
 
+async def send_due_campaign_steps() -> None:
+    """
+    Send every campaign follow-up step that has become due - the drip/
+    sequenced campaign feature. See shared/campaigns/sequencer.py; a
+    campaign with no steps is untouched by this job.
+    """
+    from shared.campaigns import sequencer
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await sequencer.send_due_steps(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s campaign follow-up step message(s)", sent)
+    except Exception:
+        logger.exception("campaign step sweep failed")
+
+
 async def send_repeat_purchase_nudges() -> None:
     """D2C, order_sync capability. See shared/scheduling/recall.py."""
     from shared.db.session import AsyncSessionLocal
@@ -561,6 +580,16 @@ def build() -> AsyncIOScheduler:
         send_abandoned_cart_recovery,
         IntervalTrigger(minutes=30),
         id="send_abandoned_cart_recovery",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
+    # Delays are in whole days, so checking every 30 minutes is plenty of
+    # resolution - same cadence as the other reminder-style sweeps above.
+    scheduler.add_job(
+        send_due_campaign_steps,
+        IntervalTrigger(minutes=30),
+        id="send_due_campaign_steps",
         replace_existing=True,
         misfire_grace_time=1800,
     )

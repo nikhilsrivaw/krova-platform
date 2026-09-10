@@ -23,7 +23,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -172,4 +172,92 @@ class CampaignRecipient(UUIDMixin, Base):
 
     __table_args__ = (
         Index("idx_campaign_recipients", "campaign_id", "status"),
+    )
+
+
+class CampaignStep(UUIDMixin, TimestampMixin, Base):
+    """
+    One follow-up after a campaign's own first send.
+
+    A campaign's own columns above (template_name, audience, ...) already
+    are "step 0" - unchanged, unaffected if a campaign has no steps at all.
+    A sequence is nothing more than several of these rows in order; there is
+    no separate workflow concept, no canvas, no versioning to build - the
+    same reasoning shared/verticals/__init__.py argues for templates over an
+    empty builder applies here too.
+    """
+
+    __tablename__ = "campaign_steps"
+
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)  # 1, 2, 3...
+
+    # Days after THIS recipient's previous step actually sent, not after the
+    # campaign started - someone who received step 1 late (daily-limit
+    # spillover) still gets step 2 the right number of days after their own
+    # step 1, not everyone else's.
+    delay_days: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # "always" fires regardless of what the recipient did; "no_reply" only
+    # if they haven't written back since their previous step. A fixed
+    # choice, not an authored condition language - the same discipline
+    # Audience already applies to who a campaign reaches in the first
+    # place: real, already-tracked signals only.
+    condition: Mapped[str] = mapped_column(String(20), nullable=False, default="no_reply")
+    # If the recipient replies at any point, they drop out of every
+    # remaining step in this sequence, even a later "always" one - a
+    # business does not want to keep pestering someone who already engaged.
+    stop_on_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    template_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    template_language: Mapped[str] = mapped_column(String(16), nullable=False, default="en")
+    variable_mapping: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    carousel_cards: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "step_order", name="uq_campaign_step_order"),
+        Index("idx_campaign_steps_campaign", "campaign_id"),
+    )
+
+
+class CampaignStepRecipient(UUIDMixin, Base):
+    """
+    One person's outcome for one follow-up step - the same shape as
+    CampaignRecipient, one level deeper, for the identical reason: "did
+    Priya get the reminder" needs a row, not just a count.
+    """
+
+    __tablename__ = "campaign_step_recipients"
+
+    step_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign_steps.id", ondelete="CASCADE"), nullable=False
+    )
+    # Denormalised alongside step_id, same pattern CampaignRecipient itself
+    # uses for campaign_id - lets the sweep and the UI query by campaign
+    # without a join through campaign_steps first.
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # pending | sent | failed | skipped
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    # Why this step didn't send this person a message - "replied since the
+    # previous step", "daily limit reached", "no phone number on file".
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    variables: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("step_id", "customer_id", name="uq_campaign_step_recipient"),
+        Index("idx_campaign_step_recipients", "campaign_id", "status"),
     )
