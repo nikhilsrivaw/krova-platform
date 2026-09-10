@@ -237,7 +237,7 @@ async def reject(
 
 
 class AutonomyBody(BaseModel):
-    autonomy: str = Field(pattern="^(observe|draft|act)$")
+    autonomy: str = Field(pattern="^(observe|draft|act|conditional)$")
 
 
 @router.post("/autonomy")
@@ -269,3 +269,104 @@ async def set_autonomy(
         current_user.id,
     )
     return {"autonomy": body.autonomy, "previous": previous}
+
+
+# ── Auto-send rules (`conditional` autonomy) ────────────────────────────
+#
+# What a business gets to configure, on top of the one check they can't
+# turn off (the vertical's escalate_immediately list - shared/ai/
+# auto_send_gate.py). Read shared/ai/auto_send_gate.py's own docstring for
+# what "safe to auto-send" actually means here before changing this.
+
+DEFAULT_MIN_CONFIDENCE = 0.85
+
+
+class AutoSendRulesOut(BaseModel):
+    enabled: bool
+    min_confidence: float
+    blocked_keywords: list[str]
+    autonomy: str
+    # Track record, for the business to judge readiness by - not a hard
+    # gate. shared/care/../docs/conditional-autonomy.md's own open
+    # question #2 left the exact threshold undecided; showing the real
+    # number and letting a person decide is the honest version of that
+    # until a specific threshold is chosen.
+    drafted_last_30d: int
+    approval_rate_last_30d: float | None
+
+
+class AutoSendRulesIn(BaseModel):
+    enabled: bool | None = None
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    blocked_keywords: list[str] | None = None
+
+
+@router.get("/auto-send-rules", response_model=AutoSendRulesOut)
+async def get_auto_send_rules(current_user: CurrentUserDep, db: DbDep) -> AutoSendRulesOut:
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    rules = (business.settings or {}).get("auto_send_rules", {})
+
+    # Reuses the same query Analytics' own "Agent Performance" panel
+    # already shows - one source of truth for what the track record is,
+    # whether read there or here.
+    from services.api.routers.analytics import agent_performance
+
+    perf = await agent_performance(current_user, db, days=30)
+
+    return AutoSendRulesOut(
+        enabled=bool(rules.get("enabled", False)),
+        min_confidence=float(rules.get("min_confidence", DEFAULT_MIN_CONFIDENCE)),
+        blocked_keywords=list(rules.get("blocked_keywords", [])),
+        autonomy=business.autonomy,
+        drafted_last_30d=perf.drafted,
+        approval_rate_last_30d=perf.approval_rate,
+    )
+
+
+@router.patch("/auto-send-rules", response_model=AutoSendRulesOut)
+async def update_auto_send_rules(
+    body: AutoSendRulesIn, current_user: CurrentUserDep, db: DbDep
+) -> AutoSendRulesOut:
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    rules = dict((business.settings or {}).get("auto_send_rules", {}))
+    if body.enabled is not None:
+        rules["enabled"] = body.enabled
+    if body.min_confidence is not None:
+        rules["min_confidence"] = body.min_confidence
+    if body.blocked_keywords is not None:
+        rules["blocked_keywords"] = [k.strip() for k in body.blocked_keywords if k.strip()]
+
+    business.settings = {**(business.settings or {}), "auto_send_rules": rules}
+
+    # Autonomy follows the enabled toggle, but only ever moves between
+    # draft <-> conditional - never touches observe or act, both
+    # deliberate choices this toggle shouldn't quietly override.
+    if body.enabled is True and business.autonomy == "draft":
+        business.autonomy = "conditional"
+    elif body.enabled is False and business.autonomy == "conditional":
+        business.autonomy = "draft"
+
+    logger.info(
+        "auto_send_rules updated business=%s enabled=%s min_confidence=%s autonomy=%s by user=%s",
+        business.id, rules.get("enabled"), rules.get("min_confidence"), business.autonomy,
+        current_user.id,
+    )
+
+    from services.api.routers.analytics import agent_performance
+
+    perf = await agent_performance(current_user, db, days=30)
+
+    return AutoSendRulesOut(
+        enabled=bool(rules.get("enabled", False)),
+        min_confidence=float(rules.get("min_confidence", DEFAULT_MIN_CONFIDENCE)),
+        blocked_keywords=list(rules.get("blocked_keywords", [])),
+        autonomy=business.autonomy,
+        drafted_last_30d=perf.drafted,
+        approval_rate_last_30d=perf.approval_rate,
+    )

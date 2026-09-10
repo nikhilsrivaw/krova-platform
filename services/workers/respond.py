@@ -22,7 +22,9 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared import verticals
 from shared.ai import agent as agent_module
+from shared.ai import auto_send_gate
 from shared.ai import context as agent_context
 from shared.ai.client import AIError
 from shared.auth.encryption import decrypt
@@ -348,6 +350,49 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         else:
             if proposal.share_catalog:
                 await _try_share_catalog(business=business, customer=customer, db=db)
+
+    # `conditional` - the middle ground between draft and act. Nothing
+    # sends unless the business's own auto_send_rules are on AND an
+    # independently-computed check clears it (shared/ai/auto_send_gate.py) -
+    # never just Draft.confidence, which is the same model grading its own
+    # reply. Any block just leaves the draft pending, exactly like `draft`
+    # mode - conditional autonomy only ever makes the safe cases faster,
+    # it never makes an unsafe one riskier than draft mode already is.
+    elif (
+        autonomy == "conditional"
+        and proposal.action == "reply"
+        and channel in ("whatsapp", "instagram")
+        and business is not None
+    ):
+        try:
+            escalate_immediately = verticals.get(business.vertical).get("escalate_immediately", [])
+        except verticals.UnknownVertical:
+            # Same fail-closed instinct as everywhere else here - can't
+            # confirm the safety floor, so don't auto-send.
+            escalate_immediately = None
+        gate = None if escalate_immediately is None else auto_send_gate.check(
+            reply_body=proposal.message or "",
+            inbound_text=message.content or "",
+            confidence=proposal.confidence,
+            auto_send_rules=(business.settings or {}).get("auto_send_rules", {}),
+            escalate_immediately=escalate_immediately,
+        )
+        if gate is not None and gate.allowed:
+            try:
+                await send_draft(draft, message.business_id, db, reviewed_by_user_id=None)
+            except DraftSendError as exc:
+                logger.warning(
+                    "conditional-mode auto-send failed for draft=%s, left pending: %s",
+                    draft.id, exc,
+                )
+            else:
+                if proposal.share_catalog:
+                    await _try_share_catalog(business=business, customer=customer, db=db)
+        else:
+            logger.info(
+                "conditional autonomy held draft=%s pending: %s",
+                draft.id, gate.reason if gate is not None else "unknown vertical",
+            )
 
     logger.info(
         "drafted %s for business=%s customer=%s confidence=%.2f autonomy=%s status=%s",
