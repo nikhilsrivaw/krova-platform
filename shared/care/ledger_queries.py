@@ -24,8 +24,19 @@ from shared.db.models import Commitment, CommitmentDirection, CommitmentStatus, 
 class LedgerTotals:
     owed_to_us_paise: int
     owed_by_us_paise: int
+    # Both directions combined - a raw "how many things are late" count.
+    # Kept for callers that genuinely want that; anything presenting this
+    # as receivables (money coming in) should use the *_they_owe fields
+    # below instead - a they_owe promise running late is not the same
+    # thing as a we_owe promise running late, and showing one red number
+    # for both misleads an owner into thinking they're owed money that
+    # may actually be money (or an obligation) they owe out.
     overdue_count: int
     overdue_paise: int
+    overdue_they_owe_count: int
+    overdue_they_owe_paise: int
+    overdue_we_owe_count: int
+    overdue_we_owe_paise: int
     open_count: int
     unconfirmed_count: int
 
@@ -58,6 +69,23 @@ async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
     )
     overdue_count, overdue_paise = overdue.one()
 
+    async def _overdue_by_direction(direction: CommitmentDirection) -> tuple[int, int]:
+        result = await db.execute(
+            select(
+                func.count(Commitment.id),
+                func.coalesce(func.sum(Commitment.amount_paise), 0),
+            ).where(*open_only, Commitment.due_at < now, Commitment.direction == direction)
+        )
+        count, paise = result.one()
+        return int(count), int(paise)
+
+    overdue_they_owe_count, overdue_they_owe_paise = await _overdue_by_direction(
+        CommitmentDirection.they_owe
+    )
+    overdue_we_owe_count, overdue_we_owe_paise = await _overdue_by_direction(
+        CommitmentDirection.we_owe
+    )
+
     open_count = await db.execute(select(func.count(Commitment.id)).where(*open_only))
     unconfirmed = await db.execute(
         select(func.count(Commitment.id)).where(
@@ -71,6 +99,10 @@ async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
         owed_by_us_paise=await _total(CommitmentDirection.we_owe),
         overdue_count=int(overdue_count),
         overdue_paise=int(overdue_paise),
+        overdue_they_owe_count=overdue_they_owe_count,
+        overdue_they_owe_paise=overdue_they_owe_paise,
+        overdue_we_owe_count=overdue_we_owe_count,
+        overdue_we_owe_paise=overdue_we_owe_paise,
         open_count=int(open_count.scalar_one()),
         unconfirmed_count=int(unconfirmed.scalar_one()),
     )

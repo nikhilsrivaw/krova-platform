@@ -68,8 +68,15 @@ class CommitmentOut(BaseModel):
 class LedgerSummary(BaseModel):
     owed_to_us_paise: int
     owed_by_us_paise: int
+    # Both directions combined. A UI presenting this as receivables should
+    # use overdue_they_owe_paise/count instead - see LedgerTotals' own
+    # comment in shared/care/ledger_queries.py.
     overdue_count: int
     overdue_paise: int
+    overdue_they_owe_count: int
+    overdue_they_owe_paise: int
+    overdue_we_owe_count: int
+    overdue_we_owe_paise: int
     open_count: int
     # Kept separate from every total above: these are guesses awaiting a human,
     # and folding them into a figure would present uncertainty as fact.
@@ -137,6 +144,10 @@ async def ledger_summary(current_user: CurrentUserDep, db: DbDep) -> LedgerSumma
         owed_by_us_paise=t.owed_by_us_paise,
         overdue_count=t.overdue_count,
         overdue_paise=t.overdue_paise,
+        overdue_they_owe_count=t.overdue_they_owe_count,
+        overdue_they_owe_paise=t.overdue_they_owe_paise,
+        overdue_we_owe_count=t.overdue_we_owe_count,
+        overdue_we_owe_paise=t.overdue_we_owe_paise,
         open_count=t.open_count,
         unconfirmed_count=t.unconfirmed_count,
     )

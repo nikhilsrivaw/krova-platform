@@ -625,9 +625,14 @@ class OwnerContext:
             f"{_paise_to_rupees(self.totals.owed_by_us_paise)}."
         )
         lines.append(
-            f"{self.totals.overdue_count} item(s) are overdue, totalling "
-            f"{_paise_to_rupees(self.totals.overdue_paise)}."
+            f"{self.totals.overdue_they_owe_count} thing(s) customers owe you are "
+            f"overdue, totalling {_paise_to_rupees(self.totals.overdue_they_owe_paise)}."
         )
+        if self.totals.overdue_we_owe_count:
+            lines.append(
+                f"You also have {self.totals.overdue_we_owe_count} thing(s) you "
+                "promised customers that are now overdue."
+            )
         if self.totals.unconfirmed_count:
             lines.append(
                 f"{self.totals.unconfirmed_count} commitment(s) are unconfirmed - "
