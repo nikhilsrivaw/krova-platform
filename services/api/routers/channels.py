@@ -5,6 +5,7 @@ Connecting and disconnecting channels.
 import secrets
 from dataclasses import asdict
 from datetime import datetime, timezone
+from typing import Literal
 
 from urllib.parse import urlencode
 
@@ -254,6 +255,65 @@ async def set_ad_tracking(body: AdTrackingIn, current_user: CurrentUserDep, db: 
         current_user.business, bool(body.dataset_id),
     )
     return {"dataset_id": body.dataset_id}
+
+
+class PaymentConfigIn(BaseModel):
+    # WhatsApp Payments (India) is Meta-native, not something Krova builds
+    # against a gateway's own API - a business sets this up directly on
+    # their own Meta Business Suite (WhatsApp Account Settings > Payments),
+    # and Meta hands back this id. Krova only ever remembers it, the same
+    # "paste your own credential" shape ad_tracking's dataset_id already
+    # uses above. Pass null for either field to clear it.
+    payment_configuration_id: str | None = None
+    payment_gateway: Literal["razorpay", "payu"] | None = None
+
+
+@router.get("/whatsapp/payment-config")
+async def get_payment_config(current_user: CurrentUserDep, db: DbDep) -> dict:
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.whatsapp,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
+    )
+    connection = result.scalars().first()
+    extra = (connection.extra or {}) if connection else {}
+    return {
+        "payment_configuration_id": extra.get("payment_configuration_id"),
+        "payment_gateway": extra.get("payment_gateway"),
+    }
+
+
+@router.post("/whatsapp/payment-config")
+async def set_payment_config(
+    body: PaymentConfigIn, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.whatsapp,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
+    )
+    connection = result.scalars().first()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Connect a WhatsApp number first"
+        )
+    connection.extra = {
+        **(connection.extra or {}),
+        "payment_configuration_id": body.payment_configuration_id,
+        "payment_gateway": body.payment_gateway,
+    }
+    logger.info(
+        "whatsapp payment config set business=%s configured=%s gateway=%s",
+        current_user.business, bool(body.payment_configuration_id), body.payment_gateway,
+    )
+    return {
+        "payment_configuration_id": body.payment_configuration_id,
+        "payment_gateway": body.payment_gateway,
+    }
 
 
 @router.delete("/whatsapp", status_code=status.HTTP_204_NO_CONTENT)
