@@ -90,6 +90,106 @@
           }
         ]
       }
+    },
+    {
+      "key": "schedule_viewing_live",
+      "name": "Schedule a site visit (Beta - live availability)",
+      "description": "Same as 'Schedule a site visit', but the second screen shows only the agent's REAL open slots - computed live, never a blind date picker. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA.",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "cta": "Schedule",
+      "body": "Let's set up a time to see it:",
+      "screen": "SCHEDULE_VISIT_LIVE",
+      "flow_json": {
+        "version": "7.0",
+        "screens": [
+          {
+            "id": "SCHEDULE_VISIT_LIVE",
+            "title": "Schedule a visit",
+            "terminal": false,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
+                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {"type": "TextInput", "name": "property", "label": "Which property?", "required": true},
+                    {
+                      "type": "Footer",
+                      "label": "See open slots",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "property": "${form.property}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "SELECT_SLOT",
+            "title": "Pick a time",
+            "terminal": true,
+            "data": {
+              "available_slots": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {"id": {"type": "string"}, "title": {"type": "string"}}
+                },
+                "__example__": [{"id": "2026-01-01T10:00:00+05:30", "title": "Thu 1 Jan, 10:00 AM"}]
+              },
+              "full_name": {"type": "string", "__example__": "Jane Doe"},
+              "phone": {"type": "string", "__example__": "+919876543210"},
+              "property": {"type": "string", "__example__": "Sunrise Apartments"},
+              "error_message": {"type": "string", "__example__": ""}
+            },
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "TextBody",
+                  "text": "${data.error_message}",
+                  "visible": "${data.error_message}"
+                },
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "selected_slot",
+                      "label": "Available times",
+                      "required": true,
+                      "data-source": "${data.available_slots}"
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Confirm visit",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                          "selected_slot": "${form.selected_slot}",
+                          "full_name": "${data.full_name}",
+                          "phone": "${data.phone}",
+                          "property": "${data.property}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
     }
   ]
 }

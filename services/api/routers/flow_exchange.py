@@ -53,6 +53,7 @@ from shared.db.models import (
     FlowSendLog,
     IdentityKind,
     IntakeChannel,
+    Property,
     WhatsAppFlow,
 )
 from shared.db.session import AsyncSessionLocal
@@ -174,13 +175,16 @@ async def _handle_data_exchange(flow, connection: ChannelConnection, body: dict,
         )
     ).scalars().first()
     if business is None or customer is None or doctor is None:
-        return {"data": {"error_message": "This clinic isn't set up for live booking yet."}}
+        return {"data": {"error_message": "This business isn't set up for live booking yet."}}
+
+    # Whatever the entry screen collected besides the slot itself - reason
+    # (clinic), property (real estate), time_of_day, ... - carried through
+    # both screens verbatim rather than hardcoding one vertical's field
+    # names, so the same handler serves every live-booking flow template.
+    passthrough = {k: str(v) for k, v in data.items() if k != "selected_slot" and v is not None}
 
     if screen == "SELECT_SLOT":
         selected = data.get("selected_slot")
-        full_name = str(data.get("full_name") or "").strip()
-        phone = str(data.get("phone") or "").strip()
-        reason = str(data.get("reason") or "").strip()
         try:
             requested = datetime.fromisoformat(selected) if selected else None
         except ValueError:
@@ -205,9 +209,28 @@ async def _handle_data_exchange(flow, connection: ChannelConnection, body: dict,
             fresh = await _open_slot_options(business, doctor, db)
             return {
                 "screen": "SELECT_SLOT",
-                "data": {"available_slots": fresh, "full_name": full_name, "phone": phone, "reason": reason,
+                "data": {**passthrough, "available_slots": fresh,
                           "error_message": "That slot was just taken - please pick another."},
             }
+
+        # Real estate only - resolved by name against active listings, the
+        # same match-or-proceed-unlinked logic try_book_from_agent applies
+        # to an AI-suggested property name. A customer-typed name that
+        # doesn't match still lets the booking through (unlinked) rather
+        # than blocking it - a Flow field is more error-prone than an
+        # agent's own resolution, and the appointment itself is what
+        # matters most.
+        property_id = None
+        property_name = passthrough.get("property", "").strip()
+        if property_name:
+            properties = (
+                await db.execute(
+                    select(Property).where(Property.business_id == flow.business_id, Property.active == True)  # noqa: E712
+                )
+            ).scalars().all()
+            match = next((p for p in properties if p.title.strip().lower() == property_name.lower()), None)
+            if match is not None:
+                property_id = match.id
 
         # The customer's own confirmed WhatsApp identity, not the form's
         # phone field - guarantees ingest() attaches this message to the
@@ -224,42 +247,43 @@ async def _handle_data_exchange(flow, connection: ChannelConnection, body: dict,
         if real_phone is None:
             return {"data": {"error_message": "Something went wrong - please try again."}}
 
-        summary = f"Completed a form: full_name: {full_name}, phone: {phone}, reason: {reason}, preferred_date: {matched.starts_at.isoformat()}"
+        details = ", ".join(f"{k}: {v}" for k, v in passthrough.items() if v)
+        summary = f"Completed a form: {details}, preferred_date: {matched.starts_at.isoformat()}"
         stored = await ingest.ingest(
             business_id=flow.business_id, channel=Channel.whatsapp, direction=Direction.inbound,
             identity_kind=IdentityKind.phone, identity_value=real_phone,
             external_id=f"flow-exchange:{flow_token}", text=summary,
             occurred_at=datetime.now(timezone.utc), connection_id=connection.id,
-            media={"kind": "flow_reply", "flow_name": "Book a follow-up (live)"},
+            media={"kind": "flow_reply", "flow_name": flow.name},
             enqueue_analysis=False, db=db,
         )
         if stored.message is None:
             return {"data": {"error_message": "Something went wrong recording your request - please try again."}}
 
+        notes = passthrough.get("reason") or None
+
         try:
             await booking.book(
                 db, business_id=flow.business_id, doctor=doctor, customer=customer, slot=matched,
                 intake_channel=IntakeChannel.whatsapp, source_message_ids=[stored.message.id],
-                notes=reason or None,
+                notes=notes, property_id=property_id,
             )
         except SlotUnavailable:
             fresh = await _open_slot_options(business, doctor, db)
             return {
                 "screen": "SELECT_SLOT",
-                "data": {"available_slots": fresh, "full_name": full_name, "phone": phone, "reason": reason,
+                "data": {**passthrough, "available_slots": fresh,
                           "error_message": "That slot was just taken - please pick another."},
             }
 
         return {"screen": "SUCCESS", "data": {"extension_message_response": {"params": {"flow_token": flow_token}}}}
 
-    # Default: the entry screen submitting name/phone/reason - offer real slots.
+    # Default: any other entry screen (book_followup_live's name/phone/
+    # reason, schedule_viewing_live's name/phone/property/time_of_day, a
+    # future vertical's own fields) - offer real slots, carrying whatever
+    # was collected forward untouched.
     options = await _open_slot_options(business, doctor, db)
     return {
         "screen": "SELECT_SLOT",
-        "data": {
-            "available_slots": options or [{"id": "none", "title": "No slots open right now"}],
-            "full_name": str(data.get("full_name") or ""),
-            "phone": str(data.get("phone") or ""),
-            "reason": str(data.get("reason") or ""),
-        },
+        "data": {**passthrough, "available_slots": options or [{"id": "none", "title": "No slots open right now"}]},
     }
