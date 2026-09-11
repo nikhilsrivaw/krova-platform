@@ -37,6 +37,7 @@ from shared.db.models import (
     ChannelConnection,
     ConnectionStatus,
     Direction,
+    FlowSendLog,
     IdentityKind,
     Message,
     MessageTemplate,
@@ -278,11 +279,17 @@ async def _process_campaign(campaign_id: uuid.UUID, now: datetime, db: AsyncSess
                         for card in step.carousel_cards
                     ]
 
+                    # Own token per recipient, same mechanism Campaign.flow_id
+                    # itself uses - a step can open a Flow too, not only the
+                    # campaign's own first send.
+                    flow_token = str(uuid.uuid4()) if step.flow_id else None
+
                     await asyncio.sleep(SEND_PACE_SECONDS)
                     try:
                         outcome = await client.send_template(
                             recipient.phone, step.template_name, step.template_language,
                             body_params=variables or None, carousel_cards=carousel_cards or None,
+                            flow_token=flow_token,
                         )
                     except WhatsAppError as exc:
                         db.add(
@@ -308,6 +315,13 @@ async def _process_campaign(campaign_id: uuid.UUID, now: datetime, db: AsyncSess
                         enqueue_analysis=False,
                         db=db,
                     )
+                    if flow_token:
+                        db.add(
+                            FlowSendLog(
+                                business_id=campaign.business_id, flow_id=step.flow_id,
+                                customer_id=customer_id, flow_token=flow_token,
+                            )
+                        )
                     db.add(
                         CampaignStepRecipient(
                             step_id=step.id, campaign_id=campaign_id, customer_id=customer_id,

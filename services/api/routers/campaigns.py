@@ -343,6 +343,9 @@ class CampaignStepIn(BaseModel):
     template_language: str = "en"
     variable_mapping: list[str] = Field(default_factory=list)
     carousel_cards: list[CampaignCardIn] = Field(default_factory=list)
+    # Same FLOW-button-template mechanism as the base campaign's own
+    # flow_id - a follow-up step can open a Flow too.
+    flow_id: str | None = None
 
 
 class CampaignStepOut(BaseModel):
@@ -353,6 +356,7 @@ class CampaignStepOut(BaseModel):
     stop_on_reply: bool
     template_name: str
     template_language: str
+    flow_id: str | None
     sent_count: int
     failed_count: int
     skipped_count: int
@@ -367,6 +371,7 @@ def _step_out(step: CampaignStep, counts: dict[str, int]) -> CampaignStepOut:
         stop_on_reply=step.stop_on_reply,
         template_name=step.template_name,
         template_language=step.template_language,
+        flow_id=str(step.flow_id) if step.flow_id else None,
         sent_count=counts.get("sent", 0),
         failed_count=counts.get("failed", 0),
         skipped_count=counts.get("skipped", 0),
@@ -409,6 +414,19 @@ async def add_campaign_step(
             f"That template is {_value(template.status).lower()}. Only approved templates can be used in a step.",
         )
 
+    flow_uuid: uuid.UUID | None = None
+    if body.flow_id:
+        try:
+            flow_uuid = uuid.UUID(body.flow_id)
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid flow_id")
+        flow = await db.get(WhatsAppFlow, flow_uuid)
+        if flow is None or flow.business_id != current_user.business or flow.status != FlowStatus.published:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "That flow doesn't exist or isn't published - only a published flow can be attached to a step",
+            )
+
     existing_max = (
         await db.execute(
             select(func.max(CampaignStep.step_order)).where(CampaignStep.campaign_id == campaign_id)
@@ -426,6 +444,7 @@ async def add_campaign_step(
         carousel_cards=[
             {"media_id": c.media_id, "variable_mapping": c.variable_mapping} for c in body.carousel_cards
         ],
+        flow_id=flow_uuid,
     )
     db.add(step)
     await db.flush()

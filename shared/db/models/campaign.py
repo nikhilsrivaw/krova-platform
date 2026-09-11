@@ -227,6 +227,13 @@ class CampaignStep(UUIDMixin, TimestampMixin, Base):
     variable_mapping: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     carousel_cards: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
+    # Same FLOW-button-template mechanism as Campaign.flow_id (see that
+    # column's own comment) - a follow-up step can open a Flow too, not
+    # only the campaign's own first send.
+    flow_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("whatsapp_flows.id", ondelete="SET NULL"), nullable=True
+    )
+
     __table_args__ = (
         UniqueConstraint("campaign_id", "step_order", name="uq_campaign_step_order"),
         Index("idx_campaign_steps_campaign", "campaign_id"),
