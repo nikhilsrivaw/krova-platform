@@ -76,7 +76,7 @@ async def copilot_stream(websocket: WebSocket) -> None:
     """
     try:
         verify(
-            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
             "/voice/copilot-stream",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),

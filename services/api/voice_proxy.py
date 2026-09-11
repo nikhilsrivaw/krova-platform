@@ -152,14 +152,17 @@ async def proxy_voice_stream(websocket: WebSocket) -> None:
     that logic lives once, in the real voice service.
     """
     try:
-        # Signed as http://, not wss:// or https:// - confirmed empirically
-        # against a real call (see relay.py's own verify() call, which this
-        # mirrors exactly since both check the same signed URL). The query
-        # string (recipient_id, for an outbound call - see relay.py's own
-        # matching comment) has to be included here too, since it's part
-        # of the URL Plivo actually signed.
+        # Signed as wss:// - the literal scheme in the <Stream> XML's own
+        # URL text (ws_url built via .replace('https://', 'wss://') in
+        # outbound.py/answer.py), confirmed against a real live call this
+        # session: the previous http:// here was never actually verified
+        # against a real call despite the comment claiming so (this whole
+        # project had genuinely zero completed calls until this session),
+        # and a real diagnostic log (expected vs received signature) proved
+        # it wrong. The query string has to be included here too, since
+        # it's part of the URL Plivo actually signed.
         verify(
-            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
             f"/voice/stream?{websocket.url.query}",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),
@@ -299,7 +302,7 @@ async def proxy_voice_copilot_stream(websocket: WebSocket) -> None:
     """Plivo's listen-only audio fork for copilot-mode calls - same signature check as /voice/stream."""
     try:
         verify(
-            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
             "/voice/copilot-stream",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),

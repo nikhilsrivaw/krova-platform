@@ -246,8 +246,14 @@ async def stream(
         # included here too - websocket.url.query is empty for every
         # existing inbound call, which reproduces the exact previously-
         # signed string unchanged for that case.
+        #
+        # wss://, not http:// - the previous scheme here was never actually
+        # confirmed against a real call (this whole project had zero
+        # completed calls until this session); a real diagnostic log this
+        # session proved it wrong, matching the literal scheme in the
+        # <Stream> XML's own URL text.
         verify(
-            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
             f"/voice/stream?{websocket.url.query}",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),
@@ -944,7 +950,7 @@ async def _analyze_call(
                 try:
                     await post_call_actions.apply_rules(
                         db, business_id=business_id, trigger_type=WebhookEventType.call_completed.value,
-                        customer_id=call_row.customer_id,
+                        customer_id=call_row.customer_id, call_id=call_row_id,
                     )
                 except Exception:
                     logger.exception("post-call action rules failed call=%s", call_row_id)
