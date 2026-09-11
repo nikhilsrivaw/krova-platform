@@ -14,9 +14,19 @@ this wrong (posting the JSON as a body, or as the wrong field name) fails
 with an opaque "invalid parameter" rather than anything pointing at the
 actual mistake.
 
-Deliberately scoped to navigate flows only - see shared/db/models/flow.py's
-module docstring for why. Nothing here handles a data_exchange endpoint or
-the RSA/AES key exchange it would require.
+Was deliberately scoped to navigate flows only - see shared/db/models/
+flow.py's module docstring for why. register_public_key and set_endpoint
+below are the two extra Graph API calls a data_exchange flow needs on top
+of the three above - confirmed against Meta's own Business Encryption API
+and flow-metadata-update docs, not guessed:
+
+  POST /{phone-number-id}/whatsapp_business_encryption - upload the RSA
+  public key. Per phone number, not per flow or per WABA - one keypair
+  covers every data_exchange flow a business has on that number.
+
+  POST /{flow-id} with endpoint_uri and data_api_version - per flow,
+  separate from the Flow JSON body itself. See shared/channels/whatsapp/
+  flow_encryption.py for the actual request/response crypto.
 """
 
 from dataclasses import dataclass, field
@@ -140,6 +150,41 @@ async def get_flow_status(access_token: str, flow_id: str) -> dict:
     if response.status_code != 200:
         raise _explain(response)
     return response.json()
+
+
+async def register_public_key(access_token: str, phone_number_id: str, public_key_pem: str) -> None:
+    """
+    Upload this phone number's RSA public key - replaces whatever key (if
+    any) was registered before. Confirmed via Meta's Business Encryption
+    API reference: multipart/form-data, one field, PEM text.
+    """
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        response = await client.post(
+            f"{settings.graph_base_url}/{phone_number_id}/whatsapp_business_encryption",
+            headers={"Authorization": f"Bearer {access_token}"},
+            data={"business_public_key": public_key_pem},
+        )
+    if response.status_code != 200 or not response.json().get("success"):
+        logger.warning("flow public key registration failed phone=%s: %s", phone_number_id, response.text[:300])
+        raise _explain(response)
+
+
+async def set_data_endpoint(access_token: str, flow_id: str, endpoint_uri: str) -> None:
+    """
+    Point a flow at our data_exchange endpoint. data_api_version pinned to
+    "3.0" - the version flow_encryption.py's decrypt/encrypt shape matches;
+    bumping this later means checking Meta's changelog for that version
+    first, not just changing the string.
+    """
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        response = await client.post(
+            f"{settings.graph_base_url}/{flow_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"endpoint_uri": endpoint_uri, "data_api_version": "3.0"},
+        )
+    if response.status_code != 200:
+        logger.warning("flow endpoint registration failed flow=%s: %s", flow_id, response.text[:300])
+        raise _explain(response)
 
 
 async def deprecate_flow(access_token: str, flow_id: str) -> None:
