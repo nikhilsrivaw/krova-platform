@@ -86,7 +86,18 @@ def stt_connect_url(*, language: str = "auto") -> str:
     params = {
         "language_code": language,
         "model": STT_MODEL,
-        "stream_type": "balanced",
+        # fast buffers audio in 500ms windows instead of balanced's 1000ms
+        # (confirmed via Sarvam's own docs, not guessed) - Sarvam's own
+        # guidance recommends it specifically for conversational agents
+        # like this one, "minimal drop in accuracy" against balanced. This
+        # is the one endpointing/stream knob changed on this pass without
+        # a real call to verify against: silence_duration_ms/threshold/
+        # min_speech_duration_ms are also real, tunable params (Sarvam
+        # docs), but changing those without hearing a real call first
+        # risks repeating the TTS min_buffer_size mistake elsewhere in
+        # this file - tightened once on a guess, proven wrong on a real
+        # call, reverted. Left at Sarvam's own defaults.
+        "stream_type": "fast",
         # codemix reads Hindi/English mid-utterance as one language, matching
         # how a caller in this market actually talks rather than requiring
         # them to pick one.

@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 
 async def apply_rules(
     db: AsyncSession, *, business_id: uuid.UUID, trigger_type: str, customer_id: uuid.UUID | None,
+    call_id: uuid.UUID | None = None,
 ) -> int:
     """Run every active rule matching this trigger for this business. Returns how many actions ran."""
     if customer_id is None:
@@ -80,6 +81,13 @@ async def apply_rules(
                 if not message:
                     logger.warning("post_call_action_rule=%s has no message configured, skipping", rule.id)
                     continue
+                if "{{summary}}" in message:
+                    message = (await _resolve_summary_token(message, call_id, db)).strip()
+                    if not message:
+                        logger.warning(
+                            "post_call_action_rule=%s left empty after resolving {{summary}}, skipping", rule.id,
+                        )
+                        continue
                 if await notify.send_post_call_followup(db, business=business, customer=customer, message=message):
                     ran += 1
 
@@ -111,6 +119,25 @@ async def apply_rules(
             logger.exception("post_call_action_rule=%s failed to apply", rule.id)
 
     return ran
+
+
+async def _resolve_summary_token(message: str, call_id: uuid.UUID | None, db: AsyncSession) -> str:
+    """
+    Substitutes the AI-generated call summary (Call.summary, written by
+    shared/ai/call_summary.py::summarize() before this trigger ever fires -
+    see _analyze_call in relay.py) into a {{summary}} token. No call_id
+    (the voicemail/no_answer dispatch site in outbound.py never has a Call
+    row - see its own comment) or no summary yet resolves to blank rather
+    than sending the literal token to a customer.
+    """
+    summary = None
+    if call_id is not None:
+        from shared.db.models import Call
+
+        call_row = await db.get(Call, call_id)
+        summary = call_row.summary if call_row is not None else None
+
+    return message.replace("{{summary}}", summary or "")
 
 
 async def _add_tag(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:

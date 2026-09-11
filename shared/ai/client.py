@@ -64,9 +64,26 @@ def _model_for(speed: Speed) -> str:
     return settings.claude_fast_model if speed == "fast" else settings.claude_deep_model
 
 
-def _cost_paise(speed: Speed, input_tokens: int, output_tokens: int) -> int:
+def _cost_paise(
+    speed: Speed,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> int:
+    # Anthropic prices a cache write at 1.25x normal input (default 5m TTL,
+    # the only TTL this codebase uses) and a cache read at 0.1x - both are
+    # counted separately from input_tokens in the API's own usage response,
+    # so leaving them out here would silently undercount real spend on any
+    # call using cache_control (see TextStream.__aiter__).
     rates = _PRICING[speed]
-    rupees = (input_tokens * rates["in"] + output_tokens * rates["out"]) / 1_000_000
+    rupees = (
+        input_tokens * rates["in"]
+        + output_tokens * rates["out"]
+        + cache_creation_input_tokens * rates["in"] * 1.25
+        + cache_read_input_tokens * rates["in"] * 0.1
+    ) / 1_000_000
     return round(rupees * 100)
 
 
@@ -151,11 +168,25 @@ class TextStream:
         client = _get_client()
         model = _model_for(self._speed)
 
+        # Every real caller of stream_text (agent.py's stream_reply,
+        # stream_owner_reply, the scripted-call variant) passes one of a
+        # handful of fixed, sizeable system-prompt constants - never one
+        # built per-call - on the one path a live caller is waiting
+        # through. A cache breakpoint here costs slightly more on the
+        # first request in a 5-minute window and is cheap (and faster to
+        # first token) on every request after, platform-wide, since the
+        # text is identical across calls. complete() is deliberately left
+        # untouched - its callers' system prompts are more heterogeneous
+        # and not audited for this.
+        system: str | list[dict] = [
+            {"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}
+        ]
+
         try:
             async with client.messages.stream(
                 model=model,
                 max_tokens=self._max_tokens,
-                system=self._system,
+                system=system,
                 messages=self._messages,
             ) as stream:
                 async for text in stream.text_stream:
@@ -169,7 +200,21 @@ class TextStream:
             raise AIError("Could not reach Claude") from exc
 
         usage = final.usage
-        self.cost_paise = _cost_paise(self._speed, usage.input_tokens, usage.output_tokens)
+        self.cost_paise = _cost_paise(
+            self._speed,
+            usage.input_tokens,
+            usage.output_tokens,
+            cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
+            cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+        )
+        # Visibility for the first real calls after this shipped - a
+        # cache_read that never rises above 0 across several calls in
+        # quick succession means the breakpoint isn't actually landing
+        # and is worth investigating, not silently trusting.
+        logger.info(
+            "claude cache stats model=%s cache_write=%s cache_read=%s input=%s",
+            model, usage.cache_creation_input_tokens, usage.cache_read_input_tokens, usage.input_tokens,
+        )
 
 
 def stream_text(

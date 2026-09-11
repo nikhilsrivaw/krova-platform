@@ -256,8 +256,19 @@ async def build(
     """
     Gather everything the agent should know before it writes a word.
 
-    Four small indexed reads, deliberately - this sits on the path a caller
-    waits through, so it must stay in the tens of milliseconds.
+    Sits on the path a live caller waits through, so every query here is a
+    real cost - this stayed "four small indexed reads" only while the
+    function was small; it has since grown a query per vertical capability
+    (orders, cases, properties, claims, open shifts) plus, for a
+    scheduling-capable business, a per-doctor availability lookup
+    (`shared/scheduling/availability.py::next_open_slots`, itself rewritten
+    to fetch its whole search window in three queries rather than one set
+    of queries per candidate day - see that module for why). All queries
+    here run on one shared AsyncSession, which SQLAlchemy's async extension
+    does not allow running concurrently - they cannot simply be wrapped in
+    `asyncio.gather` without opening separate sessions, a bigger change not
+    made on this pass. `voice latency call=... context=...` (relay.py) is
+    the real number to watch if this needs revisiting.
     """
     business = await db.get(Business, business_id)
     dna = await db.get(BusinessDNA, business_id)

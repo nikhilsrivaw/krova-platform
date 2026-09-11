@@ -468,6 +468,24 @@ async def check_channel_health() -> None:
         logger.exception("channel health check job failed")
 
 
+async def check_escalation_rate() -> None:
+    """
+    Watch each business's voice escalation rate instead of only being able
+    to look it up - see shared/care/escalation_alerts.py for why this
+    alerts only on a transition, never on every poll.
+    """
+    from shared.care import escalation_alerts
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            checked = await escalation_alerts.check_all(db)
+            await db.commit()
+            logger.info("checked escalation rate for %s business(es)", checked)
+    except Exception:
+        logger.exception("escalation rate check job failed")
+
+
 async def nightly_analysis() -> None:
     """
     Queue a re-read of every business's recent conversations.
@@ -692,6 +710,16 @@ def build() -> AsyncIOScheduler:
         check_channel_health,
         IntervalTrigger(hours=4),
         id="check_channel_health",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # A daily read is enough - the underlying window is 7 days, so this
+    # never needs to notice a change faster than once a day.
+    scheduler.add_job(
+        check_escalation_rate,
+        CronTrigger(hour=8, minute=0, timezone=IST),
+        id="check_escalation_rate",
         replace_existing=True,
         misfire_grace_time=3600,
     )
