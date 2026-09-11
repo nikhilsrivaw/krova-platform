@@ -109,6 +109,23 @@ async def proxy_voice_outbound_hangup(request: Request) -> Response:
     return await _proxy_http(request, f"/voice/outbound-hangup{query}")
 
 
+@router.post("/voice/adhoc-answer")
+async def proxy_voice_adhoc_answer(request: Request) -> Response:
+    # Missing entirely until this pass - confirmed live: place_adhoc_call's
+    # answer_url 404'd at this proxy (only /voice/outbound-answer had a
+    # forward), so Plivo never got real Stream XML and every adhoc call -
+    # proactive deadline calls, and any future caller of place_adhoc_call -
+    # silently never opened the AI relay in production.
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/adhoc-answer{query}")
+
+
+@router.post("/voice/adhoc-hangup")
+async def proxy_voice_adhoc_hangup(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/adhoc-hangup{query}")
+
+
 @router.post("/voice/cod-answer")
 async def proxy_voice_cod_answer(request: Request) -> Response:
     query = f"?{request.url.query}" if request.url.query else ""
