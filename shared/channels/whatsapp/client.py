@@ -188,6 +188,7 @@ class WhatsAppClient:
         *,
         body_params: list[str] | None = None,
         carousel_cards: list["CarouselSendCard"] | None = None,
+        flow_token: str | None = None,
     ) -> SendResult:
         """
         Send an approved template. Works regardless of the window.
@@ -199,6 +200,15 @@ class WhatsAppClient:
         `carousel_cards` fills a carousel template's per-card variables and
         images, in the same card order the template was approved with -
         Meta matches cards by card_index, not by name.
+
+        `flow_token` is only meaningful when `template_name` refers to a
+        template that was itself created in Meta's WhatsApp Manager with a
+        FLOW-type button attached to a specific Flow - that association is
+        made once, at template-authoring time, on Meta's side; nothing
+        here chooses which Flow it opens. Confirmed against Meta's own
+        Flow-sending guide: this is the one documented way to open a Flow
+        *outside* the 24-hour service window, which a plain interactive
+        Flow message (send_flow_message below) cannot do.
         """
         components: list[dict[str, Any]] = []
         if body_params:
@@ -238,6 +248,15 @@ class WhatsAppClient:
                     for index, card in enumerate(carousel_cards)
                 ],
             })
+        if flow_token:
+            components.append(
+                {
+                    "type": "button",
+                    "sub_type": "flow",
+                    "index": "0",
+                    "parameters": [{"type": "action", "action": {"flow_token": flow_token}}],
+                }
+            )
 
         template: dict[str, Any] = {
             "name": template_name,

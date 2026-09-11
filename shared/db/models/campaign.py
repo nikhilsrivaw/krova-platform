@@ -92,6 +92,17 @@ class Campaign(UUIDMixin, TimestampMixin, Base):
     # text instead of the message body.
     carousel_cards: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
+    # Set only when template_name refers to a template with a FLOW-type
+    # button, attached to this specific Flow at template-authoring time on
+    # Meta's own side (see WhatsAppClient.send_template's flow_token
+    # docstring). Nullable - most campaigns have no Flow at all. When set,
+    # each successful send gets its own flow_token and a FlowSendLog row,
+    # the same bookkeeping a one-off Flow send already gets, so a later
+    # completion still matches back to the right business/customer/flow.
+    flow_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("whatsapp_flows.id", ondelete="SET NULL"), nullable=True
+    )
+
     status: Mapped[CampaignStatus] = mapped_column(
         EnumType(CampaignStatus, 20), nullable=False, default=CampaignStatus.draft
     )

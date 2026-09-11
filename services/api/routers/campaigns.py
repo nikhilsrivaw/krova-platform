@@ -36,9 +36,12 @@ from shared.db.models import (
     ChannelConnection,
     ConnectionStatus,
     Direction,
+    FlowSendLog,
+    FlowStatus,
     IdentityKind,
     MessageTemplate,
     TemplateStatus,
+    WhatsAppFlow,
 )
 from shared.utils.logging import get_logger
 
@@ -87,6 +90,12 @@ class CampaignIn(BaseModel):
     # Present only when template_name is a carousel template - one entry per
     # card, same order the template was approved with.
     carousel_cards: list[CampaignCardIn] = Field(default_factory=list)
+    # Present only when template_name refers to a template with a FLOW-type
+    # button (created that way on Meta's own side) - which published Flow
+    # it opens isn't auto-detected (Meta's template API doesn't expose it
+    # back reliably), so the business names it explicitly, same as picking
+    # a template in the first place.
+    flow_id: str | None = None
 
 
 class RecipientPreview(BaseModel):
@@ -118,6 +127,7 @@ class CampaignOut(BaseModel):
     audience_label: str
     status: str
     template_name: str | None
+    flow_id: str | None
     category: str | None
     recipients: int
     sent_count: int
@@ -287,6 +297,19 @@ async def create_campaign(
             ),
         )
 
+    flow_uuid: uuid.UUID | None = None
+    if body.flow_id:
+        try:
+            flow_uuid = uuid.UUID(body.flow_id)
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid flow_id")
+        flow = await db.get(WhatsAppFlow, flow_uuid)
+        if flow is None or flow.business_id != current_user.business or flow.status != FlowStatus.published:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "That flow doesn't exist or isn't published - only a published flow can be attached to a campaign",
+            )
+
     campaign = Campaign(
         business_id=current_user.business,
         name=body.name.strip(),
@@ -299,6 +322,7 @@ async def create_campaign(
             {"media_id": c.media_id, "variable_mapping": c.variable_mapping}
             for c in body.carousel_cards
         ],
+        flow_id=flow_uuid,
         category=_value(template.category),
         created_by_user_id=current_user.id,
         status=CampaignStatus.draft,
@@ -497,20 +521,41 @@ async def send_campaign(
     campaign.recipients = result.count
     campaign.skipped_count = len(result.skipped)
 
+    # Resuming a paused campaign (daily limit hit mid-send) re-resolves the
+    # full audience above - without this, every recipient already reached
+    # in an earlier run would be re-sent to and get a second
+    # CampaignRecipient row. already_sent is the real fix: never touched
+    # again. stale_rows (pending/failed from an earlier run) are updated
+    # in place instead of duplicated, so a retried send corrects its own
+    # row rather than leaving a stale one behind alongside a new one.
+    existing_rows = (
+        await db.execute(select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign.id))
+    ).scalars().all()
+    already_sent = {r.customer_id for r in existing_rows if r.status == "sent"}
+    stale_rows = {r.customer_id: r for r in existing_rows if r.status != "sent"}
+
     client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
 
-    sent = failed = 0
+    sent_this_run = 0
     for recipient in result.recipients:
-        if sent >= remaining:
-            db.add(
-                CampaignRecipient(
-                    campaign_id=campaign.id,
-                    customer_id=recipient.customer_id,
-                    status="pending",
-                    reason="Daily limit reached - will send tomorrow",
-                    created_at=now,
+        if recipient.customer_id in already_sent:
+            continue
+        existing = stale_rows.pop(recipient.customer_id, None)
+
+        if sent_this_run >= remaining:
+            if existing is None:
+                db.add(
+                    CampaignRecipient(
+                        campaign_id=campaign.id,
+                        customer_id=recipient.customer_id,
+                        status="pending",
+                        reason="Daily limit reached - will send tomorrow",
+                        created_at=now,
+                    )
                 )
-            )
+            else:
+                existing.status = "pending"
+                existing.reason = "Daily limit reached - will send tomorrow"
             continue
 
         variables = [recipient.values.get(k, "") for k in campaign.variable_mapping]
@@ -531,6 +576,11 @@ async def send_campaign(
         # even though Meta publishes no exact recommended rate.
         await asyncio.sleep(SEND_PACE_SECONDS)
 
+        # Own token per recipient, same as a one-off Flow send - Meta's
+        # webhook only ever carries the token back, never the campaign or
+        # flow id, so this is the only way a later completion can be
+        # matched to anything.
+        flow_token = str(uuid.uuid4()) if campaign.flow_id else None
         try:
             outcome = await client.send_template(
                 recipient.phone,
@@ -538,19 +588,24 @@ async def send_campaign(
                 campaign.template_language,
                 body_params=variables or None,
                 carousel_cards=carousel_cards or None,
+                flow_token=flow_token,
             )
         except WhatsAppError as exc:
-            failed += 1
-            db.add(
-                CampaignRecipient(
-                    campaign_id=campaign.id,
-                    customer_id=recipient.customer_id,
-                    status="failed",
-                    reason=str(exc),
-                    variables=variables,
-                    created_at=now,
+            if existing is None:
+                db.add(
+                    CampaignRecipient(
+                        campaign_id=campaign.id,
+                        customer_id=recipient.customer_id,
+                        status="failed",
+                        reason=str(exc),
+                        variables=variables,
+                        created_at=now,
+                    )
                 )
-            )
+            else:
+                existing.status = "failed"
+                existing.reason = str(exc)
+                existing.variables = variables
             continue
 
         stored = await ingest.ingest(
@@ -567,28 +622,57 @@ async def send_campaign(
             enqueue_analysis=False,
             db=db,
         )
-        sent += 1
-        db.add(
-            CampaignRecipient(
-                campaign_id=campaign.id,
-                customer_id=recipient.customer_id,
-                status="sent",
-                variables=variables,
-                message_id=stored.message.id if stored.message else None,
-                sent_at=datetime.now(timezone.utc),
-                created_at=now,
+        if flow_token:
+            db.add(
+                FlowSendLog(
+                    business_id=current_user.business,
+                    flow_id=campaign.flow_id,
+                    customer_id=recipient.customer_id,
+                    flow_token=flow_token,
+                )
             )
-        )
+        sent_this_run += 1
+        if existing is None:
+            db.add(
+                CampaignRecipient(
+                    campaign_id=campaign.id,
+                    customer_id=recipient.customer_id,
+                    status="sent",
+                    variables=variables,
+                    message_id=stored.message.id if stored.message else None,
+                    sent_at=datetime.now(timezone.utc),
+                    created_at=now,
+                )
+            )
+        else:
+            existing.status = "sent"
+            existing.variables = variables
+            existing.message_id = stored.message.id if stored.message else None
+            existing.sent_at = datetime.now(timezone.utc)
 
-    campaign.sent_count = sent
-    campaign.failed_count = failed
-    held_back = result.count - sent - failed
+    # Recomputed fresh from the actual rows rather than accumulated through
+    # the loop above - correct regardless of how many times this campaign
+    # has been paused and resumed, since every branch above updates a row
+    # in place rather than always adding a new one.
+    await db.flush()
+    counts = dict(
+        (
+            await db.execute(
+                select(CampaignRecipient.status, func.count())
+                .where(CampaignRecipient.campaign_id == campaign.id)
+                .group_by(CampaignRecipient.status)
+            )
+        ).all()
+    )
+    campaign.sent_count = counts.get("sent", 0)
+    campaign.failed_count = counts.get("failed", 0)
+    held_back = counts.get("pending", 0)
     campaign.status = CampaignStatus.paused if held_back > 0 else CampaignStatus.sent
     campaign.completed_at = None if held_back > 0 else datetime.now(timezone.utc)
 
     logger.info(
         "campaign %s: %s sent, %s failed, %s held for tomorrow",
-        campaign.id, sent, failed, held_back,
+        campaign.id, campaign.sent_count, campaign.failed_count, held_back,
     )
     return _out(campaign)
 
@@ -611,6 +695,7 @@ def _out(c: Campaign) -> CampaignOut:
         audience_label=_audience_label(c.audience, c.audience_params),
         status=_value(c.status),
         template_name=c.template_name,
+        flow_id=str(c.flow_id) if c.flow_id else None,
         category=c.category,
         recipients=c.recipients,
         sent_count=c.sent_count,
