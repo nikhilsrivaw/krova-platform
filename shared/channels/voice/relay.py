@@ -520,6 +520,19 @@ async def stream(
                         adhoc_business_id = uuid.UUID(business_id)
                         adhoc_customer_id = uuid.UUID(customer_id)
 
+                        # Already written while the phone was ringing (see
+                        # outbound.place_adhoc_call) - speak it, don't
+                        # generate a second one. Only when it is missing -
+                        # an older call already in flight, or a drafting
+                        # failure at dial time - does this fall back to
+                        # generating live below.
+                        predrafted = (remembered or {}).get("opening_line")
+                        if predrafted:
+                            opening_line = predrafted
+                            logger.info(
+                                "using pre-drafted opening line call=%s", call_uuid,
+                            )
+
                         def _adhoc_opening():
                             """
                             Built here rather than inside build_adhoc_context
@@ -539,7 +552,11 @@ async def stream(
 
                             return _gen()
 
-                        opening_stream = _adhoc_opening
+                        # Only when nothing was pre-drafted: pipeline.start
+                        # prefers opening_stream over opening_line, so
+                        # setting both would throw the ready line away.
+                        if not predrafted:
+                            opening_stream = _adhoc_opening
                     else:
                         route = await resolve(to_number or "", db)
                         if route is None:

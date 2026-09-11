@@ -30,5 +30,27 @@ def remember(call_uuid: str, *, to_number: str, from_number: str) -> None:
     }
 
 
+def attach_opening_line(call_uuid: str, opening_line: str) -> None:
+    """
+    Carry an already-drafted outbound opening line from the answer webhook
+    to the stream that speaks it.
+
+    An outbound opener used to be written the moment the person picked up,
+    while they listened to silence. It is now drafted before the number is
+    even dialled (see outbound.place_adhoc_call) - the several seconds a
+    phone spends ringing are free, and nobody is waiting through them -
+    and travels here so /voice/stream can speak it immediately instead of
+    starting a fresh generation of its own.
+
+    Updates the existing entry in place rather than re-remembering it:
+    ring_started_at was captured when the webhook first arrived and is
+    what Call.ring_started_at (and the trust page's time-to-answer) is
+    computed from, so it must not be overwritten with a later timestamp.
+    """
+    entry = _pending.get(call_uuid)
+    if entry is not None:
+        entry["opening_line"] = opening_line
+
+
 def recall(call_uuid: str) -> dict | None:
     return _pending.pop(call_uuid, None)

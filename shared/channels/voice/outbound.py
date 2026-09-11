@@ -42,7 +42,7 @@ from shared.ai import outbound_opener
 from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels.voice import plivo_client
-from shared.channels.voice.call_registry import remember
+from shared.channels.voice.call_registry import attach_opening_line, remember
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.tenant import VoiceRoute, resolve_by_business
 from shared.channels.voice.xml import hangup_response, stream_response
@@ -331,12 +331,45 @@ async def place_adhoc_call(
         logger.warning("adhoc call skipped business=%s: voice connection missing subaccount id", business_id)
         return False
 
+    # Drafted here, before the number is dialled, rather than when someone
+    # picks up. A phone spends seconds ringing and nobody is waiting
+    # through them, so this generation is free; done at pickup instead it
+    # is the single longest thing the person who answered listens to
+    # silence through. Travels to the answer webhook in the URL and on to
+    # the stream via call_registry - see attach_opening_line. Failure is
+    # not fatal: the stream still drafts its own line the old way.
+    opening = ""
+    try:
+        context = await agent_context.build(business_id, customer_id, db)
+        opener = await outbound_opener.draft(context, reason=reason)
+        opening = opener.text
+        if opener.cost_paise:
+            usage.record(
+                business_id=business_id,
+                event_type=UsageEventType.ai_reply_generated,
+                channel="voice",
+                quantity=1,
+                unit="call",
+                krova_cost_paise=opener.cost_paise,
+                source_type="commitment",
+                db=db,
+            )
+    except Exception:
+        logger.exception(
+            "could not pre-draft an opening line business=%s customer=%s - "
+            "the stream will draft one itself",
+            business_id, customer_id,
+        )
+
     base = settings.public_base_url.rstrip("/")
-    params = urlencode({
+    query = {
         "business_id": str(business_id),
         "customer_id": str(customer_id),
         "reason": reason,
-    })
+    }
+    if opening:
+        query["opening"] = opening
+    params = urlencode(query)
     try:
         await plivo_client.make_call(
             auth_id=auth_id,
@@ -522,6 +555,7 @@ async def adhoc_answer(
     customer_id: uuid.UUID,
     reason: str,
     request: Request,
+    opening: str | None = None,
     x_plivo_signature_ma_v3: str | None = Header(default=None),
     x_plivo_signature_v3_nonce: str | None = Header(default=None),
 ) -> Response:
@@ -529,6 +563,11 @@ async def adhoc_answer(
     outbound_answer's sibling for place_adhoc_call - identical shape, no
     CallCampaignRecipient to resolve since business_id/customer_id/reason
     already travelled here in the signed query string.
+
+    `opening` is the line place_adhoc_call already drafted while the phone
+    was ringing. Stashed for /voice/stream rather than used here, so the
+    person who picked up hears it as soon as TTS can say it instead of
+    waiting on a generation that starts only now.
     """
     body = await request.form()
     params = {k: str(v) for k, v in body.items()}
@@ -550,6 +589,8 @@ async def adhoc_answer(
     from_number = body.get("From") or body.get("from")
     if call_uuid:
         remember(str(call_uuid), to_number=str(to_number or ""), from_number=str(from_number or ""))
+        if opening:
+            attach_opening_line(str(call_uuid), opening)
 
     async with AsyncSessionLocal() as db:
         context = await build_adhoc_context(business_id, customer_id, reason, db, skip_opener=True)
