@@ -152,18 +152,21 @@ async def proxy_voice_stream(websocket: WebSocket) -> None:
     that logic lives once, in the real voice service.
     """
     try:
-        # Signed as wss:// - the literal scheme in the <Stream> XML's own
-        # URL text (ws_url built via .replace('https://', 'wss://') in
-        # outbound.py/answer.py), confirmed against a real live call this
-        # session: the previous http:// here was never actually verified
-        # against a real call despite the comment claiming so (this whole
-        # project had genuinely zero completed calls until this session),
-        # and a real diagnostic log (expected vs received signature) proved
-        # it wrong. The query string has to be included here too, since
-        # it's part of the URL Plivo actually signed.
+        # http://, no query string - confirmed for real this session by
+        # brute-forcing candidate signed strings against a genuine
+        # (nonce, received-signature) pair captured from production logs
+        # and finding the one that actually reproduces Plivo's own
+        # signature. Two earlier beliefs in this file were both wrong: the
+        # old comment claiming http:// + query was "confirmed empirically"
+        # (never true - this project had zero completed calls before this
+        # session), and this session's own first fix attempt (wss:// +
+        # query). Plivo evidently does not include the Stream URL's query
+        # string in what it signs for a WebSocket upgrade at all, unlike a
+        # regular GET/POST webhook - business_id/customer_id/reason still
+        # travel in the query for routing, just outside the signed value.
         verify(
-            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
-            f"/voice/stream?{websocket.url.query}",
+            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            "/voice/stream",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),
             method="GET",
@@ -302,7 +305,7 @@ async def proxy_voice_copilot_stream(websocket: WebSocket) -> None:
     """Plivo's listen-only audio fork for copilot-mode calls - same signature check as /voice/stream."""
     try:
         verify(
-            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
             "/voice/copilot-stream",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),

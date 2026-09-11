@@ -231,30 +231,27 @@ async def stream(
     try:
         # Plivo signs the stream URL with a bare http:// scheme regardless of
         # the wss:// URL actually handed to it in the <Stream> element or the
-        # https the request arrives over - confirmed empirically against a
-        # real call, since neither the docs nor the SDK's own validator say
-        # so (the SDK's validator only accepts http/https, rejecting wss
-        # outright, but silently expects http rather than https here too).
+        # https the request arrives over. AND - confirmed for real this
+        # session, by brute-forcing candidate signed strings against a
+        # genuine (nonce, received-signature) pair captured from production
+        # logs until one actually reproduced Plivo's own signature - the
+        # query string is not part of what gets signed for a stream
+        # WebSocket upgrade at all, unlike a regular GET/POST webhook.
+        # business_id/customer_id/reason (or recipient_id, for an outbound
+        # campaign call) still travel in the query for routing; they are
+        # just outside the signed value. A same-session first attempt at
+        # this fix (matching the literal wss:// scheme, keeping the query)
+        # was itself wrong - both changed at once made it impossible to
+        # isolate which one mattered, which the brute-force search resolved
+        # directly against real data instead of guessing again.
         #
         # Verified against Ma-V3 (parent token), not V3 (subaccount token):
         # this one endpoint serves every business's calls, and at the moment
         # of accepting the upgrade there is no call data yet to say whose
         # subaccount it belongs to - Ma-V3 needs no such lookup.
-        #
-        # The query string (recipient_id, for an outbound call) is signed
-        # as part of the URL Plivo was actually given, so it has to be
-        # included here too - websocket.url.query is empty for every
-        # existing inbound call, which reproduces the exact previously-
-        # signed string unchanged for that case.
-        #
-        # wss://, not http:// - the previous scheme here was never actually
-        # confirmed against a real call (this whole project had zero
-        # completed calls until this session); a real diagnostic log this
-        # session proved it wrong, matching the literal scheme in the
-        # <Stream> XML's own URL text.
         verify(
-            uri=f"wss://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
-            f"/voice/stream?{websocket.url.query}",
+            uri=f"http://{settings.public_base_url.split('://', 1)[-1].rstrip('/')}"
+            "/voice/stream",
             signature=websocket.headers.get("x-plivo-signature-ma-v3"),
             nonce=websocket.headers.get("x-plivo-signature-v3-nonce"),
             method="GET",
