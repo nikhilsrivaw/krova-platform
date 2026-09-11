@@ -139,6 +139,16 @@ class CallPipeline:
     detected_language: str | None = None
     _reply_task: asyncio.Task | None = field(default=None, repr=False)
     _spoken_chars: int = 0
+    # True only while an OUTBOUND call's opening line is still being
+    # spoken. On an outbound call the person who picks up says "hello?"
+    # before anything else - that is simply how answering a phone works -
+    # and without this that first word barge-in-cancelled the opening line
+    # every single time, so the caller heard silence and hung up.
+    # Confirmed on a real call: ClearedAudio fired the same second the
+    # call started and no TTS chunk was ever produced. Inbound greetings
+    # are deliberately NOT protected: there the caller dialled in and is
+    # listening, and talking over the greeting really does mean "skip it".
+    _opening_protected: bool = False
     # The caller's own turn, for source_message_ids on a booking made from
     # it - an AI-mediated booking must cite the conversation that
     # authorised it, the same rule book.py enforces for every channel.
@@ -154,7 +164,14 @@ class CallPipeline:
                 record=True,
             )
             return
-        await self._say_stream(_single_chunk(self.opening_line or self.route.greeting), record=True)
+        if self.opening_line:
+            self._opening_protected = True
+            try:
+                await self._say_stream(_single_chunk(self.opening_line), record=True)
+            finally:
+                self._opening_protected = False
+            return
+        await self._say_stream(_single_chunk(self.route.greeting), record=True)
 
     async def on_transcript(self, text: str, *, is_final: bool, language: str | None = None) -> None:
         """
@@ -165,6 +182,17 @@ class CallPipeline:
         drive a reply. Only a final transcript is answered.
         """
         if not text.strip():
+            return
+
+        # An outbound call's opening line is why the call was placed at
+        # all - it has to be heard. Ignoring the caller's speech outright
+        # (rather than only skipping the barge-in) matters: letting
+        # _handle_utterance run here would start a second reply task over
+        # the top of the opening line, which is exactly the interleaved-
+        # audio bug relay.py's own comment says tracking the greeting as
+        # _reply_task was added to fix. A "hello" carries nothing worth
+        # answering anyway; the caller's next turn is handled normally.
+        if self._opening_protected:
             return
 
         # Only a final transcript's language is trusted - a partial can
