@@ -72,8 +72,23 @@ async def draft(agent_context: ctx.AgentContext, *, reason: str) -> Opener:
     )
 
     text = completion.text.strip()
-    if not text:
-        logger.warning("outbound opener drafting returned nothing, using a plain fallback")
+    # A real opener is "one or two short sentences" per SYSTEM's own
+    # instruction - well under this. Caught on a real test call: given a
+    # meaningless reason string and near-empty business context, the model
+    # sometimes declines to draft anything and writes a multi-paragraph
+    # explanation of why it won't ("I can't complete this request...")
+    # instead - which, with no check here, got spoken aloud to the person
+    # who picked up, verbatim. A generic, honest fallback is always better
+    # than reading the model's own reasoning to a real caller.
+    if not text or len(text) > 400:
+        if text:
+            logger.warning(
+                "outbound opener drafting returned something opener-shaped text "
+                "isn't (%d chars) - likely a decline/explanation, using a plain fallback",
+                len(text),
+            )
+        else:
+            logger.warning("outbound opener drafting returned nothing, using a plain fallback")
         text = f"Hi, this is {agent_context.business_name} calling."
 
     return Opener(text=text, cost_paise=completion.cost_paise)
