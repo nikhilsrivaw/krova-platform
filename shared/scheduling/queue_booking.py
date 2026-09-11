@@ -195,6 +195,15 @@ async def issue_token(
             )
         except Exception:
             logger.exception("webhook dispatch failed for queue entry=%s", entry.id)
+        try:
+            from shared.care import post_call_actions
+
+            await post_call_actions.apply_rules(
+                db, business_id=business_id, trigger_type=WebhookEventType.queue_token_issued.value,
+                customer_id=customer_id,
+            )
+        except Exception:
+            logger.exception("automation-rule dispatch failed for queue entry=%s", entry.id)
 
     return entry
 

@@ -532,6 +532,26 @@ async def _mark_flow_completed(
     send_log.completed_at = occurred_at
     logger.info("flow completed business=%s token=%s", business_id, flow_token)
 
+    from shared.db.models import WebhookEventType
+    from shared.integrations import webhooks as webhooks_module
+
+    try:
+        await webhooks_module.dispatch_event(
+            db, business_id=business_id, event_type=WebhookEventType.flow_completed.value,
+            payload={"flow_id": str(send_log.flow_id), "customer_id": str(send_log.customer_id)},
+        )
+    except Exception:
+        logger.exception("flow.completed webhook dispatch failed business=%s", business_id)
+    try:
+        from shared.care import post_call_actions
+
+        await post_call_actions.apply_rules(
+            db, business_id=business_id, trigger_type=WebhookEventType.flow_completed.value,
+            customer_id=send_log.customer_id,
+        )
+    except Exception:
+        logger.exception("flow.completed automation-rule dispatch failed business=%s", business_id)
+
 
 # Meta's event values, mapped to what we store. Anything unrecognised leaves
 # the template alone rather than guessing - a wrong status here would either

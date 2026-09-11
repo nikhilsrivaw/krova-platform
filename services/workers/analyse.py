@@ -208,6 +208,16 @@ async def _extract_signals(
             except Exception:
                 logger.exception("competitor-mention webhook dispatch failed business=%s", message.business_id)
 
+            try:
+                from shared.care import post_call_actions
+
+                await post_call_actions.apply_rules(
+                    db, business_id=message.business_id, trigger_type="competitor.mentioned",
+                    customer_id=message.customer_id,
+                )
+            except Exception:
+                logger.exception("competitor-mention automation-rule dispatch failed business=%s", message.business_id)
+
     if stored:
         logger.info("stored %s product feedback signal(s) for message=%s", stored, message.id)
     return stored

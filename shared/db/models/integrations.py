@@ -202,6 +202,12 @@ class WebhookEventType(str, enum.Enum):
     # just WhatsApp. Outbound sends don't fire this - a business's own
     # system already knows what it sent.
     message_received = "message.received"
+    # Fired from services/api/routers/webhooks.py's inbound message loop
+    # when a WhatsApp Flow submission arrives (media kind "flow_reply",
+    # see shared/channels/whatsapp/webhook.py) - the moment a customer
+    # finishes a structured form (booking, order tracking, ...), not when
+    # it was merely opened.
+    flow_completed = "flow.completed"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):

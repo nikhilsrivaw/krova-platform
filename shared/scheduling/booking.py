@@ -126,6 +126,15 @@ async def book(
             )
         except Exception:
             logger.exception("webhook dispatch failed for appointment=%s", appointment.id)
+        try:
+            from shared.care import post_call_actions
+
+            await post_call_actions.apply_rules(
+                db, business_id=business_id, trigger_type=WebhookEventType.appointment_booked.value,
+                customer_id=appointment.customer_id,
+            )
+        except Exception:
+            logger.exception("automation-rule dispatch failed for appointment=%s", appointment.id)
 
     return appointment
 
@@ -272,6 +281,15 @@ async def cancel(db: AsyncSession, *, appointment: Appointment, reason: str | No
             )
         except Exception:
             logger.exception("webhook dispatch failed for cancelled appointment=%s", appointment.id)
+        try:
+            from shared.care import post_call_actions
+
+            await post_call_actions.apply_rules(
+                db, business_id=appointment.business_id, trigger_type=WebhookEventType.appointment_cancelled.value,
+                customer_id=appointment.customer_id,
+            )
+        except Exception:
+            logger.exception("automation-rule dispatch failed for cancelled appointment=%s", appointment.id)
 
     return appointment
 

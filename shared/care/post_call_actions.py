@@ -1,5 +1,5 @@
 """
-The voice-to-action bridge - interprets PostCallActionRule rows.
+The trigger-to-action bridge - interprets PostCallActionRule rows.
 
 No rules engine, or anything like it, exists anywhere else in this
 codebase - every other conditional action here is a hardcoded Python
@@ -8,17 +8,24 @@ WhatsApp-unanswered -> call -> escalate chain is the closest analog).
 This is genuinely new infrastructure: a business picks a trigger and an
 action themselves, rather than a developer hardcoding the pairing.
 
-Called from the two places a call's outcome actually exists (confirmed,
-not unified into one taxonomy this round - see WebhookEventType's own
-comment): shared/channels/voice/outbound.py's outbound_hangup
-(voicemail/no_answer - no Call row exists for these at all) and
-shared/channels/voice/relay.py's _analyze_call (completed - a real Call
-row with an outcome).
+Named and tabled for its original scope (started as the voice-to-action
+bridge, "when a call ends this way, do that") but the mechanism was
+already generic - trigger_type is an arbitrary string, never FK-
+constrained to call.* specifically. Now called from every place a
+WebhookEventType already fires with a resolvable customer (ingest.py's
+message.received, booking.py's appointment events, the flow-completion
+path in webhooks.py, ...), not only the two call-outcome hook points.
+The table keeps its original name (shared/db/models/integrations.py's
+PostCallActionRule) rather than a rename migration for a naming-only
+gain - see services/api/routers/post_call_rules.py's own _VALID_TRIGGERS
+for the current, cross-channel list.
 
-v1 ships exactly two action types with real, working implementations -
-deliberately not an open-ended action language (arbitrary webhooks,
-arbitrary email templates). Adding a third is a new `elif`, not a schema
-change - action_config is already free-form JSON per rule.
+v1 shipped two action types; a business-configurable graph/canvas UI is
+explicitly a later round (Nikhil's own direction) - this stays a flat
+trigger -> action list, deliberately not an open-ended action language
+(arbitrary webhooks, arbitrary email templates). Adding a new action type
+is a new `elif`, not a schema change - action_config is already free-form
+JSON per rule.
 """
 
 import uuid
@@ -80,10 +87,23 @@ async def apply_rules(
                 from shared.ai import agent as agent_module
 
                 reason = (rule.action_config or {}).get("reason") or f"Post-call follow-up needed ({trigger_type})"
+                # via_automation=True: this escalation was itself raised by
+                # a rule, so it must not re-enter apply_rules for
+                # escalation.raised - a rule mapping that trigger back to
+                # create_escalation_task would otherwise cascade forever.
                 await agent_module.notify_escalation(
                     business_id, reason=reason, customer_id=customer_id, channel="voice", db=db,
+                    via_automation=True,
                 )
                 ran += 1
+
+            elif rule.action_type == "add_tag":
+                if await _add_tag(business_id, customer_id, rule.action_config or {}, db):
+                    ran += 1
+
+            elif rule.action_type == "send_flow":
+                if await _send_flow(business_id, customer_id, rule.action_config or {}, db):
+                    ran += 1
 
             else:
                 logger.warning("post_call_action_rule=%s has unrecognised action_type=%s", rule.id, rule.action_type)
@@ -91,3 +111,145 @@ async def apply_rules(
             logger.exception("post_call_action_rule=%s failed to apply", rule.id)
 
     return ran
+
+
+async def _add_tag(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """Same shape as crm.py's own add_tag endpoint, minus a human user - a
+    rule's own reasoning fills where that endpoint records who typed it."""
+    from shared.db.models import CustomerTag, TagStatus
+
+    label = str(config.get("tag") or "").strip().lower()
+    if not label:
+        logger.warning("add_tag rule for business=%s has no tag configured, skipping", business_id)
+        return False
+
+    existing = (
+        await db.execute(
+            select(CustomerTag).where(CustomerTag.customer_id == customer_id, CustomerTag.label == label)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.status = TagStatus.confirmed
+        return True
+
+    db.add(
+        CustomerTag(
+            business_id=business_id,
+            customer_id=customer_id,
+            label=label,
+            status=TagStatus.confirmed,
+            reasoning="Added automatically by an automation rule",
+        )
+    )
+    return True
+
+
+async def _send_flow(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """
+    Same mechanics as services/api/routers/flows.py's own send_flow
+    endpoint - resolve the flow, the customer's phone, the service window,
+    the WhatsApp connection, send, log. Duplicated rather than imported
+    because that endpoint is current_user-scoped (a human clicking Send);
+    this path has no user, only a business_id and a rule that fired.
+
+    Only ever sends a *published* flow - never draft/test mode, since
+    nobody is standing by as an app tester for a rule that fires
+    unattended.
+    """
+    import datetime as _dt
+
+    from shared.auth.encryption import decrypt
+    from shared.channels import ingest
+    from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError, within_service_window
+    from shared.db.models import (
+        Channel,
+        ChannelConnection,
+        ConnectionStatus,
+        CustomerIdentity,
+        Direction,
+        FlowSendLog,
+        FlowStatus,
+        IdentityKind,
+        Message,
+        WhatsAppFlow,
+    )
+
+    flow_id_raw = config.get("flow_id")
+    body = str(config.get("body") or "").strip()
+    screen = str(config.get("screen") or "").strip()
+    cta = str(config.get("cta") or "Open").strip()
+    if not (flow_id_raw and body and screen):
+        logger.warning("send_flow rule for business=%s is missing flow_id/body/screen, skipping", business_id)
+        return False
+    try:
+        flow_id = uuid.UUID(str(flow_id_raw))
+    except ValueError:
+        logger.warning("send_flow rule for business=%s has an invalid flow_id, skipping", business_id)
+        return False
+
+    flow = await db.get(WhatsAppFlow, flow_id)
+    if flow is None or flow.business_id != business_id or flow.status != FlowStatus.published:
+        logger.warning("send_flow rule for business=%s points at a missing/unpublished flow, skipping", business_id)
+        return False
+
+    identity = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.phone,
+            )
+        )
+    ).scalars().first()
+    if identity is None:
+        return False
+
+    last_inbound = (
+        await db.execute(
+            select(Message.occurred_at)
+            .where(Message.customer_id == customer_id, Message.direction == Direction.inbound)
+            .order_by(Message.occurred_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if not within_service_window(last_inbound):
+        return False
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.whatsapp,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        return False
+
+    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+    flow_token = str(uuid.uuid4())
+    try:
+        result = await client.send_flow_message(
+            identity, body, flow_id=flow.meta_flow_id, flow_token=flow_token,
+            flow_cta=cta, screen=screen, data=config.get("data") or {}, draft=False,
+        )
+    except WhatsAppError:
+        logger.exception("send_flow rule for business=%s failed to send", business_id)
+        return False
+
+    db.add(FlowSendLog(business_id=business_id, flow_id=flow.id, customer_id=customer_id, flow_token=flow_token))
+    await ingest.ingest(
+        business_id=business_id,
+        channel=Channel.whatsapp,
+        direction=Direction.outbound,
+        identity_kind=IdentityKind.phone,
+        identity_value=identity,
+        external_id=result.external_id,
+        text=body,
+        occurred_at=_dt.datetime.now(_dt.timezone.utc),
+        connection_id=connection.id,
+        raw={"flow_id": flow.meta_flow_id, "screen": screen, "flow_token": flow_token, "automation": True},
+        media={"kind": "flow_open", "flow_name": flow.name},
+        enqueue_analysis=False,
+        db=db,
+    )
+    return True

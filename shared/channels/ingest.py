@@ -208,6 +208,16 @@ async def ingest(
                 "occurred_at": occurred_at.isoformat(),
             },
         )
+        # Same call site drives the general trigger-to-action bridge - a
+        # business can wire "a message arrives" to an automation (add a
+        # tag, send a flow, ...) the same way it can subscribe an outbound
+        # webhook to it. A private customer's messages never reach this
+        # branch (see the enqueue_analysis guard below's own comment).
+        from shared.care import post_call_actions
+
+        await post_call_actions.apply_rules(
+            db, business_id=business_id, trigger_type="message.received", customer_id=customer.id,
+        )
 
     if enqueue_analysis and not customer.is_private:
         # A customer the owner marked private is stored but never analysed and

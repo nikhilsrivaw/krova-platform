@@ -1,10 +1,13 @@
 """
-Managing PostCallActionRule rows - the voice-to-action bridge's own CRUD.
+Managing PostCallActionRule rows - the trigger-to-action bridge's own CRUD.
 
 See shared/care/post_call_actions.py for the interpreter these rows
-drive. Deliberately a plain CRUD surface, no execution logic here at
-all - a rule only ever runs from the two dispatch points in
-shared/channels/voice/{outbound,relay}.py.
+drive, and its own docstring for why the table/router keep their
+original "post-call" name despite now covering every channel, not only
+voice. Deliberately a plain CRUD surface, no execution logic here at
+all - a rule only ever runs from wherever apply_rules() is actually
+called (see that module's docstring for the current list of dispatch
+points).
 """
 
 import uuid
@@ -22,8 +25,15 @@ _VALID_TRIGGERS = {
     WebhookEventType.call_completed.value,
     WebhookEventType.call_voicemail.value,
     WebhookEventType.call_no_answer.value,
+    WebhookEventType.message_received.value,
+    WebhookEventType.flow_completed.value,
+    WebhookEventType.appointment_booked.value,
+    WebhookEventType.appointment_cancelled.value,
+    WebhookEventType.escalation_raised.value,
+    WebhookEventType.queue_token_issued.value,
+    WebhookEventType.competitor_mentioned.value,
 }
-_VALID_ACTIONS = {"whatsapp_followup", "create_escalation_task"}
+_VALID_ACTIONS = {"whatsapp_followup", "create_escalation_task", "add_tag", "send_flow"}
 
 
 class PostCallRuleOut(BaseModel):
@@ -75,6 +85,18 @@ def _validate(body: PostCallRuleIn) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="action_config.message is required for whatsapp_followup",
         )
+    if body.action_type == "add_tag" and not (body.action_config or {}).get("tag"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="action_config.tag is required for add_tag",
+        )
+    if body.action_type == "send_flow":
+        missing = [k for k in ("flow_id", "body", "screen") if not (body.action_config or {}).get(k)]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"action_config.{missing[0]} is required for send_flow",
+            )
 
 
 @router.post("", response_model=PostCallRuleOut, status_code=status.HTTP_201_CREATED)

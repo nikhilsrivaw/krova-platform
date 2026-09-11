@@ -804,7 +804,8 @@ async def record_gap(business_id: uuid.UUID, gap: str, db: AsyncSession) -> None
 
 
 async def notify_escalation(
-    business_id: uuid.UUID, *, reason: str, customer_id: uuid.UUID | None, channel: str, db: AsyncSession
+    business_id: uuid.UUID, *, reason: str, customer_id: uuid.UUID | None, channel: str, db: AsyncSession,
+    via_automation: bool = False,
 ) -> None:
     """
     Tell whoever's listening (Slack, Teams, anything else a business has
@@ -845,3 +846,19 @@ async def notify_escalation(
         await db.flush()
     except Exception:
         logger.exception("escalation record failed business=%s", business_id)
+
+    # Same call site drives the general trigger-to-action bridge - skipped
+    # when this escalation was itself raised BY an automation rule
+    # (post_call_actions.py's "create_escalation_task" action), so a rule
+    # mapping escalation.raised -> create_escalation_task can never cascade
+    # into itself. Every other path here (a real escalation from the AI
+    # agent) fires normally.
+    if not via_automation and customer_id is not None:
+        try:
+            from shared.care import post_call_actions
+
+            await post_call_actions.apply_rules(
+                db, business_id=business_id, trigger_type="escalation.raised", customer_id=customer_id,
+            )
+        except Exception:
+            logger.exception("escalation automation-rule dispatch failed business=%s", business_id)
