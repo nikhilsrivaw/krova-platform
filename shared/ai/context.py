@@ -135,6 +135,9 @@ class AgentContext:
 
     def render(self) -> str:
         """Lay it out for the model, in the order a person would want it."""
+        return self.render_static() + "\n" + self.render_conversation()
+
+    def _static_lines(self) -> list[str]:
         lines: list[str] = [f"You are answering on behalf of {self.business_name}."]
 
         if self.dna_summary:
@@ -242,11 +245,27 @@ class AgentContext:
                 side = "You owe them" if c["direction"] == "we_owe" else "They owe you"
                 lines.append(f"- {side}: {c['description']}{amount}{due}")
 
-        lines.append("\n---\n\nThe conversation so far:")
+        return lines
+
+    def render_static(self) -> str:
+        """
+        Everything in render() except the conversation itself - the half
+        that cannot change while a single phone call is in progress.
+
+        Split out for the live voice path: a call re-renders this on every
+        turn, and on Anthropic it is also the half worth marking as a
+        cache breakpoint, since it is byte-identical from one turn to the
+        next while the conversation below it grows. render() itself is
+        unchanged and still what every text channel uses.
+        """
+        return "\n".join(self._static_lines())
+
+    def render_conversation(self) -> str:
+        """The growing half - see render_static."""
+        lines = ["\n---\n\nThe conversation so far:"]
         for turn in self.recent:
             speaker = "Customer" if turn["direction"] == "inbound" else "You"
             lines.append(f"[{turn['channel']}] {speaker}: {turn['text']}")
-
         return "\n".join(lines)
 
 

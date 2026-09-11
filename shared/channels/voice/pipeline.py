@@ -157,6 +157,9 @@ class CallPipeline:
     # are deliberately NOT protected: there the caller dialled in and is
     # listening, and talking over the greeting really does mean "skip it".
     _opening_protected: bool = False
+    # Built once per call, then reused with only its conversation half
+    # refreshed - see _call_context.
+    _context_cache: "agent_context.AgentContext | None" = field(default=None, repr=False)
     # The caller's own turn, for source_message_ids on a booking made from
     # it - an AI-mediated booking must cite the conversation that
     # authorised it, the same rule book.py enforces for every channel.
@@ -225,6 +228,48 @@ class CallPipeline:
 
         if is_final:
             await self._handle_utterance(text.strip())
+
+    async def _call_context(self) -> "agent_context.AgentContext":
+        """
+        The agent's context for this turn, built once per call rather than
+        once per turn.
+
+        agent_context.build() is a real pile of queries - the business, its
+        DNA, its whole knowledge base, this customer, their commitments,
+        plus a per-vertical query and, for a scheduling business, a
+        per-doctor availability lookup. None of that can change while one
+        phone call is in progress, but it was being re-run before every
+        single reply, on the one path where the caller is listening to
+        silence while it happens.
+
+        What does change each turn is the conversation, and the live call
+        already has that in memory (self.history) rather than needing to
+        read it back out of the database - the turns are appended there as
+        they happen, by _handle_utterance and _say_stream.
+
+        Deliberately not refreshed mid-call: a stale slot list is already
+        harmless, because booking.try_book_from_agent re-checks real
+        availability at the moment of booking rather than trusting whatever
+        the context said (see its own note on that), so the worst case is
+        the agent offering a time that booking then declines - exactly what
+        already happens when a slot is taken during a call.
+        """
+        if self._context_cache is None:
+            self._context_cache = await agent_context.build(
+                self.route.business_id, self.customer_id, self.db
+            )
+        # The turns as this call has actually heard them, in the shape
+        # AgentContext.recent already uses.
+        self._context_cache.recent = [
+            {
+                "direction": "inbound" if t.role == "caller" else "outbound",
+                "channel": "voice",
+                "text": t.text,
+            }
+            for t in self.turns
+            if t.text.strip()
+        ]
+        return self._context_cache
 
     async def _barge_in(self) -> None:
         """
@@ -320,7 +365,7 @@ class CallPipeline:
             return
 
         t_context = time.monotonic()
-        context = await agent_context.build(self.route.business_id, self.customer_id, self.db)
+        context = await self._call_context()
         t_stream_start = time.monotonic()
         if started_at is not None:
             logger.info(

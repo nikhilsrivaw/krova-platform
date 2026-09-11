@@ -348,15 +348,36 @@ async def stream_reply(agent_context: ctx.AgentContext):
         yield ReplyDone(gap=None, cost_paise=0)
         return
 
-    prompt = (
-        f"Today is {ctx.now_line()}.\n\n"
-        f"{agent_context.render()}\n\n"
-        "Decide how to handle the customer's most recent message."
-    )
-
+    # Split into a stable half and a growing half, with a cache breakpoint
+    # between them. On a live call this function runs once per turn, and
+    # everything above the conversation - the business's details, its
+    # knowledge base, this customer's history and commitments - is
+    # byte-identical every time, while only the conversation below it
+    # grows. Marking the stable half lets turns two onwards read it from
+    # Anthropic's cache instead of re-processing it, which is where a
+    # follow-up question's time-to-first-token actually goes when a
+    # business has a real knowledge base loaded. now_line() is a date with
+    # no clock time, so it stays inside the stable half without breaking
+    # the byte-for-byte match a cache hit needs.
     stream = client.stream_text(
         system=SYSTEM_STREAM,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Today is {ctx.now_line()}.\n\n{agent_context.render_static()}",
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"{agent_context.render_conversation()}\n\n"
+                        "Decide how to handle the customer's most recent message."
+                    ),
+                },
+            ],
+        }],
         speed="fast",
         max_tokens=300,
     )
