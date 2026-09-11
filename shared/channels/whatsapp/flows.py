@@ -58,6 +58,12 @@ class CreatedFlow:
     validation_errors: list[FlowValidationIssue] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class FlowStatusInfo:
+    status: str
+    validation_errors: list[FlowValidationIssue] = field(default_factory=list)
+
+
 def _explain(response: httpx.Response) -> FlowError:
     try:
         payload = response.json()
@@ -139,8 +145,12 @@ async def publish_flow(access_token: str, flow_id: str) -> None:
         raise _explain(response)
 
 
-async def get_flow_status(access_token: str, flow_id: str) -> dict:
-    """Read a flow's current status and validation state straight from Meta."""
+async def get_flow_status(access_token: str, flow_id: str) -> FlowStatusInfo:
+    """
+    Read a flow's current status and validation state straight from Meta -
+    for when KROVA's own copy might have drifted (Meta can re-review or
+    auto-deprecate a flow independently of anything a business did here).
+    """
     async with httpx.AsyncClient(timeout=25.0) as client:
         response = await client.get(
             f"{settings.graph_base_url}/{flow_id}",
@@ -149,7 +159,8 @@ async def get_flow_status(access_token: str, flow_id: str) -> dict:
         )
     if response.status_code != 200:
         raise _explain(response)
-    return response.json()
+    payload = response.json()
+    return FlowStatusInfo(status=payload.get("status", ""), validation_errors=_issues(payload.get("validation_errors")))
 
 
 async def register_public_key(access_token: str, phone_number_id: str, public_key_pem: str) -> None:

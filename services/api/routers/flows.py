@@ -208,6 +208,66 @@ async def publish_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbD
     return _out(flow)
 
 
+@router.post("/{flow_id}/deprecate", response_model=FlowOut)
+async def deprecate_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> FlowOut:
+    """
+    Retire a published flow - found genuinely unwired during a wiring
+    audit: flows_api.deprecate_flow (the Graph API call) has existed
+    since this router was first built, with no endpoint ever calling it.
+    Meta does not allow deleting a published flow outright; deprecating
+    is the only way to stop it being sendable again.
+    """
+    flow = await db.get(WhatsAppFlow, flow_id)
+    if flow is None or flow.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Flow not found")
+    if flow.status != FlowStatus.published:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Only a published flow can be deprecated")
+
+    connection = await _connection(current_user.business, db)
+    token = decrypt(connection.access_token)
+    try:
+        await flows_api.deprecate_flow(token, flow.meta_flow_id)
+    except flows_api.FlowError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    flow.status = FlowStatus.deprecated
+    await db.flush()
+    logger.info("flow deprecated business=%s meta_flow_id=%s", current_user.business, flow.meta_flow_id)
+    return _out(flow)
+
+
+@router.post("/{flow_id}/refresh", response_model=FlowOut)
+async def refresh_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> FlowOut:
+    """
+    Re-read a flow's real status and validation state from Meta - also
+    found unwired during a wiring audit (flows_api.get_flow_status
+    existed, nothing called it). Meta can re-review or auto-deprecate a
+    flow independently of anything done here, so KROVA's own copy can
+    drift without this - never trusted as current on its own otherwise.
+    """
+    flow = await db.get(WhatsAppFlow, flow_id)
+    if flow is None or flow.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Flow not found")
+
+    connection = await _connection(current_user.business, db)
+    token = decrypt(connection.access_token)
+    try:
+        info = await flows_api.get_flow_status(token, flow.meta_flow_id)
+    except flows_api.FlowError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    try:
+        flow.status = FlowStatus(info.status)
+    except ValueError:
+        logger.warning("flow refresh got unrecognised status %r flow=%s", info.status, flow.id)
+    flow.validation_errors = [
+        {"error_type": i.error_type, "message": i.message, "line_start": i.line_start, "line_end": i.line_end}
+        for i in info.validation_errors
+    ]
+    await db.flush()
+    return _out(flow)
+
+
 class LiveDataOut(BaseModel):
     enabled: bool
 
