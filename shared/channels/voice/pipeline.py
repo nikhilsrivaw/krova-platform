@@ -117,6 +117,14 @@ class CallPipeline:
     # instead, working through scripted_context.questions. Unlike "owner",
     # a scripted call has a real Customer and IS persisted through
     # ingest() normally - only the reply loop differs.
+    # An outbound call's opening line as a stream rather than a finished
+    # string. Set instead of opening_line wherever the line can be
+    # generated live (relay.py's adhoc branch today): the caller hears the
+    # first sentence while Claude is still writing the rest, instead of
+    # waiting out the whole generation in silence before synthesis even
+    # starts. opening_line stays for the paths that already know their
+    # line up front (a CallScript's fixed intro).
+    opening_stream: "Callable[[], asyncio.AsyncIterator[str]] | None" = None
     mode: str = "customer"
     # Set only alongside mode="scripted" - see shared/ai/context.py's
     # ScriptedContext.
@@ -164,10 +172,15 @@ class CallPipeline:
                 record=True,
             )
             return
-        if self.opening_line:
+        if self.opening_stream is not None or self.opening_line:
             self._opening_protected = True
             try:
-                await self._say_stream(_single_chunk(self.opening_line), record=True)
+                chunks = (
+                    self.opening_stream()
+                    if self.opening_stream is not None
+                    else _single_chunk(self.opening_line or "")
+                )
+                await self._say_stream(chunks, record=True)
             finally:
                 self._opening_protected = False
             return

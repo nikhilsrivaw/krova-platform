@@ -95,13 +95,23 @@ async def _customer_phone(customer_id: uuid.UUID, db: AsyncSession) -> str | Non
     return result.scalars().first()
 
 
-async def build_context(recipient_id: uuid.UUID, db: AsyncSession) -> OutboundCallContext | None:
+async def build_context(
+    recipient_id: uuid.UUID, db: AsyncSession, *, skip_opener: bool = False,
+) -> OutboundCallContext | None:
     """
     Called from /voice/outbound-answer once a human picks up - resolves
     the route and drafts the opening line from the campaign's own
     objective. Returns None for anything that means this call should not
     proceed (recipient/campaign vanished, no phone on file, voice
     connection gone) - the caller hangs up cleanly rather than guessing.
+
+    `skip_opener` returns everything except the drafted opening line. The
+    answer webhook only ever used this to decide "can this call proceed at
+    all", then threw the opener away and let relay.py's stream() build the
+    whole thing over again a second later - two full context builds and
+    two Claude calls per call, back to back, with the person who just
+    picked up listening to silence through both. The webhook now skips the
+    drafting half; stream(), which actually speaks the line, still does it.
     """
     recipient = await db.get(CallCampaignRecipient, recipient_id)
     if recipient is None:
@@ -144,6 +154,11 @@ async def build_context(recipient_id: uuid.UUID, db: AsyncSession) -> OutboundCa
             ),
         )
 
+    if skip_opener:
+        return OutboundCallContext(
+            route=route, customer_id=recipient.customer_id, customer_phone=phone, opening_line="",
+        )
+
     context = await agent_context.build(campaign.business_id, recipient.customer_id, db)
     opener = await outbound_opener.draft(context, reason=campaign.objective)
     if opener.cost_paise:
@@ -169,6 +184,7 @@ async def build_context(recipient_id: uuid.UUID, db: AsyncSession) -> OutboundCa
 
 async def build_adhoc_context(
     business_id: uuid.UUID, customer_id: uuid.UUID, reason: str, db: AsyncSession,
+    *, skip_opener: bool = False,
 ) -> OutboundCallContext | None:
     """
     build_context's sibling for a call with no CallCampaign behind it - a
@@ -185,6 +201,13 @@ async def build_adhoc_context(
     phone = await _customer_phone(customer_id, db)
     if not phone:
         return None
+
+    # See build_context's own skip_opener note - the answer webhook only
+    # needs to know this call can proceed, not what to say on it.
+    if skip_opener:
+        return OutboundCallContext(
+            route=route, customer_id=customer_id, customer_phone=phone, opening_line="",
+        )
 
     context = await agent_context.build(business_id, customer_id, db)
     opener = await outbound_opener.draft(context, reason=reason)
@@ -378,7 +401,7 @@ async def outbound_answer(
         remember(str(call_uuid), to_number=str(to_number or ""), from_number=str(from_number or ""))
 
     async with AsyncSessionLocal() as db:
-        context = await build_context(recipient_id, db)
+        context = await build_context(recipient_id, db, skip_opener=True)
         await db.commit()
 
     if context is None:
@@ -529,7 +552,7 @@ async def adhoc_answer(
         remember(str(call_uuid), to_number=str(to_number or ""), from_number=str(from_number or ""))
 
     async with AsyncSessionLocal() as db:
-        context = await build_adhoc_context(business_id, customer_id, reason, db)
+        context = await build_adhoc_context(business_id, customer_id, reason, db, skip_opener=True)
         await db.commit()
 
     if context is None:

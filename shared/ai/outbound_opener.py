@@ -48,6 +48,11 @@ class Opener:
     cost_paise: int
 
 
+# The most a real opener can be before it stops looking like one - see
+# draft()'s own fallback for why this matters.
+_MAX_OPENER_CHARS = 400
+
+
 async def draft(agent_context: ctx.AgentContext, *, reason: str) -> Opener:
     """
     Draft the opening line for an outbound call.
@@ -80,7 +85,7 @@ async def draft(agent_context: ctx.AgentContext, *, reason: str) -> Opener:
     # instead - which, with no check here, got spoken aloud to the person
     # who picked up, verbatim. A generic, honest fallback is always better
     # than reading the model's own reasoning to a real caller.
-    if not text or len(text) > 400:
+    if not text or len(text) > _MAX_OPENER_CHARS:
         if text:
             logger.warning(
                 "outbound opener drafting returned something opener-shaped text "
@@ -92,3 +97,81 @@ async def draft(agent_context: ctx.AgentContext, *, reason: str) -> Opener:
         text = f"Hi, this is {agent_context.business_name} calling."
 
     return Opener(text=text, cost_paise=completion.cost_paise)
+
+
+# Same split points agent.py's own streamed replies use - "did a sentence
+# just end" is all TTS needs to start speaking one while the next is still
+# being written.
+_SENTENCE_END = (". ", "! ", "? ", ".\n", "!\n", "?\n")
+
+
+async def draft_stream(
+    agent_context: ctx.AgentContext, *, reason: str, cost_sink: dict | None = None,
+):
+    """
+    draft()'s streaming twin, for the one place a person is listening to
+    silence while this runs: the opening line of a live outbound call.
+
+    draft() waits for Claude's whole response before TTS sees a single
+    character, so the caller waits out the full generation (measured
+    around 1.5-2s) before synthesis has even started. This yields each
+    finished sentence as it arrives instead, so the first one reaches
+    Sarvam while the rest is still being written - the same trick
+    agent.py's stream_reply already uses for every other spoken turn, and
+    the reason a reply mid-call feels quicker than the opener that
+    precedes it did.
+
+    Yields spoken text pieces. `cost_sink`, when given, has its "paise"
+    key set once the stream is fully consumed - the same shape
+    pipeline.py's own reply_cost dict uses, since an async generator
+    cannot hand back a value alongside its yields and this call still has
+    to reach the per-tenant cost ledger like every other.
+    """
+    prompt = (
+        f"Today is {ctx.now_line()}.\n\n"
+        f"{agent_context.render()}\n\n"
+        f"Reason this call was placed: {reason}\n\n"
+        "Write the opening line."
+    )
+
+    stream = client.stream_text(
+        system=SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+        speed="fast",
+        max_tokens=150,
+    )
+
+    buffer = ""
+    spoken = 0
+    async for delta in stream:
+        buffer += delta
+        while True:
+            cut = -1
+            for marker in _SENTENCE_END:
+                idx = buffer.find(marker)
+                if idx != -1 and (cut == -1 or idx < cut):
+                    cut = idx + len(marker)
+            if cut == -1:
+                break
+            piece = buffer[:cut].strip()
+            buffer = buffer[cut:]
+            if piece:
+                spoken += len(piece)
+                # Same guard draft() applies to a whole response, enforced
+                # as it streams: a decline/explanation is far longer than
+                # any real opener, and must never reach the caller's ear.
+                if spoken > _MAX_OPENER_CHARS:
+                    logger.warning(
+                        "outbound opener stream ran past %d chars - likely a "
+                        "decline/explanation, cutting it off",
+                        _MAX_OPENER_CHARS,
+                    )
+                    return
+                yield piece
+
+    tail = buffer.strip()
+    if tail and spoken + len(tail) <= _MAX_OPENER_CHARS:
+        yield tail
+
+    if cost_sink is not None:
+        cost_sink["paise"] = stream.cost_paise

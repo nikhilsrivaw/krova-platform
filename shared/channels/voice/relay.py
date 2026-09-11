@@ -36,6 +36,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import call_summary
+from shared.ai import context as agent_context
+from shared.ai import outbound_opener
 from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels.voice import outbound, plivo_client, sarvam
@@ -455,6 +457,8 @@ async def stream(
 
                 async with AsyncSessionLocal() as db:
                     opening_line: str | None = None
+                    opening_stream = None
+                    opener_cost: dict = {"paise": 0}
                     outbound_customer_id: uuid.UUID | None = None
                     direction = Direction.inbound
                     pipeline_mode = "customer"
@@ -493,8 +497,12 @@ async def stream(
                         # commitment_deadline_calls.py today) - same shape
                         # as the campaign branch above, minus the
                         # CallCampaignRecipient lookup.
+                        # skip_opener: the line itself is streamed below
+                        # rather than drafted-then-handed-over, so this only
+                        # needs the route/phone/customer half.
                         outbound_context = await outbound.build_adhoc_context(
-                            uuid.UUID(business_id), uuid.UUID(customer_id), reason or "", db
+                            uuid.UUID(business_id), uuid.UUID(customer_id), reason or "", db,
+                            skip_opener=True,
                         )
                         if outbound_context is None:
                             logger.warning(
@@ -506,9 +514,32 @@ async def stream(
                             return
                         route = outbound_context.route
                         from_number = outbound_context.customer_phone
-                        opening_line = outbound_context.opening_line
                         outbound_customer_id = outbound_context.customer_id
                         direction = Direction.outbound
+                        adhoc_reason = reason or ""
+                        adhoc_business_id = uuid.UUID(business_id)
+                        adhoc_customer_id = uuid.UUID(customer_id)
+
+                        def _adhoc_opening():
+                            """
+                            Built here rather than inside build_adhoc_context
+                            so the caller hears sentence one while Claude is
+                            still writing sentence two - the whole reason
+                            draft_stream exists. Cost lands in the ledger
+                            below, once the stream has been consumed.
+                            """
+                            async def _gen():
+                                context = await agent_context.build(
+                                    adhoc_business_id, adhoc_customer_id, db
+                                )
+                                async for piece in outbound_opener.draft_stream(
+                                    context, reason=adhoc_reason, cost_sink=opener_cost,
+                                ):
+                                    yield piece
+
+                            return _gen()
+
+                        opening_stream = _adhoc_opening
                     else:
                         route = await resolve(to_number or "", db)
                         if route is None:
@@ -591,6 +622,7 @@ async def stream(
                         db=db,
                         call_row_id=call_row_id,
                         opening_line=opening_line,
+                        opening_stream=opening_stream,
                         customer_id=outbound_customer_id,
                         detected_language=known_language,
                         mode=pipeline_mode,
@@ -626,6 +658,20 @@ async def stream(
                     # logic works unchanged once the greeting is just another
                     # tracked turn.
                     pipeline._reply_task = asyncio.create_task(pipeline.start())
+
+                    if opening_stream is not None and call_row_id is not None:
+                        # The streamed opener prices itself only once fully
+                        # consumed (see draft_stream's cost_sink), so this
+                        # waits on the same task rather than reading a value
+                        # that is still 0 - detached, so nothing here delays
+                        # the STT connect below.
+                        cost_task = asyncio.create_task(
+                            _record_opener_cost(
+                                pipeline._reply_task, opener_cost, route.business_id, call_row_id,
+                            )
+                        )
+                        _cleanup_tasks.add(cost_task)
+                        cost_task.add_done_callback(_cleanup_tasks.discard)
 
                     stt_ws = await _connect_sarvam(sarvam.stt_connect_url(language="auto"))
                     asyncio.create_task(_pump_transcripts(stt_ws, pipeline, prewarm_tts))
@@ -705,6 +751,47 @@ async def stream(
         )
         _cleanup_tasks.add(analytics_task)
         analytics_task.add_done_callback(_cleanup_tasks.discard)
+
+
+async def _record_opener_cost(
+    opening_task: asyncio.Task, cost: dict, business_id: uuid.UUID, call_row_id: uuid.UUID,
+) -> None:
+    """
+    Price a streamed outbound opener once it has actually finished.
+
+    Its own generation cost is only known after the stream is consumed, and
+    the stream is consumed by the greeting task - so this waits on that
+    task rather than reading a number that is still zero. Cancelled (the
+    caller barged in, or hung up mid-opener) is a normal outcome, not an
+    error: whatever was generated up to that point is still billable and
+    still recorded.
+    """
+    try:
+        await opening_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("opening line task failed before its cost could be recorded")
+
+    paise = int(cost.get("paise") or 0)
+    if not paise:
+        return
+    try:
+        async with AsyncSessionLocal() as db:
+            usage.record(
+                business_id=business_id,
+                event_type=UsageEventType.ai_reply_generated,
+                channel="voice",
+                quantity=1,
+                unit="call",
+                krova_cost_paise=paise,
+                source_type="call",
+                source_id=call_row_id,
+                db=db,
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("could not record outbound opener cost call=%s", call_row_id)
 
 
 async def _pump_transcripts(stt_ws, pipeline: CallPipeline, prewarm_tts) -> None:
