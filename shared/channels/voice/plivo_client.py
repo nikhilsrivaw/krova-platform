@@ -235,7 +235,7 @@ async def make_call(
     to_number: str,
     answer_url: str,
     hangup_url: str,
-    machine_detection: str = "hangup",
+    machine_detection: str | None = None,
     machine_detection_time: int = 5000,
 ) -> str:
     """
@@ -247,11 +247,21 @@ async def make_call(
     correlate later belongs in answer_url/hangup_url's own query string,
     not something stashed against this return value.
 
-    machine_detection="hangup" (synchronous mode, the default) makes
-    Plivo detect an answering machine BEFORE ever calling answer_url and
-    hang up immediately if it finds one - simpler than async detection,
-    at the cost of a few seconds of upfront delay, and guarantees the
-    agent never starts talking into a voicemail.
+    machine_detection is off by default, and that default was measured,
+    not assumed. With it set to "hangup"/"true" Plivo holds the call for
+    machine_detection_time (5000ms default) analysing the audio before it
+    invokes answer_url at all - on a real call, Plivo's own CDR put
+    answer_time at 17:50:18 and our answer webhook did not fire until
+    17:50:24.2, a 6.2 second gap in which our code had not been told the
+    call existed and the person who picked up heard nothing. Every
+    proactive and campaign call was paying that, on top of the ~2s the
+    agent itself needs to speak.
+
+    The trade it buys back - never talking into a voicemail - is real but
+    much cheaper to lose than six seconds of dead air on every answered
+    call: a caller hangs up on silence long before an answering machine
+    costs anyone anything. A caller that opts back in should use async
+    detection (machine_detection_url) rather than this blocking form.
     """
     url = f"{BASE_URL}/Account/{auth_id}/Call/"
     payload = {
@@ -261,9 +271,10 @@ async def make_call(
         "answer_method": "POST",
         "hangup_url": hangup_url,
         "hangup_method": "POST",
-        "machine_detection": machine_detection,
-        "machine_detection_time": machine_detection_time,
     }
+    if machine_detection:
+        payload["machine_detection"] = machine_detection
+        payload["machine_detection_time"] = machine_detection_time
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         res = await client.post(url, auth=httpx.BasicAuth(auth_id, auth_token), json=payload)
 
