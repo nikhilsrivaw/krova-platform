@@ -657,6 +657,17 @@ async def stream(
                     # real call traced back to. Barge-in's existing cancel
                     # logic works unchanged once the greeting is just another
                     # tracked turn.
+                    # Open the TTS socket now, not when speak() first needs
+                    # it. Until this, prewarm_tts only ever fired on a
+                    # finalised transcript - i.e. from the caller's SECOND
+                    # turn onwards - so the one turn that most needs it, the
+                    # very first thing anyone hears, was the only turn that
+                    # always paid the full handshake (0.92-1.67s measured,
+                    # occasionally 3-5s) in series. Started before
+                    # pipeline.start() so the handshake overlaps Claude
+                    # drafting the opening line instead of following it.
+                    prewarm_tts()
+
                     pipeline._reply_task = asyncio.create_task(pipeline.start())
 
                     if opening_stream is not None and call_row_id is not None:
