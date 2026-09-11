@@ -116,5 +116,13 @@ def verify(
 
     candidates = [c.strip() for c in signature.split(",")]
     if not any(hmac.compare_digest(expected, c) for c in candidates):
-        logger.warning("plivo signature mismatch - possible spoofed request")
+        # TEMPORARY diagnostic for the live-call signature mismatch being
+        # investigated this session - logs the exact inputs (never the
+        # auth token) so the real mismatch can be seen instead of guessed
+        # at. Remove once resolved.
+        logger.warning(
+            "plivo signature mismatch - possible spoofed request. "
+            "method=%s uri=%r nonce=%r params=%r expected=%r received=%r",
+            method, uri, nonce, params, expected, candidates,
+        )
         raise InvalidSignature("Signature does not match")
