@@ -29,5 +29,43 @@
     "Any request for legal advice beyond what was already told to the client",
     "Any complaint about how the matter is being handled",
     "Any deadline or hearing date the agent cannot verify against the case record"
+  ],
+  "flow_templates": [
+    {
+      "key": "case_status_live",
+      "name": "Check my case status (Beta - live data)",
+      "description": "No form to fill in - opens straight to the client's real case status and next hearing date, pulled live from the case record. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA.",
+      "categories": ["CUSTOMER_SUPPORT"],
+      "cta": "Check status",
+      "body": "Here's where your case stands:",
+      "screen": "CASE_STATUS",
+      "flow_json": {
+        "version": "7.0",
+        "screens": [
+          {
+            "id": "CASE_STATUS",
+            "title": "Your case",
+            "terminal": true,
+            "data": {
+              "message": {
+                "type": "string",
+                "__example__": "Property dispute - Sharma vs. Sharma\n\nStatus: Active\nNext hearing: Mon 20 Jan, 11:00 AM"
+              }
+            },
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {"type": "TextBody", "text": "${data.message}"},
+                {
+                  "type": "Footer",
+                  "label": "Close",
+                  "on-click-action": {"name": "complete", "payload": {}}
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
   ]
 }

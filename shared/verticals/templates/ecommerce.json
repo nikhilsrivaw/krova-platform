@@ -77,6 +77,81 @@
           }
         ]
       }
+    },
+    {
+      "key": "track_order_live",
+      "name": "Track my order (Beta - live data)",
+      "description": "Fixes track_order's own weak point: instead of just capturing the order number for the agent to interpret later, this looks the order up for real (order_sync data) and shows the actual status and tracking number immediately - no waiting on a reply, no risk of the agent misreading the order data. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA.",
+      "categories": ["CUSTOMER_SUPPORT"],
+      "cta": "Check status",
+      "body": "Share your order number and I'll check it:",
+      "screen": "TRACK_ORDER_LIVE",
+      "flow_json": {
+        "version": "7.0",
+        "screens": [
+          {
+            "id": "TRACK_ORDER_LIVE",
+            "title": "Track your order",
+            "terminal": false,
+            "data": {
+              "error_message": {"type": "string", "__example__": ""}
+            },
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "TextBody",
+                  "text": "${data.error_message}",
+                  "visible": "${data.error_message}"
+                },
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "TextInput",
+                      "name": "order_number",
+                      "label": "Order number",
+                      "required": true,
+                      "helper-text": "Found in your order confirmation"
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Check status",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {"order_number": "${form.order_number}"}
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "ORDER_STATUS",
+            "title": "Your order",
+            "terminal": true,
+            "data": {
+              "message": {
+                "type": "string",
+                "__example__": "Order #1042\n\nStatus: Shipped\nTracking: AWB123456789 (Delhivery)"
+              }
+            },
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {"type": "TextBody", "text": "${data.message}"},
+                {
+                  "type": "Footer",
+                  "label": "Close",
+                  "on-click-action": {"name": "complete", "payload": {}}
+                }
+              ]
+            }
+          }
+        ]
+      }
     }
   ]
 }

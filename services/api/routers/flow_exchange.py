@@ -9,14 +9,23 @@ bearer token - Meta signs the app-level request too
 (X-Hub-Signature-256), reusing shared/channels/whatsapp/signature.py
 exactly as the inbound message webhook already does.
 
-Currently wired for exactly one real capability: real availability for a
-"book a follow-up" style flow (see clinic.json's book_followup_live
-template) - screen 1 collects name/phone/reason and data_exchanges for
-real open slots (shared/scheduling/availability.open_slots, the same
-function voice/WhatsApp text booking already uses); screen 2 shows only
-slots that are actually open, and its own data_exchange performs the
-real booking (shared/scheduling/booking.book) before returning SUCCESS -
-never a blind "complete" trusting the client's own claim.
+Two real capabilities wired so far:
+
+  Live booking (clinic's book_followup_live, real_estate's
+  schedule_viewing_live) - screen 1 collects a few fields and
+  data_exchanges for real open slots (shared/scheduling/
+  availability.open_slots, the same function voice/WhatsApp text
+  booking already uses); screen 2 shows only slots that are actually
+  open, and its own data_exchange performs the real booking
+  (shared/scheduling/booking.book) before returning SUCCESS - never a
+  blind "complete" trusting the client's own claim.
+
+  Live case status (law_firm's case_status_live) - no input at all,
+  populated entirely from Meta's own INIT call (fired the instant the
+  flow opens) against the real Case row for whoever it was sent to -
+  the one thing this vertical's own known_gaps already calls out
+  ("Case status not yet recorded by the lawyer") as something the AI
+  must never guess at.
 
 A data_exchange booking has no natural source Message to cite (the
 customer never wrote a message, they filled a form) - source_message_ids
@@ -43,6 +52,8 @@ from shared.channels.whatsapp.signature import InvalidSignature
 from shared.channels.whatsapp.signature import verify as verify_signature
 from shared.db.models import (
     Business,
+    Case,
+    CaseStatus,
     Channel,
     ChannelConnection,
     ConnectionStatus,
@@ -53,6 +64,7 @@ from shared.db.models import (
     FlowSendLog,
     IdentityKind,
     IntakeChannel,
+    Order,
     Property,
     WhatsAppFlow,
 )
@@ -138,7 +150,12 @@ async def exchange(
         if action == "ping":
             reply = {"data": {"status": "active"}}
         elif action == "INIT":
-            reply = {"screen": (flow.flow_json.get("screens") or [{}])[0].get("id", ""), "data": {}}
+            try:
+                reply = await _handle_init(flow, body, db)
+            except Exception:
+                logger.exception("flow exchange INIT handling failed flow=%s", flow_id)
+                entry_id = (flow.flow_json.get("screens") or [{}])[0].get("id", "")
+                reply = {"screen": entry_id, "data": {}}
         elif action == "data_exchange":
             try:
                 reply = await _handle_data_exchange(flow, connection, body, db)
@@ -154,7 +171,112 @@ async def exchange(
         return Response(content=encrypted, media_type="text/plain")
 
 
+_CASE_STATUS_LABEL = {"intake": "Being reviewed", "active": "Active", "on_hold": "On hold", "closed": "Closed"}
+
+
+async def _handle_init(flow, body: dict, db) -> dict:
+    """
+    Meta's INIT call, fired the instant the flow opens - the only place a
+    pure read-only, no-input flow (case_status_live) ever gets its data
+    from, since it has nothing for a data_exchange Footer to submit.
+
+    Every other flow template has a real, static entry screen and needs
+    nothing here - same empty-data reply as before this function existed.
+    """
+    entry_id = (flow.flow_json.get("screens") or [{}])[0].get("id", "")
+    if entry_id != "CASE_STATUS":
+        return {"screen": entry_id, "data": {}}
+
+    flow_token = body.get("flow_token")
+    send_log = (
+        await db.execute(
+            select(FlowSendLog).where(FlowSendLog.business_id == flow.business_id, FlowSendLog.flow_token == flow_token)
+        )
+    ).scalars().first()
+    if send_log is None:
+        return {"screen": entry_id, "data": {"message": "We couldn't load your case - message us directly and we'll help."}}
+
+    case = (
+        await db.execute(
+            select(Case)
+            .where(Case.business_id == flow.business_id, Case.customer_id == send_log.customer_id, Case.status != CaseStatus.closed)
+            .order_by(Case.created_at.desc())
+        )
+    ).scalars().first()
+    if case is None:
+        return {
+            "screen": entry_id,
+            "data": {"message": "We don't have an open matter on file for you yet - message us directly and we'll look into it."},
+        }
+
+    business = await db.get(Business, flow.business_id)
+    next_hearing = "Not yet scheduled"
+    if case.next_hearing_at and business is not None:
+        next_hearing = case.next_hearing_at.astimezone(ZoneInfo(business.timezone)).strftime("%a %d %b, %I:%M %p")
+
+    status_value = case.status.value if hasattr(case.status, "value") else str(case.status)
+    message = (
+        f"{case.title}\n\n"
+        f"Status: {_CASE_STATUS_LABEL.get(status_value, status_value)}\n"
+        f"Next hearing: {next_hearing}"
+    )
+    return {"screen": entry_id, "data": {"message": message}}
+
+
 async def _handle_data_exchange(flow, connection: ChannelConnection, body: dict, db) -> dict:
+    """Routes by entry screen - each flow 'kind' owns a distinct screen id,
+    so this is the one place that decides which real data source a given
+    flow's data_exchange calls actually mean."""
+    screen = body.get("screen")
+    if screen in ("TRACK_ORDER_LIVE", "ORDER_STATUS"):
+        return await _handle_track_order(flow, body, db)
+    return await _handle_booking_exchange(flow, connection, body, db)
+
+
+async def _handle_track_order(flow, body: dict, db) -> dict:
+    """
+    ecommerce's track_order_live - a single round trip, no booking
+    machinery at all. Scoped to (business_id, customer_id, order_number)
+    together, never order_number alone, so a guessed or mistyped number
+    can never surface a different customer's order.
+    """
+    data = body.get("data") or {}
+    flow_token = body.get("flow_token")
+    order_number = str(data.get("order_number") or "").strip()
+
+    send_log = (
+        await db.execute(
+            select(FlowSendLog).where(FlowSendLog.business_id == flow.business_id, FlowSendLog.flow_token == flow_token)
+        )
+    ).scalars().first()
+    if send_log is None:
+        return {"data": {"error_message": "This form has expired - ask to be sent it again."}}
+    if not order_number:
+        return {"screen": "TRACK_ORDER_LIVE", "data": {"error_message": "Please enter your order number."}}
+
+    order = (
+        await db.execute(
+            select(Order).where(
+                Order.business_id == flow.business_id,
+                Order.customer_id == send_log.customer_id,
+                Order.order_number == order_number,
+            )
+        )
+    ).scalars().first()
+    if order is None:
+        return {
+            "screen": "TRACK_ORDER_LIVE",
+            "data": {"error_message": "We couldn't find that order number on your account - please check and try again."},
+        }
+
+    status_value = order.status.value if hasattr(order.status, "value") else str(order.status)
+    lines = [f"Order {order.order_number}", f"Status: {status_value.replace('_', ' ').title()}"]
+    if order.tracking_number:
+        lines.append(f"Tracking: {order.tracking_number}" + (f" ({order.carrier})" if order.carrier else ""))
+    return {"screen": "ORDER_STATUS", "data": {"message": "\n".join(lines)}}
+
+
+async def _handle_booking_exchange(flow, connection: ChannelConnection, body: dict, db) -> dict:
     screen = body.get("screen")
     data = body.get("data") or {}
     flow_token = body.get("flow_token")

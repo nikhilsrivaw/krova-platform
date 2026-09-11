@@ -27,5 +27,76 @@
     "Any allergy question",
     "Any complaint about food or service",
     "Any party booking above the size in the business details"
+  ],
+  "flow_templates": [
+    {
+      "key": "book_table",
+      "name": "Book a table",
+      "description": "Structured reservation request - name, party size, date, and meal. Deliberately NOT a live-availability check: this vertical has no real table/seating system on file (see this file's own known_gaps - 'Live table availability, unless the business details include it'), so the request lands for staff to confirm, the same as a static booking request anywhere else in this product.",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "cta": "Request",
+      "body": "Let's get your table booked:",
+      "screen": "BOOK_TABLE",
+      "flow_json": {
+        "version": "5.0",
+        "screens": [
+          {
+            "id": "BOOK_TABLE",
+            "title": "Book a table",
+            "terminal": true,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
+                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "party_size",
+                      "label": "Party size",
+                      "required": true,
+                      "data-source": [
+                        {"id": "2", "title": "2 people"},
+                        {"id": "3-4", "title": "3-4 people"},
+                        {"id": "5-6", "title": "5-6 people"},
+                        {"id": "7+", "title": "7 or more"}
+                      ]
+                    },
+                    {"type": "DatePicker", "name": "preferred_date", "label": "Preferred date", "required": true},
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "meal",
+                      "label": "Lunch or dinner?",
+                      "required": true,
+                      "data-source": [
+                        {"id": "lunch", "title": "Lunch"},
+                        {"id": "dinner", "title": "Dinner"}
+                      ]
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Request table",
+                      "on-click-action": {
+                        "name": "complete",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "party_size": "${form.party_size}",
+                          "preferred_date": "${form.preferred_date}",
+                          "meal": "${form.meal}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
   ]
 }
