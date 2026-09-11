@@ -68,6 +68,45 @@ SendAudio = Callable[[bytes], Awaitable[None]]
 SendClear = Callable[[], Awaitable[None]]
 
 
+# How long the partials must stop growing before a reply is speculated
+# on. Short enough to land well inside Sarvam's own 500ms silence window,
+# long enough that a caller drawing breath mid-sentence rearms it rather
+# than burning a generation per word.
+_SPECULATION_PAUSE_SECONDS = 0.2
+_SPECULATION_ENABLED = True
+
+_PUNCTUATION = str.maketrans("", "", ".,!?;:'\"-–—")
+
+
+def _normalise_for_match(text: str) -> str:
+    """Compare transcripts the way a listener would - words, not punctuation."""
+    return " ".join(text.lower().translate(_PUNCTUATION).split())
+
+
+async def _events_from_queue(queue: "asyncio.Queue"):
+    """
+    Replay a speculative generation as the same event stream stream_reply
+    produces, so _reply cannot tell the difference.
+
+    Pieces already generated come straight out; the rest arrive as they
+    are written. None is the producer's end marker.
+    """
+    while True:
+        event = await queue.get()
+        if event is None:
+            return
+        yield event
+
+
+@dataclass(slots=True)
+class _Speculation:
+    """A reply generated against a partial transcript, waiting to be confirmed."""
+
+    text: str
+    queue: "asyncio.Queue"
+    task: asyncio.Task
+
+
 async def _single_chunk(text: str):
     """Wrap one fixed string (the greeting) as the one-item stream speak() expects."""
     yield text
@@ -157,6 +196,8 @@ class CallPipeline:
     # are deliberately NOT protected: there the caller dialled in and is
     # listening, and talking over the greeting really does mean "skip it".
     _opening_protected: bool = False
+    _speculation: "_Speculation | None" = field(default=None, repr=False)
+    _speculation_timer: asyncio.Task | None = field(default=None, repr=False)
     # Built once per call, then reused with only its conversation half
     # refreshed - see _call_context.
     _context_cache: "agent_context.AgentContext | None" = field(default=None, repr=False)
@@ -228,6 +269,116 @@ class CallPipeline:
 
         if is_final:
             await self._handle_utterance(text.strip())
+        else:
+            self._arm_speculation(text.strip())
+
+    def _arm_speculation(self, partial: str) -> None:
+        """
+        Start writing a reply to a partial transcript that has stopped
+        growing, before the STT declares the turn over.
+
+        Sarvam holds a turn open for silence_duration_ms (500ms) after the
+        caller actually stops talking, and only then emits speech_end and
+        a final transcript - measured 74ms apart, so essentially all of
+        that half second is dead time we cannot see from here. Meanwhile
+        Claude's own time to first token is around 700ms. Run end to end
+        that is roughly 1.2s of silence before a single word is spoken
+        back; started against the last partial instead, most of the
+        generation happens inside the window the caller is already
+        waiting through.
+
+        The safety property that makes this sound rather than reckless:
+        a speculative reply is never spoken. It is generated into a queue
+        and only played once the final transcript arrives and matches what
+        was speculated on - see _handle_utterance. A mismatch (the caller
+        carried on talking) throws the work away and answers the real
+        thing, costing a wasted Haiku call and nothing else.
+        """
+        if not _SPECULATION_ENABLED or self.mode != "customer":
+            return
+        if self.customer_id is None or not partial:
+            return
+        if self._speculation_timer is not None:
+            self._speculation_timer.cancel()
+        self._speculation_timer = asyncio.create_task(self._speculate_after_pause(partial))
+
+    async def _speculate_after_pause(self, partial: str) -> None:
+        """
+        Wait out a short pause in the partials, then speculate on the last
+        one. Rearmed by every new partial, so a caller still mid-sentence
+        keeps pushing this back and only the text they actually finished
+        on is ever generated against - one wasted call per turn at worst,
+        not one per word.
+        """
+        try:
+            await asyncio.sleep(_SPECULATION_PAUSE_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+        self._discard_speculation()
+        queue: asyncio.Queue = asyncio.Queue()
+        self._speculation = _Speculation(
+            text=partial,
+            queue=queue,
+            task=asyncio.create_task(self._run_speculation(partial, queue)),
+        )
+
+    async def _run_speculation(self, partial: str, queue: asyncio.Queue) -> None:
+        """
+        Generate against a partial into a queue, speaking nothing.
+
+        Pushes the same pieces _reply's own speaking path consumes, then a
+        None sentinel so a reader knows the reply ended rather than
+        stalled. Any failure is swallowed into the sentinel too: a
+        speculative miss must never surface as an error on a live call,
+        it just means the real path does the work itself.
+        """
+        try:
+            self.history.append({"role": "user", "content": partial})
+            try:
+                context = await self._call_context()
+                context.recent = context.recent + [
+                    {"direction": "inbound", "channel": "voice", "text": partial}
+                ]
+                events = agent_module.stream_reply(context)
+                async for ev in events:
+                    await queue.put(ev)
+            finally:
+                self.history.pop()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("speculative reply failed - the real turn will generate its own")
+        finally:
+            await queue.put(None)
+
+    def _discard_speculation(self) -> None:
+        if self._speculation is not None:
+            self._speculation.task.cancel()
+            self._speculation = None
+
+    def _take_speculation(self, final_text: str) -> "_Speculation | None":
+        """
+        The in-flight speculation, if it was written against what the
+        caller actually ended up saying.
+
+        Compared on normalised text rather than exactly: an STT's final
+        transcript routinely differs from its last partial only by
+        punctuation or capitalisation, and throwing away a good generation
+        over a comma would defeat the point. Anything more different than
+        that is a real mismatch and is discarded.
+        """
+        spec, self._speculation = self._speculation, None
+        if spec is None:
+            return None
+        if _normalise_for_match(spec.text) != _normalise_for_match(final_text):
+            logger.info(
+                "speculative reply discarded - caller said something else (%r vs %r)",
+                spec.text, final_text,
+            )
+            spec.task.cancel()
+            return None
+        return spec
 
     async def _call_context(self) -> "agent_context.AgentContext":
         """
@@ -277,9 +428,15 @@ class CallPipeline:
 
         Order matters: silence Plivo first, so nothing more plays while the
         rest of this unwinds, then stop paying for a generation nobody will
-        hear.
+        hear - including any speculative one, which is answering a question
+        the caller has now talked over.
         """
         await self.send_clear()
+
+        if self._speculation_timer is not None:
+            self._speculation_timer.cancel()
+            self._speculation_timer = None
+        self._discard_speculation()
 
         if self._reply_task is not None:
             self._reply_task.cancel()
@@ -310,6 +467,14 @@ class CallPipeline:
 
     async def _handle_utterance(self, text: str) -> None:
         """Store what the caller said, then generate and speak a reply."""
+        if self._speculation_timer is not None:
+            self._speculation_timer.cancel()
+            self._speculation_timer = None
+        # Claimed before anything below can await: whatever was already
+        # being written against this caller's last partial is either the
+        # answer to what they actually said, or wasted work to discard.
+        speculation = self._take_speculation(text)
+
         self.turns.append(Turn(role="caller", text=text))
         self.history.append({"role": "user", "content": text})
 
@@ -322,13 +487,17 @@ class CallPipeline:
             # _owner_reply()/stream_owner_reply() actually read from.
             await self._store_turn(direction=Direction.inbound, text=text)
 
-        self._reply_task = asyncio.create_task(self._reply(started_at=time.monotonic()))
+        self._reply_task = asyncio.create_task(
+            self._reply(started_at=time.monotonic(), speculation=speculation)
+        )
         try:
             await self._reply_task
         except asyncio.CancelledError:
             pass
 
-    async def _reply(self, *, started_at: float | None = None) -> None:
+    async def _reply(
+        self, *, started_at: float | None = None, speculation: "_Speculation | None" = None,
+    ) -> None:
         """
         Ask the agent what to say, speaking each sentence as it is decided.
 
@@ -365,7 +534,18 @@ class CallPipeline:
             return
 
         t_context = time.monotonic()
-        context = await self._call_context()
+        if speculation is not None:
+            # Already generating - possibly already finished - against
+            # exactly what the caller said, started while the STT was
+            # still holding the turn open. Read it instead of asking the
+            # same question again.
+            events = _events_from_queue(speculation.queue)
+            logger.info(
+                "voice latency call=%s using speculative reply", self.provider_call_id,
+            )
+        else:
+            context = await self._call_context()
+            events = agent_module.stream_reply(context)
         t_stream_start = time.monotonic()
         if started_at is not None:
             logger.info(
@@ -374,7 +554,6 @@ class CallPipeline:
                 t_stream_start - t_context,
             )
 
-        events = agent_module.stream_reply(context)
         try:
             first = await events.__anext__()
         except StopAsyncIteration:
