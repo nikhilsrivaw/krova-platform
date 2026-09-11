@@ -27,6 +27,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 from urllib.parse import urlencode
@@ -72,15 +73,39 @@ SendClear = Callable[[], Awaitable[None]]
 # on. Short enough to land well inside Sarvam's own 500ms silence window,
 # long enough that a caller drawing breath mid-sentence rearms it rather
 # than burning a generation per word.
-_SPECULATION_PAUSE_SECONDS = 0.2
+_SPECULATION_PAUSE_SECONDS = 0.3
 _SPECULATION_ENABLED = True
 
+# How alike a final transcript and the partial speculated on have to be
+# for the generated reply to still answer the right question. Measured
+# against real calls: Sarvam rewrites its own text when finalising a turn
+# - dropping fillers ("Uh, can you..." -> "Can you..."), correcting proper
+# nouns ("what crow" -> "what CROA"), and appending the last word or two
+# ("am I talking to" -> "am I talking to Krova?"). Every one of those is
+# the same question and a reply written against either is right, but exact
+# comparison threw all of them away. A genuine change of subject scores
+# far below this, and is still discarded.
+_SPECULATION_MATCH_RATIO = 0.82
+
 _PUNCTUATION = str.maketrans("", "", ".,!?;:'\"-–—")
+# Sounds a speaker makes while thinking, which an STT may or may not keep.
+_FILLERS = {"uh", "um", "er", "ah", "hmm", "mm", "haan", "acha"}
 
 
 def _normalise_for_match(text: str) -> str:
-    """Compare transcripts the way a listener would - words, not punctuation."""
-    return " ".join(text.lower().translate(_PUNCTUATION).split())
+    """Compare transcripts the way a listener would - words, not punctuation or fillers."""
+    words = text.lower().translate(_PUNCTUATION).split()
+    kept = [w for w in words if w not in _FILLERS]
+    return " ".join(kept or words)
+
+
+def _same_utterance(speculated: str, final: str) -> bool:
+    a, b = _normalise_for_match(speculated), _normalise_for_match(final)
+    if not a or not b:
+        return False
+    if a == b or b.startswith(a) and len(b.split()) - len(a.split()) <= 3:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= _SPECULATION_MATCH_RATIO
 
 
 async def _events_from_queue(queue: "asyncio.Queue"):
@@ -371,7 +396,7 @@ class CallPipeline:
         spec, self._speculation = self._speculation, None
         if spec is None:
             return None
-        if _normalise_for_match(spec.text) != _normalise_for_match(final_text):
+        if not _same_utterance(spec.text, final_text):
             logger.info(
                 "speculative reply discarded - caller said something else (%r vs %r)",
                 spec.text, final_text,
