@@ -17,9 +17,9 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared import verticals
-from shared.auth.encryption import decrypt
+from shared.auth.encryption import decrypt, encrypt
 from shared.channels import ingest
-from shared.channels.whatsapp import flows as flows_api
+from shared.channels.whatsapp import flow_encryption, flows as flows_api
 from shared.channels.whatsapp.client import (
     WhatsAppClient,
     WhatsAppError,
@@ -206,6 +206,49 @@ async def publish_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbD
     await db.flush()
     logger.info("flow published business=%s meta_flow_id=%s", current_user.business, flow.meta_flow_id)
     return _out(flow)
+
+
+class LiveDataOut(BaseModel):
+    enabled: bool
+
+
+@router.post("/{flow_id}/enable-live-data", response_model=LiveDataOut)
+async def enable_live_data(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> LiveDataOut:
+    """
+    Point this flow at KROVA's own data_exchange endpoint (see services/
+    api/routers/flow_exchange.py) - what turns a static form into one that
+    shows real data (right now: real open appointment slots) mid-flow.
+
+    Registers (or reuses) one RSA keypair for the whole WhatsApp
+    connection - confirmed against Meta's Business Encryption API that
+    this is per phone number, not per flow, so a business only does this
+    dance once no matter how many live flows it has.
+    """
+    flow = await db.get(WhatsAppFlow, flow_id)
+    if flow is None or flow.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Flow not found")
+
+    connection = await _connection(current_user.business, db)
+    token = decrypt(connection.access_token)
+
+    keys = (connection.extra or {}).get("flow_encryption")
+    if not keys or not keys.get("public_key") or not keys.get("private_key"):
+        public_pem, private_pem = flow_encryption.generate_keypair()
+        keys = {"public_key": public_pem, "private_key": encrypt(private_pem)}
+        connection.extra = {**(connection.extra or {}), "flow_encryption": keys}
+
+    from shared.config.settings import settings
+
+    try:
+        await flows_api.register_public_key(token, connection.external_account_id, keys["public_key"])
+        endpoint_uri = f"{settings.public_base_url.rstrip('/')}/flows/{flow.id}/exchange"
+        await flows_api.set_data_endpoint(token, flow.meta_flow_id, endpoint_uri)
+    except flows_api.FlowError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    await db.flush()
+    logger.info("flow live-data enabled business=%s flow=%s", current_user.business, flow.id)
+    return LiveDataOut(enabled=True)
 
 
 class FlowSendIn(BaseModel):

@@ -32,6 +32,7 @@ from services.api.routers import (
     dashboard,
     escalations,
     export,
+    flow_exchange,
     flows,
     gmail_channel,
     insurance_claims,
@@ -180,6 +181,10 @@ app.include_router(canned_responses.router, prefix=API_PREFIX)
 # registered with Meta and changing it later means reconfiguring every
 # connected business.
 app.include_router(webhooks.router)
+
+# Same reasoning - a Flow's data_exchange endpoint_uri is registered with
+# Meta directly, per flow, not something the frontend ever calls.
+app.include_router(flow_exchange.router)
 
 # The onboarding screen sits at the root too: Meta's Embedded Signup
 # requires the page that opens the dialog to be on an allowlisted origin,
