@@ -213,7 +213,7 @@ async def _extract_signals(
 
                 await post_call_actions.apply_rules(
                     db, business_id=message.business_id, trigger_type="competitor.mentioned",
-                    customer_id=message.customer_id,
+                    customer_id=message.customer_id, channel=message.channel.value,
                 )
             except Exception:
                 logger.exception("competitor-mention automation-rule dispatch failed business=%s", message.business_id)

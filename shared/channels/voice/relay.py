@@ -1062,7 +1062,7 @@ async def _analyze_call(
                 try:
                     await post_call_actions.apply_rules(
                         db, business_id=business_id, trigger_type=WebhookEventType.call_completed.value,
-                        customer_id=call_row.customer_id, call_id=call_row_id,
+                        customer_id=call_row.customer_id, call_id=call_row_id, channel="voice",
                     )
                 except Exception:
                     logger.exception("post-call action rules failed call=%s", call_row_id)

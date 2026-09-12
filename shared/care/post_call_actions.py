@@ -41,9 +41,22 @@ logger = get_logger(__name__)
 
 async def apply_rules(
     db: AsyncSession, *, business_id: uuid.UUID, trigger_type: str, customer_id: uuid.UUID | None,
-    call_id: uuid.UUID | None = None,
+    call_id: uuid.UUID | None = None, channel: str | None = None,
 ) -> int:
-    """Run every active rule matching this trigger for this business. Returns how many actions ran."""
+    """
+    Run every active rule matching this trigger for this business. Returns
+    how many actions ran.
+
+    `channel` is which real channel this trigger fired from (voice,
+    whatsapp, instagram, email, web) - every dispatch site now has a real
+    value to pass, since it always knows. A rule with no `channel` set
+    fires regardless (today's original, unfiltered behaviour); a rule that
+    picked a specific channel is skipped when this trigger came from
+    somewhere else. Without this, message.received - which fires
+    identically for a WhatsApp message, an Instagram DM, and every single
+    utterance on a live voice call - could fire a WhatsApp-authored rule
+    mid-phone-call.
+    """
     if customer_id is None:
         # Every action type today needs a customer (a WhatsApp send, an
         # Escalation row tied to who the call was about) - nothing to do
@@ -57,7 +70,10 @@ async def apply_rules(
             PostCallActionRule.is_active.is_(True),
         )
     )
-    rules = result.scalars().all()
+    rules = [
+        r for r in result.scalars().all()
+        if not r.channel or r.channel == channel
+    ]
     if not rules:
         return 0
 

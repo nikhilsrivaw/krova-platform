@@ -17,9 +17,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import PostCallActionRule, WebhookEventType
+from shared.db.models import Channel, PostCallActionRule, WebhookEventType
 
 router = APIRouter(prefix="/post-call-rules", tags=["post-call-rules"])
+
+# None (omitted) means "any channel" - a rule fires regardless of which
+# channel the trigger came from, today's original default. Set to one of
+# these when a rule should only fire for that one channel - see
+# apply_rules()'s own docstring for why this exists at all.
+_VALID_CHANNELS = {c.value for c in Channel}
 
 _VALID_TRIGGERS = {
     WebhookEventType.call_completed.value,
@@ -42,6 +48,7 @@ class PostCallRuleOut(BaseModel):
     action_type: str
     action_config: dict
     is_active: bool
+    channel: str | None = None
 
 
 def _to_out(rule: PostCallActionRule) -> PostCallRuleOut:
@@ -51,6 +58,7 @@ def _to_out(rule: PostCallActionRule) -> PostCallRuleOut:
         action_type=rule.action_type,
         action_config=rule.action_config or {},
         is_active=rule.is_active,
+        channel=rule.channel,
     )
 
 
@@ -67,6 +75,8 @@ class PostCallRuleIn(BaseModel):
     action_type: str
     action_config: dict = {}
     is_active: bool = True
+    # None (omitted) = any channel, matching the model's own default.
+    channel: str | None = None
 
 
 def _validate(body: PostCallRuleIn) -> None:
@@ -74,6 +84,11 @@ def _validate(body: PostCallRuleIn) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"trigger_type must be one of {sorted(_VALID_TRIGGERS)}",
+        )
+    if body.channel is not None and body.channel not in _VALID_CHANNELS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"channel must be one of {sorted(_VALID_CHANNELS)}",
         )
     if body.action_type not in _VALID_ACTIONS:
         raise HTTPException(
@@ -108,6 +123,7 @@ async def create_rule(body: PostCallRuleIn, current_user: CurrentUserDep, db: Db
         action_type=body.action_type,
         action_config=body.action_config,
         is_active=body.is_active,
+        channel=body.channel,
     )
     db.add(rule)
     await db.commit()
@@ -131,6 +147,7 @@ async def update_rule(
     rule.action_type = body.action_type
     rule.action_config = body.action_config
     rule.is_active = body.is_active
+    rule.channel = body.channel
     await db.commit()
     return _to_out(rule)
 

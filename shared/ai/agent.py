@@ -907,6 +907,7 @@ async def notify_escalation(
 
             await post_call_actions.apply_rules(
                 db, business_id=business_id, trigger_type="escalation.raised", customer_id=customer_id,
+                channel=channel,
             )
         except Exception:
             logger.exception("escalation automation-rule dispatch failed business=%s", business_id)

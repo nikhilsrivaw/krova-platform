@@ -302,6 +302,17 @@ class PostCallActionRule(UUIDMixin, TimestampMixin, Base):
         PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     trigger_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # None (the default) means "any channel" - the rule fires regardless of
+    # where the trigger came from, today's original behaviour, unchanged.
+    # A real gap otherwise: message.received fires identically for a
+    # WhatsApp message, an Instagram DM, and every single utterance on a
+    # live voice call (all three funnel through shared/channels/ingest.py),
+    # so a rule authored with WhatsApp in mind would also fire mid-call on
+    # every "hello" the caller says, sending a WhatsApp Flow to someone
+    # who's on the phone right now. One of Channel's own values
+    # (whatsapp/instagram/email/voice/web) - not FK-constrained, same
+    # reasoning as trigger_type/action_type below.
+    channel: Mapped[str | None] = mapped_column(String(20), nullable=True)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # whatsapp_followup: {"message": "<text the approved template speaks>"}.
     # create_escalation_task: {"reason": "<text shown on the Escalation row>"}.

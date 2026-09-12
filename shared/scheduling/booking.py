@@ -131,7 +131,7 @@ async def book(
 
             await post_call_actions.apply_rules(
                 db, business_id=business_id, trigger_type=WebhookEventType.appointment_booked.value,
-                customer_id=appointment.customer_id,
+                customer_id=appointment.customer_id, channel=intake_channel.value,
             )
         except Exception:
             logger.exception("automation-rule dispatch failed for appointment=%s", appointment.id)
@@ -286,7 +286,7 @@ async def cancel(db: AsyncSession, *, appointment: Appointment, reason: str | No
 
             await post_call_actions.apply_rules(
                 db, business_id=appointment.business_id, trigger_type=WebhookEventType.appointment_cancelled.value,
-                customer_id=appointment.customer_id,
+                customer_id=appointment.customer_id, channel=appointment.intake_channel.value,
             )
         except Exception:
             logger.exception("automation-rule dispatch failed for cancelled appointment=%s", appointment.id)
