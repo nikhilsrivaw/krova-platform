@@ -331,3 +331,50 @@ class PostCallActionRule(UUIDMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("idx_post_call_rules_lookup", "business_id", "trigger_type", "is_active"),
     )
+
+
+class AutomationStep(UUIDMixin, TimestampMixin, Base):
+    """
+    One step of a PostCallActionRule's action sequence.
+
+    Phase 1 of the engine described in this session's own research pass:
+    every rule today still holds exactly one step (backfilled 1:1 from the
+    rule's own action_type/action_config below by this table's own
+    migration - see its docstring), so nothing about how a rule actually
+    runs changes yet. What this shape buys, for later phases: an optional
+    delay before the step fires, an optional condition gating whether it
+    fires at all, and more than one step per rule, in order - none of
+    which shared/care/post_call_actions.py reads yet.
+
+    A child table rather than fields added to PostCallActionRule itself,
+    on purpose: a rule stays "when this trigger fires, on this channel"
+    (unchanged, still the thing business_id/trigger_type/channel describe);
+    a step is "do this, maybe after a wait, maybe only if a condition
+    holds" - one rule can eventually hold several, ordered by `position`.
+    """
+
+    __tablename__ = "automation_steps"
+
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("post_call_action_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Seconds to wait after the trigger (or, for step 2+, after the
+    # previous step) before this step runs. None (the default, and every
+    # step's value today) means "run immediately" - the only real
+    # behaviour that exists until a later phase actually schedules a
+    # delayed step.
+    delay_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # {"field": "commitment.amount_paise", "operator": "greater_than", "value": 50000}
+    # None (the default, and every step's value today) means "always run" -
+    # no gate. `field` is meant to come from a small, fixed allowlist per
+    # trigger_type (validated at the API layer, same as trigger_type/
+    # action_type themselves) once a later phase actually evaluates this -
+    # never an open query language over arbitrary columns.
+    condition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("idx_automation_steps_rule", "rule_id", "position"),
+    )
