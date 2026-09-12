@@ -71,6 +71,10 @@ class PostCallRuleOut(BaseModel):
     is_active: bool
     channel: str | None = None
     condition: ConditionOut | None = None
+    # None = runs immediately (today's original behaviour, and every rule's
+    # value before this pass). See shared/db/models/integrations.py::
+    # AutomationStepRun for how a delayed step actually fires later.
+    delay_seconds: int | None = None
 
 
 def _to_out(rule: PostCallActionRule, step: AutomationStep | None) -> PostCallRuleOut:
@@ -82,6 +86,7 @@ def _to_out(rule: PostCallActionRule, step: AutomationStep | None) -> PostCallRu
         is_active=rule.is_active,
         channel=rule.channel,
         condition=ConditionOut(**step.condition) if step is not None and step.condition else None,
+        delay_seconds=step.delay_seconds if step is not None else None,
     )
 
 
@@ -122,6 +127,16 @@ class PostCallRuleIn(BaseModel):
     # real behaviour. See shared/care/post_call_actions.py::CONDITION_FIELDS
     # for the real, per-trigger_type allowlist `field` is checked against.
     condition: ConditionIn | None = None
+    # None (omitted, the default) = runs immediately, today's only real
+    # behaviour. Set so the step waits this long after the trigger before
+    # it fires - see shared/care/post_call_actions.py::run_due_steps.
+    delay_seconds: int | None = None
+
+
+# A generous ceiling, not a real product limit discovered anywhere - just
+# enough to reject an obvious typo (a business meaning minutes and typing
+# seconds by mistake) without guessing at a "real" maximum useful delay.
+_MAX_DELAY_SECONDS = 30 * 24 * 3600
 
 
 def _validate(body: PostCallRuleIn) -> None:
@@ -147,6 +162,11 @@ def _validate(body: PostCallRuleIn) -> None:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"condition.operator must be one of {sorted(OPERATORS)}",
             )
+    if body.delay_seconds is not None and not (0 < body.delay_seconds <= _MAX_DELAY_SECONDS):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"delay_seconds must be between 1 and {_MAX_DELAY_SECONDS}",
+        )
     if body.action_type not in _VALID_ACTIONS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -208,6 +228,7 @@ async def create_rule(body: PostCallRuleIn, current_user: CurrentUserDep, db: Db
     step = AutomationStep(
         rule_id=rule.id, position=0,
         condition=body.condition.model_dump() if body.condition else None,
+        delay_seconds=body.delay_seconds,
         action_type=body.action_type, action_config=body.action_config,
     )
     db.add(step)
@@ -243,6 +264,7 @@ async def update_rule(
         step = AutomationStep(rule_id=rule.id, position=0)
         db.add(step)
     step.condition = condition
+    step.delay_seconds = body.delay_seconds
     step.action_type = body.action_type
     step.action_config = body.action_config
 

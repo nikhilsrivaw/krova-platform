@@ -276,6 +276,26 @@ async def send_due_campaign_steps() -> None:
         logger.exception("campaign step sweep failed")
 
 
+async def run_due_automation_steps() -> None:
+    """
+    Fire every AutomationStep whose configured delay has elapsed - the
+    "wait, then do this" half of the automations engine (phase 3). See
+    shared/care/post_call_actions.py::run_due_steps; a rule with no
+    delayed step is untouched by this job.
+    """
+    from shared.care import post_call_actions
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            ran = await post_call_actions.run_due_steps(db)
+            await db.commit()
+            if ran:
+                logger.info("ran %s delayed automation step(s)", ran)
+    except Exception:
+        logger.exception("delayed automation step sweep failed")
+
+
 async def send_repeat_purchase_nudges() -> None:
     """D2C, order_sync capability. See shared/scheduling/recall.py."""
     from shared.db.session import AsyncSessionLocal
@@ -712,6 +732,18 @@ def build() -> AsyncIOScheduler:
         id="check_channel_health",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+
+    # A tighter interval than every other sweep here on purpose - a
+    # business-configured delay is meant to feel like "N minutes later",
+    # not "sometime in the next half hour". The query itself is a single
+    # indexed lookup, empty most runs, so a minute is cheap to poll.
+    scheduler.add_job(
+        run_due_automation_steps,
+        IntervalTrigger(minutes=1),
+        id="run_due_automation_steps",
+        replace_existing=True,
+        misfire_grace_time=300,
     )
 
     # A daily read is enough - the underlying window is 7 days, so this

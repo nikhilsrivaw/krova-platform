@@ -378,3 +378,48 @@ class AutomationStep(UUIDMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("idx_automation_steps_rule", "rule_id", "position"),
     )
+
+
+class AutomationStepRun(UUIDMixin, TimestampMixin, Base):
+    """
+    Phase 3 of the engine: a delayed AutomationStep, queued to fire later.
+
+    Runs as a periodic sweep (services/api/scheduler.py), the same "scan
+    due work, stamp a one-shot marker, act once" shape as every other
+    delayed action in this codebase (Escalation.escalated_further_at,
+    Order.cod_call_placed_at - see shared/care/escalation_failsafe.py and
+    cod_call_failsafe.py) rather than a new job-queue concept - `due_at`/
+    `executed_at` play exactly that role here.
+
+    Snapshots the step's action_type/action_config (and the trigger's own
+    business_id/customer_id/call_id/channel/trigger_type) at the moment
+    the trigger fired, rather than re-reading the live AutomationStep when
+    the sweep runs later - editing a rule after this row exists must not
+    silently change what an already-queued delayed action does. Deleting
+    the rule (cascading through AutomationStep) does cancel a still-
+    pending run, which is the one case that should change it: nothing a
+    deleted automation queued should keep firing after it's gone.
+    """
+
+    __tablename__ = "automation_step_runs"
+
+    step_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("automation_steps.id", ondelete="CASCADE"), nullable=False
+    )
+    business_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    customer_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    call_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    channel: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    trigger_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # None = still pending. Stamped the moment the sweep picks this row up,
+    # before the action itself runs - same "mark it done first, so a crash
+    # mid-action never causes a retry-forever loop" discipline as every
+    # other one-shot dedupe column in this codebase.
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_automation_step_runs_due", "due_at", "executed_at"),
+    )

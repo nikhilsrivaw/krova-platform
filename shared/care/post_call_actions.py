@@ -29,11 +29,12 @@ JSON per rule.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.db.models import AutomationStep, Customer, PostCallActionRule
+from shared.db.models import AutomationStep, AutomationStepRun, Business, Customer, PostCallActionRule
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -170,8 +171,6 @@ async def apply_rules(
     if customer is None:
         return 0
 
-    from shared.db.models import Business
-
     business = await db.get(Business, business_id)
     if business is None:
         return 0
@@ -192,75 +191,142 @@ async def apply_rules(
         for step in steps_by_rule.get(rule.id, []):
             if not _condition_holds(step.condition, context):
                 continue
+
+            if step.delay_seconds:
+                # Queued for the sweep (run_due_steps, below) instead of run
+                # here - see AutomationStepRun's own docstring for why this
+                # snapshots the action rather than re-reading the live step
+                # later. Not counted in `ran`: nothing has actually run yet.
+                db.add(AutomationStepRun(
+                    step_id=step.id, business_id=business_id, customer_id=customer_id,
+                    call_id=call_id, channel=channel, trigger_type=trigger_type,
+                    action_type=step.action_type, action_config=step.action_config or {},
+                    due_at=datetime.now(timezone.utc) + timedelta(seconds=step.delay_seconds),
+                ))
+                continue
+
             try:
-                if step.action_type == "whatsapp_followup":
-                    from shared.scheduling import notify
-
-                    message = (step.action_config or {}).get("message") or ""
-                    if not message:
-                        logger.warning("automation_step=%s has no message configured, skipping", step.id)
-                        continue
-                    if "{{summary}}" in message:
-                        message = (await _resolve_summary_token(message, call_id, db)).strip()
-                        if not message:
-                            logger.warning(
-                                "automation_step=%s left empty after resolving {{summary}}, skipping", step.id,
-                            )
-                            continue
-                    if await notify.send_post_call_followup(
-                        db, business=business, customer=customer, message=message,
-                    ):
-                        ran += 1
-
-                elif step.action_type == "create_escalation_task":
-                    from shared.ai import agent as agent_module
-
-                    reason = (step.action_config or {}).get("reason") or f"Post-call follow-up needed ({trigger_type})"
-                    # via_automation=True: this escalation was itself raised
-                    # by a rule, so it must not re-enter apply_rules for
-                    # escalation.raised - a rule mapping that trigger back to
-                    # create_escalation_task would otherwise cascade forever.
-                    #
-                    # channel or "voice": real value when apply_rules' own
-                    # caller knows it (every dispatch site does, as of this
-                    # session's channel-filter work) - "voice" only as a
-                    # last resort for a call site that predates it and
-                    # still passes none, not a claim this always came from
-                    # voice.
-                    await agent_module.notify_escalation(
-                        business_id, reason=reason, customer_id=customer_id, channel=channel or "voice", db=db,
-                        via_automation=True,
-                    )
+                if await _run_step_action(
+                    db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
+                    call_id=call_id, channel=channel, trigger_type=trigger_type,
+                    action_type=step.action_type, action_config=step.action_config or {},
+                    log_ref=str(step.id),
+                ):
                     ran += 1
-
-                elif step.action_type == "add_tag":
-                    if await _add_tag(business_id, customer_id, step.action_config or {}, db):
-                        ran += 1
-
-                elif step.action_type == "send_flow":
-                    if await _send_flow(business_id, customer_id, step.action_config or {}, db):
-                        ran += 1
-
-                elif step.action_type == "place_call":
-                    if await _place_call(business_id, customer_id, step.action_config or {}, db):
-                        ran += 1
-
-                elif step.action_type == "send_sms":
-                    if await _send_sms(business_id, customer_id, step.action_config or {}, db):
-                        ran += 1
-
-                elif step.action_type == "send_email":
-                    if await _send_email(business_id, customer_id, step.action_config or {}, db):
-                        ran += 1
-
-                else:
-                    logger.warning(
-                        "automation_step=%s has unrecognised action_type=%s", step.id, step.action_type,
-                    )
             except Exception:
                 logger.exception("automation_step=%s failed to apply", step.id)
 
     return ran
+
+
+async def run_due_steps(db: AsyncSession) -> int:
+    """
+    Fire every delayed AutomationStep whose wait has elapsed. Returns how
+    many actually ran (a skip for a real reason - customer/business gone,
+    missing prerequisites - still counts as processed, not as ran).
+
+    Same one-shot sweep shape as shared/care/escalation_failsafe.py and
+    cod_call_failsafe.py: `executed_at` is stamped the moment a row is
+    picked up, before the action itself runs, so a crash mid-action never
+    causes it to fire twice on the next sweep.
+    """
+    now = datetime.now(timezone.utc)
+    due = (
+        await db.execute(
+            select(AutomationStepRun).where(
+                AutomationStepRun.due_at <= now, AutomationStepRun.executed_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    if not due:
+        return 0
+
+    ran = 0
+    for run in due:
+        run.executed_at = now
+
+        business = await db.get(Business, run.business_id)
+        customer = await db.get(Customer, run.customer_id)
+        if business is None or customer is None:
+            logger.info("automation_step_run=%s skipped - business or customer no longer exists", run.id)
+            continue
+
+        try:
+            if await _run_step_action(
+                db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
+                call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type,
+                action_type=run.action_type, action_config=run.action_config or {},
+                log_ref=str(run.id),
+            ):
+                ran += 1
+        except Exception:
+            logger.exception("automation_step_run=%s failed to apply", run.id)
+
+    return ran
+
+
+async def _run_step_action(
+    db: AsyncSession, *, business: Business, customer: Customer, business_id: uuid.UUID, customer_id: uuid.UUID,
+    call_id: uuid.UUID | None, channel: str | None, trigger_type: str, action_type: str, action_config: dict,
+    log_ref: str,
+) -> bool:
+    """
+    Runs one already-resolved action. Shared by apply_rules (immediate
+    steps) and run_due_steps (delayed steps) - the actual side effect is
+    identical either way, only when it happens differs.
+    """
+    if action_type == "whatsapp_followup":
+        from shared.scheduling import notify
+
+        message = (action_config or {}).get("message") or ""
+        if not message:
+            logger.warning("automation_step=%s has no message configured, skipping", log_ref)
+            return False
+        if "{{summary}}" in message:
+            message = (await _resolve_summary_token(message, call_id, db)).strip()
+            if not message:
+                logger.warning(
+                    "automation_step=%s left empty after resolving {{summary}}, skipping", log_ref,
+                )
+                return False
+        return await notify.send_post_call_followup(db, business=business, customer=customer, message=message)
+
+    if action_type == "create_escalation_task":
+        from shared.ai import agent as agent_module
+
+        reason = (action_config or {}).get("reason") or f"Post-call follow-up needed ({trigger_type})"
+        # via_automation=True: this escalation was itself raised by a rule,
+        # so it must not re-enter apply_rules for escalation.raised - a
+        # rule mapping that trigger back to create_escalation_task would
+        # otherwise cascade forever.
+        #
+        # channel or "voice": real value when the caller knows it (every
+        # dispatch site does, as of this session's channel-filter work) -
+        # "voice" only as a last resort for a call site that predates it
+        # and still passes none, not a claim this always came from voice.
+        await agent_module.notify_escalation(
+            business_id, reason=reason, customer_id=customer_id, channel=channel or "voice", db=db,
+            via_automation=True,
+        )
+        return True
+
+    if action_type == "add_tag":
+        return await _add_tag(business_id, customer_id, action_config or {}, db)
+
+    if action_type == "send_flow":
+        return await _send_flow(business_id, customer_id, action_config or {}, db)
+
+    if action_type == "place_call":
+        return await _place_call(business_id, customer_id, action_config or {}, db)
+
+    if action_type == "send_sms":
+        return await _send_sms(business_id, customer_id, action_config or {}, db)
+
+    if action_type == "send_email":
+        return await _send_email(business_id, customer_id, action_config or {}, db)
+
+    logger.warning("automation_step=%s has unrecognised action_type=%s", log_ref, action_type)
+    return False
 
 
 async def _resolve_summary_token(message: str, call_id: uuid.UUID | None, db: AsyncSession) -> str:

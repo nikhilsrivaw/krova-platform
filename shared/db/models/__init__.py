@@ -35,6 +35,7 @@ from shared.db.models.channel import (
 from shared.db.models.integrations import (
     ApiKey,
     AutomationStep,
+    AutomationStepRun,
     CalendarConnection,
     EmailSendConnection,
     GitHubConnection,
@@ -95,6 +96,7 @@ __all__ = [
     "ApiKey",
     "Appointment",
     "AutomationStep",
+    "AutomationStepRun",
     "AppointmentStatus",
     "Audience",
     "AvailabilityException",
