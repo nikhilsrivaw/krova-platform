@@ -20,12 +20,14 @@ PostCallActionRule) rather than a rename migration for a naming-only
 gain - see services/api/routers/post_call_rules.py's own _VALID_TRIGGERS
 for the current, cross-channel list.
 
-v1 shipped two action types; a business-configurable graph/canvas UI is
-explicitly a later round (Nikhil's own direction) - this stays a flat
-trigger -> action list, deliberately not an open-ended action language
-(arbitrary webhooks, arbitrary email templates). Adding a new action type
-is a new `elif`, not a schema change - action_config is already free-form
-JSON per rule.
+A rule can hold several ordered AutomationStep rows (see that model's own
+docstring) - each with its own optional condition and optional delay, no
+branching between them (a condition gates one step, it never halts the
+ones after it). A business-configurable visual canvas UI is a later round
+(Nikhil's own direction); this stays a step list, deliberately not an
+open-ended action language (arbitrary webhooks, arbitrary email
+templates). Adding a new action type is a new `if` in _run_step_action,
+not a schema change - action_config is already free-form JSON per step.
 """
 
 import uuid
@@ -117,13 +119,26 @@ def _condition_holds(condition: dict | None, context: dict) -> bool:
         return False
 
 
+def _snapshot_step(step: AutomationStep) -> dict:
+    """The plain-dict shape a chain is built from and resumed from - see
+    AutomationStepRun.remaining_steps' own docstring for why a resumed
+    chain never re-reads the live AutomationStep rows."""
+    return {
+        "action_type": step.action_type,
+        "action_config": step.action_config or {},
+        "condition": step.condition,
+        "delay_seconds": step.delay_seconds,
+    }
+
+
 async def apply_rules(
     db: AsyncSession, *, business_id: uuid.UUID, trigger_type: str, customer_id: uuid.UUID | None,
     call_id: uuid.UUID | None = None, channel: str | None = None, context: dict | None = None,
 ) -> int:
     """
     Run every active rule matching this trigger for this business. Returns
-    how many actions ran.
+    how many actions ran synchronously (a step queued for later via a
+    delay is not counted here - see run_due_steps).
 
     `channel` is which real channel this trigger fired from (voice,
     whatsapp, instagram, email, web) - every dispatch site now has a real
@@ -142,10 +157,11 @@ async def apply_rules(
     fails closed (see _condition_holds), same as a step whose condition
     names a field genuinely missing from what was passed.
 
-    Runs each rule's steps in order (today always exactly one, position 0,
-    unconditional - see shared/db/models/integrations.py::AutomationStep's
-    own docstring on why this table exists ahead of actually needing more
-    than one step or a real condition anywhere yet).
+    Runs each rule's steps in position order via _run_chain - a rule can
+    hold more than one step, each independently gated by its own
+    condition and delay (no branching, no step depends on a previous
+    step's outcome - see shared/db/models/integrations.py::AutomationStep's
+    own docstring for why that's deliberate, not a gap).
     """
     if customer_id is None:
         # Every action type today needs a customer (a WhatsApp send, an
@@ -177,53 +193,85 @@ async def apply_rules(
 
     context = context or {}
 
-    steps_by_rule: dict[uuid.UUID, list[AutomationStep]] = {}
+    steps_by_rule: dict[uuid.UUID, list[dict]] = {}
     steps_result = await db.execute(
         select(AutomationStep)
         .where(AutomationStep.rule_id.in_([r.id for r in rules]))
         .order_by(AutomationStep.position)
     )
     for step in steps_result.scalars().all():
-        steps_by_rule.setdefault(step.rule_id, []).append(step)
+        steps_by_rule.setdefault(step.rule_id, []).append(_snapshot_step(step))
 
     ran = 0
     for rule in rules:
-        for step in steps_by_rule.get(rule.id, []):
-            if not _condition_holds(step.condition, context):
-                continue
+        steps = steps_by_rule.get(rule.id, [])
+        if not steps:
+            continue
+        ran += await _run_chain(
+            db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
+            call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
+            rule_id=rule.id, steps=steps, start_index=0, log_ref=str(rule.id),
+        )
 
-            if step.delay_seconds:
-                # Queued for the sweep (run_due_steps, below) instead of run
-                # here - see AutomationStepRun's own docstring for why this
-                # snapshots the action rather than re-reading the live step
-                # later. Not counted in `ran`: nothing has actually run yet.
-                db.add(AutomationStepRun(
-                    step_id=step.id, business_id=business_id, customer_id=customer_id,
-                    call_id=call_id, channel=channel, trigger_type=trigger_type,
-                    action_type=step.action_type, action_config=step.action_config or {},
-                    due_at=datetime.now(timezone.utc) + timedelta(seconds=step.delay_seconds),
-                ))
-                continue
+    return ran
 
-            try:
-                if await _run_step_action(
-                    db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
-                    call_id=call_id, channel=channel, trigger_type=trigger_type,
-                    action_type=step.action_type, action_config=step.action_config or {},
-                    log_ref=str(step.id),
-                ):
-                    ran += 1
-            except Exception:
-                logger.exception("automation_step=%s failed to apply", step.id)
+
+async def _run_chain(
+    db: AsyncSession, *, business: Business, customer: Customer, business_id: uuid.UUID, customer_id: uuid.UUID,
+    call_id: uuid.UUID | None, channel: str | None, trigger_type: str, context: dict,
+    rule_id: uuid.UUID, steps: list[dict], start_index: int, log_ref: str,
+) -> int:
+    """
+    Runs a rule's steps starting at steps[start_index], in position order,
+    until either the chain runs out or a step with its own delay pauses it
+    - queuing an AutomationStepRun that resumes exactly here once that
+    delay elapses (see run_due_steps). A step whose condition doesn't hold
+    is skipped, not treated as ending the chain - the rest still runs, per
+    this engine's own no-branching design (a condition gates one step, it
+    never halts the ones after it).
+
+    Returns how many actions actually ran synchronously in this call.
+    """
+    ran = 0
+    for i in range(start_index, len(steps)):
+        step = steps[i]
+        if not _condition_holds(step["condition"], context):
+            continue
+
+        if step["delay_seconds"]:
+            # remaining_steps starts at this step (not i+1) - it's the one
+            # whose delay just got queued, and run_due_steps runs it first
+            # (unconditionally - its condition already passed, right above)
+            # before resuming the chain at i+1 with its own fresh checks.
+            db.add(AutomationStepRun(
+                rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
+                remaining_steps=steps[i:],
+                due_at=datetime.now(timezone.utc) + timedelta(seconds=step["delay_seconds"]),
+            ))
+            return ran
+
+        try:
+            if await _run_step_action(
+                db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
+                call_id=call_id, channel=channel, trigger_type=trigger_type,
+                action_type=step["action_type"], action_config=step["action_config"],
+                log_ref=f"{log_ref}[{i}]",
+            ):
+                ran += 1
+        except Exception:
+            logger.exception("automation rule=%s step[%s] failed to apply", rule_id, i)
 
     return ran
 
 
 async def run_due_steps(db: AsyncSession) -> int:
     """
-    Fire every delayed AutomationStep whose wait has elapsed. Returns how
-    many actually ran (a skip for a real reason - customer/business gone,
-    missing prerequisites - still counts as processed, not as ran).
+    Resume every AutomationStepRun whose delay has elapsed. Returns how
+    many actions actually ran (a skip for a real reason - customer/
+    business gone, missing prerequisites - still counts as processed, not
+    as ran; a step further down the chain hitting its own delay pauses it
+    again rather than counting as done).
 
     Same one-shot sweep shape as shared/care/escalation_failsafe.py and
     cod_call_failsafe.py: `executed_at` is stamped the moment a row is
@@ -245,22 +293,38 @@ async def run_due_steps(db: AsyncSession) -> int:
     for run in due:
         run.executed_at = now
 
+        steps = run.remaining_steps or []
+        if not steps:
+            continue
+
         business = await db.get(Business, run.business_id)
         customer = await db.get(Customer, run.customer_id)
         if business is None or customer is None:
             logger.info("automation_step_run=%s skipped - business or customer no longer exists", run.id)
             continue
 
+        # steps[0] is the one this row was waiting on - its condition
+        # already passed once, before it was queued (see _run_chain), so
+        # it runs unconditionally here rather than being re-checked.
+        first = steps[0]
         try:
             if await _run_step_action(
                 db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
                 call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type,
-                action_type=run.action_type, action_config=run.action_config or {},
-                log_ref=str(run.id),
+                action_type=first["action_type"], action_config=first["action_config"],
+                log_ref=f"{run.rule_id}[resume]",
             ):
                 ran += 1
         except Exception:
             logger.exception("automation_step_run=%s failed to apply", run.id)
+
+        # Resume the rest of the chain (if any) - each of these still gets
+        # its own condition/delay check, same as a fresh trigger would.
+        ran += await _run_chain(
+            db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
+            call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type, context=run.context or {},
+            rule_id=run.rule_id, steps=steps, start_index=1, log_ref=f"{run.rule_id}[resume]",
+        )
 
     return ran
 

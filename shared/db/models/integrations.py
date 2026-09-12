@@ -382,7 +382,7 @@ class AutomationStep(UUIDMixin, TimestampMixin, Base):
 
 class AutomationStepRun(UUIDMixin, TimestampMixin, Base):
     """
-    Phase 3 of the engine: a delayed AutomationStep, queued to fire later.
+    A rule's step chain, paused at a delayed step, queued to resume later.
 
     Runs as a periodic sweep (services/api/scheduler.py), the same "scan
     due work, stamp a one-shot marker, act once" shape as every other
@@ -391,28 +391,45 @@ class AutomationStepRun(UUIDMixin, TimestampMixin, Base):
     cod_call_failsafe.py) rather than a new job-queue concept - `due_at`/
     `executed_at` play exactly that role here.
 
-    Snapshots the step's action_type/action_config (and the trigger's own
-    business_id/customer_id/call_id/channel/trigger_type) at the moment
-    the trigger fired, rather than re-reading the live AutomationStep when
-    the sweep runs later - editing a rule after this row exists must not
-    silently change what an already-queued delayed action does. Deleting
-    the rule (cascading through AutomationStep) does cancel a still-
-    pending run, which is the one case that should change it: nothing a
-    deleted automation queued should keep firing after it's gone.
+    Phase 4 (true multi-step chains) generalized this from "one delayed
+    step" to "the rest of the chain from here": `remaining_steps` snapshots
+    every step from the delayed one onward (each as its own action_type/
+    action_config/condition/delay_seconds dict) at the moment the trigger
+    fired - not the live AutomationStep rows - so editing a rule after this
+    row exists can't silently change what an already-queued chain does.
+    `context` is the trigger's own original data, snapshotted the same way,
+    so a later step's condition can still be evaluated correctly once the
+    chain resumes. remaining_steps[0] is always the step whose delay is
+    what made this row due; shared/care/post_call_actions.py::run_due_steps
+    runs it unconditionally (its condition already passed once, before it
+    was queued) and then continues evaluating remaining_steps[1:] in order,
+    queuing a fresh row (rule_id unchanged, a shorter remaining_steps) the
+    next time it hits a step with its own delay.
+
+    Deleting the rule (ondelete=CASCADE) cancels a still-pending run - the
+    one case that should change what was queued: nothing a deleted
+    automation queued should keep firing after it's gone.
     """
 
     __tablename__ = "automation_step_runs"
 
-    step_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("automation_steps.id", ondelete="CASCADE"), nullable=False
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("post_call_action_rules.id", ondelete="CASCADE"), nullable=False
     )
     business_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     customer_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     call_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     channel: Mapped[str | None] = mapped_column(String(20), nullable=True)
     trigger_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    action_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # The trigger's own real data (shared/care/post_call_actions.py::
+    # CONDITION_FIELDS) - needed so a step further down the chain, resumed
+    # after this row fires, can still have its own condition evaluated
+    # against the original trigger, not just whatever's true when the
+    # sweep happens to run.
+    context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # [{"action_type": ..., "action_config": ..., "condition": ..., "delay_seconds": ...}, ...]
+    # in chain order, starting with the step this row is waiting on.
+    remaining_steps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # None = still pending. Stamped the moment the sweep picks this row up,
     # before the action itself runs - same "mark it done first, so a crash
