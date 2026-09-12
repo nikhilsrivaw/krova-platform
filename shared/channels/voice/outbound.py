@@ -538,6 +538,7 @@ async def outbound_hangup(
                         await post_call_actions.apply_rules(
                             db, business_id=campaign.business_id, trigger_type=trigger,
                             customer_id=recipient.customer_id, channel="voice",
+                            context={"campaign_objective": campaign.objective},
                         )
                     except Exception:
                         logger.exception(

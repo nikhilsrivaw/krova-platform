@@ -201,6 +201,7 @@ async def issue_token(
             await post_call_actions.apply_rules(
                 db, business_id=business_id, trigger_type=WebhookEventType.queue_token_issued.value,
                 customer_id=customer_id, channel=intake_channel.value,
+                context={"shift": shift.value, "queue_number": entry.queue_number},
             )
         except Exception:
             logger.exception("automation-rule dispatch failed for queue entry=%s", entry.id)

@@ -33,15 +33,92 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.db.models import Customer, PostCallActionRule
+from shared.db.models import AutomationStep, Customer, PostCallActionRule
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# The real, honest fields available to a condition for each trigger_type -
+# built from what that trigger's own dispatch site already has in hand
+# (see apply_rules' own callers), never an open query language over
+# arbitrary columns. The API layer (services/api/routers/post_call_rules.py)
+# validates a condition's `field` against this same allowlist per
+# trigger_type, so a rule can never be saved referencing data that trigger
+# will never actually carry.
+CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
+    "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic"),
+    "call.voicemail": ("campaign_objective",),
+    "call.no_answer": ("campaign_objective",),
+    "message.received": ("text",),
+    "flow.completed": ("flow_id",),
+    "appointment.booked": ("starts_at", "intake_channel"),
+    "appointment.cancelled": ("starts_at", "intake_channel", "reason"),
+    "escalation.raised": ("reason",),
+    "queue_token.issued": ("shift", "queue_number"),
+    "competitor.mentioned": ("severity", "title", "body"),
+    "churn_risk.detected": ("severity", "title", "body"),
+    "demo.requested": ("severity", "title", "body"),
+    "pricing_question.asked": ("severity", "title", "body"),
+}
+
+# Deliberately this short list, not an expression language - a condition is
+# {"field": ..., "operator": ..., "value": ...}, one comparison, no AND/OR
+# grouping. Research into how Zapier/n8n/Make model this found real SMB
+# usage rarely goes past a single filter condition; nested boolean groups
+# are the exception, not the common case, and can be added later against
+# real demand rather than guessed at now.
+# Public - services/api/routers/post_call_rules.py validates a new
+# condition's operator against this same set before it's ever saved.
+OPERATORS = {
+    "equals": lambda a, b: a == b,
+    "not_equals": lambda a, b: a != b,
+    "contains": lambda a, b: isinstance(a, str) and isinstance(b, str) and b.lower() in a.lower(),
+    "greater_than": lambda a, b: a is not None and a > b,
+    "less_than": lambda a, b: a is not None and a < b,
+    "greater_than_or_equal": lambda a, b: a is not None and a >= b,
+    "less_than_or_equal": lambda a, b: a is not None and a <= b,
+}
+
+
+def _condition_holds(condition: dict | None, context: dict) -> bool:
+    """
+    Whether a step's condition is satisfied by this trigger's real context.
+
+    None (no condition set - every step today) always holds, preserving
+    exactly today's unconditional behaviour. A condition naming a field
+    that isn't actually in `context`, or an operator this codebase doesn't
+    know, fails closed (the step is skipped, logged) rather than running
+    unconditionally on data that was never really checked - the same
+    "never silently do more than was actually verified" instinct as this
+    codebase's own escalate-rather-than-guess rule for the AI agent.
+    """
+    if not condition:
+        return True
+    field = condition.get("field")
+    operator = condition.get("operator")
+    value = condition.get("value")
+    if field not in context:
+        logger.warning(
+            "condition field %r not available in this trigger's context %r - skipping step",
+            field, sorted(context.keys()),
+        )
+        return False
+    op_fn = OPERATORS.get(operator or "")
+    if op_fn is None:
+        logger.warning("unknown condition operator %r - skipping step", operator)
+        return False
+    try:
+        return bool(op_fn(context[field], value))
+    except TypeError:
+        logger.warning(
+            "condition %r could not be evaluated against %r - skipping step", condition, context.get(field),
+        )
+        return False
+
 
 async def apply_rules(
     db: AsyncSession, *, business_id: uuid.UUID, trigger_type: str, customer_id: uuid.UUID | None,
-    call_id: uuid.UUID | None = None, channel: str | None = None,
+    call_id: uuid.UUID | None = None, channel: str | None = None, context: dict | None = None,
 ) -> int:
     """
     Run every active rule matching this trigger for this business. Returns
@@ -56,6 +133,18 @@ async def apply_rules(
     identically for a WhatsApp message, an Instagram DM, and every single
     utterance on a live voice call - could fire a WhatsApp-authored rule
     mid-phone-call.
+
+    `context` is this trigger's own real data, keyed to match
+    CONDITION_FIELDS[trigger_type] - what a step's condition is actually
+    checked against. None (the default) means no dispatch site has wired
+    one yet for this trigger_type; every step's condition then simply
+    fails closed (see _condition_holds), same as a step whose condition
+    names a field genuinely missing from what was passed.
+
+    Runs each rule's steps in order (today always exactly one, position 0,
+    unconditional - see shared/db/models/integrations.py::AutomationStep's
+    own docstring on why this table exists ahead of actually needing more
+    than one step or a real condition anywhere yet).
     """
     if customer_id is None:
         # Every action type today needs a customer (a WhatsApp send, an
@@ -87,70 +176,89 @@ async def apply_rules(
     if business is None:
         return 0
 
+    context = context or {}
+
+    steps_by_rule: dict[uuid.UUID, list[AutomationStep]] = {}
+    steps_result = await db.execute(
+        select(AutomationStep)
+        .where(AutomationStep.rule_id.in_([r.id for r in rules]))
+        .order_by(AutomationStep.position)
+    )
+    for step in steps_result.scalars().all():
+        steps_by_rule.setdefault(step.rule_id, []).append(step)
+
     ran = 0
     for rule in rules:
-        try:
-            if rule.action_type == "whatsapp_followup":
-                from shared.scheduling import notify
+        for step in steps_by_rule.get(rule.id, []):
+            if not _condition_holds(step.condition, context):
+                continue
+            try:
+                if step.action_type == "whatsapp_followup":
+                    from shared.scheduling import notify
 
-                message = (rule.action_config or {}).get("message") or ""
-                if not message:
-                    logger.warning("post_call_action_rule=%s has no message configured, skipping", rule.id)
-                    continue
-                if "{{summary}}" in message:
-                    message = (await _resolve_summary_token(message, call_id, db)).strip()
+                    message = (step.action_config or {}).get("message") or ""
                     if not message:
-                        logger.warning(
-                            "post_call_action_rule=%s left empty after resolving {{summary}}, skipping", rule.id,
-                        )
+                        logger.warning("automation_step=%s has no message configured, skipping", step.id)
                         continue
-                if await notify.send_post_call_followup(db, business=business, customer=customer, message=message):
+                    if "{{summary}}" in message:
+                        message = (await _resolve_summary_token(message, call_id, db)).strip()
+                        if not message:
+                            logger.warning(
+                                "automation_step=%s left empty after resolving {{summary}}, skipping", step.id,
+                            )
+                            continue
+                    if await notify.send_post_call_followup(
+                        db, business=business, customer=customer, message=message,
+                    ):
+                        ran += 1
+
+                elif step.action_type == "create_escalation_task":
+                    from shared.ai import agent as agent_module
+
+                    reason = (step.action_config or {}).get("reason") or f"Post-call follow-up needed ({trigger_type})"
+                    # via_automation=True: this escalation was itself raised
+                    # by a rule, so it must not re-enter apply_rules for
+                    # escalation.raised - a rule mapping that trigger back to
+                    # create_escalation_task would otherwise cascade forever.
+                    #
+                    # channel or "voice": real value when apply_rules' own
+                    # caller knows it (every dispatch site does, as of this
+                    # session's channel-filter work) - "voice" only as a
+                    # last resort for a call site that predates it and
+                    # still passes none, not a claim this always came from
+                    # voice.
+                    await agent_module.notify_escalation(
+                        business_id, reason=reason, customer_id=customer_id, channel=channel or "voice", db=db,
+                        via_automation=True,
+                    )
                     ran += 1
 
-            elif rule.action_type == "create_escalation_task":
-                from shared.ai import agent as agent_module
+                elif step.action_type == "add_tag":
+                    if await _add_tag(business_id, customer_id, step.action_config or {}, db):
+                        ran += 1
 
-                reason = (rule.action_config or {}).get("reason") or f"Post-call follow-up needed ({trigger_type})"
-                # via_automation=True: this escalation was itself raised by
-                # a rule, so it must not re-enter apply_rules for
-                # escalation.raised - a rule mapping that trigger back to
-                # create_escalation_task would otherwise cascade forever.
-                #
-                # channel or "voice": real value when apply_rules' own
-                # caller knows it (every dispatch site does, as of this
-                # session's channel-filter work) - "voice" only as a last
-                # resort for a call site that predates that and still
-                # passes none, not a claim this always came from voice.
-                await agent_module.notify_escalation(
-                    business_id, reason=reason, customer_id=customer_id, channel=channel or "voice", db=db,
-                    via_automation=True,
-                )
-                ran += 1
+                elif step.action_type == "send_flow":
+                    if await _send_flow(business_id, customer_id, step.action_config or {}, db):
+                        ran += 1
 
-            elif rule.action_type == "add_tag":
-                if await _add_tag(business_id, customer_id, rule.action_config or {}, db):
-                    ran += 1
+                elif step.action_type == "place_call":
+                    if await _place_call(business_id, customer_id, step.action_config or {}, db):
+                        ran += 1
 
-            elif rule.action_type == "send_flow":
-                if await _send_flow(business_id, customer_id, rule.action_config or {}, db):
-                    ran += 1
+                elif step.action_type == "send_sms":
+                    if await _send_sms(business_id, customer_id, step.action_config or {}, db):
+                        ran += 1
 
-            elif rule.action_type == "place_call":
-                if await _place_call(business_id, customer_id, rule.action_config or {}, db):
-                    ran += 1
+                elif step.action_type == "send_email":
+                    if await _send_email(business_id, customer_id, step.action_config or {}, db):
+                        ran += 1
 
-            elif rule.action_type == "send_sms":
-                if await _send_sms(business_id, customer_id, rule.action_config or {}, db):
-                    ran += 1
-
-            elif rule.action_type == "send_email":
-                if await _send_email(business_id, customer_id, rule.action_config or {}, db):
-                    ran += 1
-
-            else:
-                logger.warning("post_call_action_rule=%s has unrecognised action_type=%s", rule.id, rule.action_type)
-        except Exception:
-            logger.exception("post_call_action_rule=%s failed to apply", rule.id)
+                else:
+                    logger.warning(
+                        "automation_step=%s has unrecognised action_type=%s", step.id, step.action_type,
+                    )
+            except Exception:
+                logger.exception("automation_step=%s failed to apply", step.id)
 
     return ran
 

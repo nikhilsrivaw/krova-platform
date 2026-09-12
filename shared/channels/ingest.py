@@ -218,6 +218,7 @@ async def ingest(
         await post_call_actions.apply_rules(
             db, business_id=business_id, trigger_type="message.received", customer_id=customer.id,
             channel=channel.value if isinstance(channel, Channel) else str(channel),
+            context={"text": text},
         )
 
     if enqueue_analysis and not customer.is_private:

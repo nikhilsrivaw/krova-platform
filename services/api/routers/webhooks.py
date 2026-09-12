@@ -548,6 +548,7 @@ async def _mark_flow_completed(
         await post_call_actions.apply_rules(
             db, business_id=business_id, trigger_type=WebhookEventType.flow_completed.value,
             customer_id=send_log.customer_id, channel="whatsapp",
+            context={"flow_id": str(send_log.flow_id)},
         )
     except Exception:
         logger.exception("flow.completed automation-rule dispatch failed business=%s", business_id)

@@ -227,6 +227,7 @@ async def _extract_signals(
                 await post_call_actions.apply_rules(
                     db, business_id=message.business_id, trigger_type=trigger_type,
                     customer_id=message.customer_id, channel=message.channel.value,
+                    context={"severity": found.severity, "title": found.title, "body": found.body},
                 )
             except Exception:
                 logger.exception("%s automation-rule dispatch failed business=%s", trigger_type, message.business_id)

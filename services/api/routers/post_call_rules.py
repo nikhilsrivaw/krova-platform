@@ -8,6 +8,14 @@ voice. Deliberately a plain CRUD surface, no execution logic here at
 all - a rule only ever runs from wherever apply_rules() is actually
 called (see that module's docstring for the current list of dispatch
 points).
+
+A rule owns exactly one AutomationStep as of this pass (position 0) -
+the engine's own multi-step/chaining phase is later, not this one - but
+that step, not the rule's own action_type/action_config, is now what
+actually runs (apply_rules reads AutomationStep rows). This router keeps
+both in sync: the rule's own fields stay a live mirror of its one step,
+so nothing reading rule.action_type/action_config directly (existing
+API responses, the frontend) needs to change shape for this pass.
 """
 
 import uuid
@@ -17,7 +25,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import Channel, PostCallActionRule, WebhookEventType
+from shared.care.post_call_actions import CONDITION_FIELDS, OPERATORS
+from shared.db.models import AutomationStep, Channel, PostCallActionRule, WebhookEventType
 
 router = APIRouter(prefix="/post-call-rules", tags=["post-call-rules"])
 
@@ -48,6 +57,12 @@ _VALID_ACTIONS = {
 }
 
 
+class ConditionOut(BaseModel):
+    field: str
+    operator: str
+    value: object
+
+
 class PostCallRuleOut(BaseModel):
     id: str
     trigger_type: str
@@ -55,9 +70,10 @@ class PostCallRuleOut(BaseModel):
     action_config: dict
     is_active: bool
     channel: str | None = None
+    condition: ConditionOut | None = None
 
 
-def _to_out(rule: PostCallActionRule) -> PostCallRuleOut:
+def _to_out(rule: PostCallActionRule, step: AutomationStep | None) -> PostCallRuleOut:
     return PostCallRuleOut(
         id=str(rule.id),
         trigger_type=rule.trigger_type,
@@ -65,7 +81,18 @@ def _to_out(rule: PostCallActionRule) -> PostCallRuleOut:
         action_config=rule.action_config or {},
         is_active=rule.is_active,
         channel=rule.channel,
+        condition=ConditionOut(**step.condition) if step is not None and step.condition else None,
     )
+
+
+async def _first_steps(rule_ids: list[uuid.UUID], db: DbDep) -> dict[uuid.UUID, AutomationStep]:
+    """Each rule's own position-0 step, keyed by rule_id - a rule owns exactly one as of this pass."""
+    if not rule_ids:
+        return {}
+    result = await db.execute(
+        select(AutomationStep).where(AutomationStep.rule_id.in_(rule_ids), AutomationStep.position == 0)
+    )
+    return {s.rule_id: s for s in result.scalars().all()}
 
 
 @router.get("", response_model=list[PostCallRuleOut])
@@ -73,7 +100,15 @@ async def list_rules(current_user: CurrentUserDep, db: DbDep) -> list[PostCallRu
     result = await db.execute(
         select(PostCallActionRule).where(PostCallActionRule.business_id == current_user.business)
     )
-    return [_to_out(r) for r in result.scalars().all()]
+    rules = result.scalars().all()
+    steps = await _first_steps([r.id for r in rules], db)
+    return [_to_out(r, steps.get(r.id)) for r in rules]
+
+
+class ConditionIn(BaseModel):
+    field: str
+    operator: str
+    value: object
 
 
 class PostCallRuleIn(BaseModel):
@@ -83,6 +118,10 @@ class PostCallRuleIn(BaseModel):
     is_active: bool = True
     # None (omitted) = any channel, matching the model's own default.
     channel: str | None = None
+    # None (omitted, the default) = the step always runs - today's only
+    # real behaviour. See shared/care/post_call_actions.py::CONDITION_FIELDS
+    # for the real, per-trigger_type allowlist `field` is checked against.
+    condition: ConditionIn | None = None
 
 
 def _validate(body: PostCallRuleIn) -> None:
@@ -96,6 +135,18 @@ def _validate(body: PostCallRuleIn) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"channel must be one of {sorted(_VALID_CHANNELS)}",
         )
+    if body.condition is not None:
+        allowed_fields = CONDITION_FIELDS.get(body.trigger_type, ())
+        if body.condition.field not in allowed_fields:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"condition.field for {body.trigger_type} must be one of {sorted(allowed_fields)}",
+            )
+        if body.condition.operator not in OPERATORS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"condition.operator must be one of {sorted(OPERATORS)}",
+            )
     if body.action_type not in _VALID_ACTIONS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -149,8 +200,19 @@ async def create_rule(body: PostCallRuleIn, current_user: CurrentUserDep, db: Db
         channel=body.channel,
     )
     db.add(rule)
+    await db.flush()
+    # The one step apply_rules() actually reads (shared/care/
+    # post_call_actions.py) - the rule's own action_type/action_config
+    # above stay a live mirror of it, kept for anything still reading the
+    # rule directly rather than a schema this pass needs to remove.
+    step = AutomationStep(
+        rule_id=rule.id, position=0,
+        condition=body.condition.model_dump() if body.condition else None,
+        action_type=body.action_type, action_config=body.action_config,
+    )
+    db.add(step)
     await db.commit()
-    return _to_out(rule)
+    return _to_out(rule, step)
 
 
 async def _owned_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> PostCallActionRule:
@@ -171,8 +233,21 @@ async def update_rule(
     rule.action_config = body.action_config
     rule.is_active = body.is_active
     rule.channel = body.channel
+
+    step = (await _first_steps([rule.id], db)).get(rule.id)
+    condition = body.condition.model_dump() if body.condition else None
+    if step is None:
+        # A rule saved before this pass shipped, or one whose step was
+        # somehow lost - repaired here rather than left permanently inert,
+        # since apply_rules() only ever reads from AutomationStep now.
+        step = AutomationStep(rule_id=rule.id, position=0)
+        db.add(step)
+    step.condition = condition
+    step.action_type = body.action_type
+    step.action_config = body.action_config
+
     await db.commit()
-    return _to_out(rule)
+    return _to_out(rule, step)
 
 
 @router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
