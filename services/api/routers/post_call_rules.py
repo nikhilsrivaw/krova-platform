@@ -38,8 +38,14 @@ _VALID_TRIGGERS = {
     WebhookEventType.escalation_raised.value,
     WebhookEventType.queue_token_issued.value,
     WebhookEventType.competitor_mentioned.value,
+    WebhookEventType.churn_risk_detected.value,
+    WebhookEventType.demo_requested.value,
+    WebhookEventType.pricing_question_asked.value,
 }
-_VALID_ACTIONS = {"whatsapp_followup", "create_escalation_task", "add_tag", "send_flow"}
+_VALID_ACTIONS = {
+    "whatsapp_followup", "create_escalation_task", "add_tag", "send_flow",
+    "place_call", "send_sms", "send_email",
+}
 
 
 class PostCallRuleOut(BaseModel):
@@ -111,6 +117,23 @@ def _validate(body: PostCallRuleIn) -> None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"action_config.{missing[0]} is required for send_flow",
+            )
+    if body.action_type == "place_call" and not (body.action_config or {}).get("reason"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="action_config.reason is required for place_call",
+        )
+    if body.action_type == "send_sms" and not (body.action_config or {}).get("message"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="action_config.message is required for send_sms",
+        )
+    if body.action_type == "send_email":
+        missing = [k for k in ("subject", "body") if not (body.action_config or {}).get(k)]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"action_config.{missing[0]} is required for send_email",
             )
 
 

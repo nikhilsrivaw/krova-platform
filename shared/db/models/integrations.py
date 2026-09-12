@@ -208,6 +208,15 @@ class WebhookEventType(str, enum.Enum):
     # finishes a structured form (booking, order tracking, ...), not when
     # it was merely opened.
     flow_completed = "flow.completed"
+    # Same real-time reasoning as competitor_mentioned above, and the same
+    # dispatch site (services/workers/analyse.py, product_feedback-gated -
+    # today only the "startup" vertical declares that capability, same
+    # gate competitor_mentioned already runs under). All three are real,
+    # already-extracted Insight kinds (shared/ai/signals.py) that simply
+    # had no automation trigger wired to them before this.
+    churn_risk_detected = "churn_risk.detected"
+    demo_requested = "demo.requested"
+    pricing_question_asked = "pricing_question.asked"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):

@@ -115,8 +115,14 @@ async def apply_rules(
                 # a rule, so it must not re-enter apply_rules for
                 # escalation.raised - a rule mapping that trigger back to
                 # create_escalation_task would otherwise cascade forever.
+                #
+                # channel or "voice": real value when apply_rules' own
+                # caller knows it (every dispatch site does, as of this
+                # session's channel-filter work) - "voice" only as a last
+                # resort for a call site that predates that and still
+                # passes none, not a claim this always came from voice.
                 await agent_module.notify_escalation(
-                    business_id, reason=reason, customer_id=customer_id, channel="voice", db=db,
+                    business_id, reason=reason, customer_id=customer_id, channel=channel or "voice", db=db,
                     via_automation=True,
                 )
                 ran += 1
@@ -127,6 +133,18 @@ async def apply_rules(
 
             elif rule.action_type == "send_flow":
                 if await _send_flow(business_id, customer_id, rule.action_config or {}, db):
+                    ran += 1
+
+            elif rule.action_type == "place_call":
+                if await _place_call(business_id, customer_id, rule.action_config or {}, db):
+                    ran += 1
+
+            elif rule.action_type == "send_sms":
+                if await _send_sms(business_id, customer_id, rule.action_config or {}, db):
+                    ran += 1
+
+            elif rule.action_type == "send_email":
+                if await _send_email(business_id, customer_id, rule.action_config or {}, db):
                     ran += 1
 
             else:
@@ -154,6 +172,131 @@ async def _resolve_summary_token(message: str, call_id: uuid.UUID | None, db: As
         summary = call_row.summary if call_row is not None else None
 
     return message.replace("{{summary}}", summary or "")
+
+
+async def _place_call(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """
+    Ring the customer - reuses shared/channels/voice/outbound.py's own
+    place_adhoc_call verbatim (the same function commitment_deadline_calls.py
+    already uses for proactive reminders), rather than a second connection/
+    subaccount lookup for the same call. That function already logs its
+    own skip reasons (no phone on file, no voice number connected) and
+    returns False rather than raising for any of them.
+    """
+    reason = str(config.get("reason") or "").strip()
+    if not reason:
+        logger.warning("place_call rule for business=%s has no reason configured, skipping", business_id)
+        return False
+
+    from shared.channels.voice import outbound
+
+    return await outbound.place_adhoc_call(business_id, customer_id, reason, db)
+
+
+async def _send_sms(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """
+    Same connection/credential resolution as shared/care/
+    escalation_failsafe.py's own SMS send, verbatim - ChannelConnection.
+    access_token decrypted as the subaccount auth_token, connection.extra
+    ["subaccount_auth_id"] as the auth_id, connection.external_account_id
+    as the from_number - not a second lookup path for the same three
+    fields. Sends to the customer's own phone identity, unlike the
+    failsafe (which sends to the business's staff_phone_number instead).
+    """
+    message = str(config.get("message") or "").strip()
+    if not message:
+        logger.warning("send_sms rule for business=%s has no message configured, skipping", business_id)
+        return False
+
+    from shared.auth.encryption import decrypt
+    from shared.channels.voice import plivo_client
+    from shared.db.models import Channel, ChannelConnection, ConnectionStatus, CustomerIdentity, IdentityKind
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.voice,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        logger.info("send_sms rule skipped business=%s: no voice number connected", business_id)
+        return False
+
+    auth_id = (connection.extra or {}).get("subaccount_auth_id")
+    if not auth_id:
+        logger.warning("send_sms rule skipped business=%s: voice connection missing subaccount id", business_id)
+        return False
+
+    to_number = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.phone,
+            )
+        )
+    ).scalars().first()
+    if to_number is None:
+        logger.info("send_sms rule skipped business=%s customer=%s: no phone on file", business_id, customer_id)
+        return False
+
+    try:
+        await plivo_client.send_sms(
+            auth_id=auth_id, auth_token=decrypt(connection.access_token),
+            from_number=connection.external_account_id, to_number=to_number, text=message,
+        )
+    except plivo_client.PlivoError:
+        logger.exception("send_sms rule failed business=%s customer=%s", business_id, customer_id)
+        return False
+    return True
+
+
+async def _send_email(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """
+    Same "verified EmailSendConnection + customer's own email identity"
+    shape shared/scheduling/notify.py's own onboarding/expansion nudges
+    already use for their email fallback, not a second lookup path for
+    the same two things.
+    """
+    subject = str(config.get("subject") or "").strip()
+    body = str(config.get("body") or "").strip()
+    if not subject or not body:
+        logger.warning("send_email rule for business=%s is missing subject/body, skipping", business_id)
+        return False
+
+    from shared.db.models import CustomerIdentity, EmailSendConnection, IdentityKind
+    from shared.integrations import postmark
+
+    connection = (
+        await db.execute(
+            select(EmailSendConnection).where(
+                EmailSendConnection.business_id == business_id,
+                EmailSendConnection.verified.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None:
+        logger.info("send_email rule skipped business=%s: no verified email connection", business_id)
+        return False
+
+    to_email = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.email,
+            )
+        )
+    ).scalars().first()
+    if to_email is None:
+        logger.info("send_email rule skipped business=%s customer=%s: no email on file", business_id, customer_id)
+        return False
+
+    try:
+        await postmark.send_email(from_email=connection.from_email, to=to_email, subject=subject, text_body=body)
+    except postmark.PostmarkError:
+        logger.exception("send_email rule failed business=%s customer=%s", business_id, customer_id)
+        return False
+    return True
 
 
 async def _add_tag(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
