@@ -69,3 +69,43 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
     if not text or text.upper() == "NONE":
         return Suggestion(text=None, cost_paise=completion.cost_paise)
     return Suggestion(text=text, cost_paise=completion.cost_paise)
+
+
+TRANSLATE_SYSTEM = """You are translating one line a caller just said on a \
+live phone call, for a staff member who doesn't speak the caller's language \
+to read in real time while the call is still happening.
+
+The target language is given as a Sarvam/BCP-47 style code used by an \
+Indian speech API - e.g. hi-IN=Hindi, ta-IN=Tamil, te-IN=Telugu, \
+kn-IN=Kannada, ml-IN=Malayalam, mr-IN=Marathi, gu-IN=Gujarati, bn-IN=Bengali, \
+pa-IN=Punjabi, od-IN=Odia, en-IN=Indian English.
+
+Output ONLY the translation, in plain natural language - no quotation marks, \
+no notes, no "Translation:" prefix, nothing but what the caller said, in the \
+target language. Keep it short and literal enough to be trustworthy live -
+this is being read while a real conversation is still happening, not \
+polished after the fact."""
+
+
+@dataclass(slots=True)
+class Translation:
+    text: str | None  # None means the translation call itself failed
+    cost_paise: int
+
+
+async def translate(text: str, *, target_language: str) -> Translation:
+    """
+    One line of a live call's transcript, translated for a staff member
+    who's mid-conversation and needs to keep up - same fast tier as
+    suggest() above, for the same reason (a live call is waiting on this).
+    """
+    completion = await client.complete(
+        system=TRANSLATE_SYSTEM,
+        messages=[{"role": "user", "content": f'Target language code: {target_language}\n\nCaller said:\n"{text}"'}],
+        speed="fast",
+        max_tokens=150,
+    )
+    translated = completion.text.strip()
+    if not translated:
+        return Translation(text=None, cost_paise=completion.cost_paise)
+    return Translation(text=translated, cost_paise=completion.cost_paise)

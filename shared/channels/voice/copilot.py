@@ -132,7 +132,7 @@ async def copilot_stream(websocket: WebSocket) -> None:
                 )
                 stt_ws = await _connect_sarvam_stt()
                 pump_task = asyncio.create_task(
-                    _pump_suggestions(stt_ws, business_id, customer_id, call_uuid)
+                    _pump_suggestions(stt_ws, business_id, customer_id, call_uuid, route.language)
                 )
 
             elif event == "media":
@@ -161,9 +161,20 @@ async def copilot_stream(websocket: WebSocket) -> None:
 
 
 async def _pump_suggestions(
-    stt_ws, business_id: uuid.UUID, customer_id: uuid.UUID | None, call_uuid: str
+    stt_ws, business_id: uuid.UUID, customer_id: uuid.UUID | None, call_uuid: str,
+    staff_language: str | None = None,
 ) -> None:
-    """Turn final transcripts into suggestions, published for whichever dashboard is watching."""
+    """
+    Turn final transcripts into suggestions, published for whichever
+    dashboard is watching. Also, when the caller's own detected language
+    differs from the business's configured voice language (used here as a
+    stand-in for "the staff member's own language" - no per-staff-member
+    setting exists yet, see this module's own docstring precedent for
+    what's deliberately deferred), translates that line too, so a staff
+    member can follow a call in a language they don't speak. Suggestion
+    generation itself is completely unchanged by this - translation is a
+    strictly additive branch on the same final-transcript event.
+    """
     if customer_id is None:
         logger.warning("copilot call=%s has no resolved customer, no suggestions possible", call_uuid)
         return
@@ -176,21 +187,40 @@ async def _pump_suggestions(
             async with AsyncSessionLocal() as db:
                 context = await agent_context.build(business_id, customer_id, db)
                 result = await copilot_suggest.suggest(context)
-                if result.cost_paise:
+                translation_cost_paise = 0
+                translated_text: str | None = None
+                if transcript.text and staff_language and transcript.language and transcript.language != staff_language:
+                    translation = await copilot_suggest.translate(transcript.text, target_language=staff_language)
+                    translated_text = translation.text
+                    translation_cost_paise = translation.cost_paise
+                total_cost_paise = result.cost_paise + translation_cost_paise
+                if total_cost_paise:
                     usage.record(
                         business_id=business_id,
                         event_type=UsageEventType.ai_reply_generated,
                         channel="voice",
                         quantity=1,
                         unit="call",
-                        krova_cost_paise=result.cost_paise,
+                        krova_cost_paise=total_cost_paise,
                         source_type="call",
                         db=db,
                     )
                 await db.commit()
 
+            message: dict = {"call_uuid": call_uuid}
             if result.text:
-                publish(business_id, {"call_uuid": call_uuid, "suggestion": result.text})
+                message["suggestion"] = result.text
+            # Transcript fields only travel when a translation actually
+            # happened - this stays scoped to "help staff follow a call in
+            # a language they don't speak," not a general always-on live
+            # transcript (a different, broader feature with its own
+            # privacy/noise questions, not asked for here).
+            if translated_text:
+                message["transcript"] = transcript.text
+                message["transcript_language"] = transcript.language
+                message["transcript_translated"] = translated_text
+            if len(message) > 1:  # more than just call_uuid
+                publish(business_id, message)
     except websockets.exceptions.ConnectionClosed:
         pass
     except Exception:
