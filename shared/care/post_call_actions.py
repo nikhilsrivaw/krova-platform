@@ -30,6 +30,7 @@ templates). Adding a new action type is a new `if` in _run_step_action,
 not a schema change - action_config is already free-form JSON per step.
 """
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -49,7 +50,7 @@ logger = get_logger(__name__)
 # trigger_type, so a rule can never be saved referencing data that trigger
 # will never actually carry.
 CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
-    "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic"),
+    "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic", "requested_service"),
     "call.voicemail": ("campaign_objective",),
     "call.no_answer": ("campaign_objective",),
     "message.received": ("text",),
@@ -254,7 +255,7 @@ async def _run_chain(
         try:
             if await _run_step_action(
                 db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
-                call_id=call_id, channel=channel, trigger_type=trigger_type,
+                call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
                 action_type=step["action_type"], action_config=step["action_config"],
                 log_ref=f"{log_ref}[{i}]",
             ):
@@ -310,7 +311,7 @@ async def run_due_steps(db: AsyncSession) -> int:
         try:
             if await _run_step_action(
                 db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
-                call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type,
+                call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type, context=run.context or {},
                 action_type=first["action_type"], action_config=first["action_config"],
                 log_ref=f"{run.rule_id}[resume]",
             ):
@@ -331,8 +332,8 @@ async def run_due_steps(db: AsyncSession) -> int:
 
 async def _run_step_action(
     db: AsyncSession, *, business: Business, customer: Customer, business_id: uuid.UUID, customer_id: uuid.UUID,
-    call_id: uuid.UUID | None, channel: str | None, trigger_type: str, action_type: str, action_config: dict,
-    log_ref: str,
+    call_id: uuid.UUID | None, channel: str | None, trigger_type: str, context: dict, action_type: str,
+    action_config: dict, log_ref: str,
 ) -> bool:
     """
     Runs one already-resolved action. Shared by apply_rules (immediate
@@ -346,13 +347,12 @@ async def _run_step_action(
         if not message:
             logger.warning("automation_step=%s has no message configured, skipping", log_ref)
             return False
-        if "{{summary}}" in message:
-            message = (await _resolve_summary_token(message, call_id, db)).strip()
-            if not message:
-                logger.warning(
-                    "automation_step=%s left empty after resolving {{summary}}, skipping", log_ref,
-                )
-                return False
+        message = _resolve_tokens(message, context).strip()
+        if not message:
+            logger.warning(
+                "automation_step=%s left empty after resolving its tokens, skipping", log_ref,
+            )
+            return False
         return await notify.send_post_call_followup(db, business=business, customer=customer, message=message)
 
     if action_type == "create_escalation_task":
@@ -378,7 +378,7 @@ async def _run_step_action(
         return await _add_tag(business_id, customer_id, action_config or {}, db)
 
     if action_type == "send_flow":
-        return await _send_flow(business_id, customer_id, action_config or {}, db)
+        return await _send_flow(business_id, customer_id, action_config or {}, db, context=context, call_id=call_id)
 
     if action_type == "place_call":
         return await _place_call(business_id, customer_id, action_config or {}, db)
@@ -393,23 +393,26 @@ async def _run_step_action(
     return False
 
 
-async def _resolve_summary_token(message: str, call_id: uuid.UUID | None, db: AsyncSession) -> str:
+def _resolve_tokens(text: str, context: dict) -> str:
     """
-    Substitutes the AI-generated call summary (Call.summary, written by
-    shared/ai/call_summary.py::summarize() before this trigger ever fires -
-    see _analyze_call in relay.py) into a {{summary}} token. No call_id
-    (the voicemail/no_answer dispatch site in outbound.py never has a Call
-    row - see its own comment) or no summary yet resolves to blank rather
-    than sending the literal token to a customer.
+    Substitutes any {{key}} token in `text` with context.get(key) - the
+    same `context` dict a step's own condition is already checked against
+    (shared/care/post_call_actions.py's own CONDITION_FIELDS names what's
+    real per trigger_type). A key genuinely missing from context, or set
+    to a falsy value (e.g. requested_service unset), resolves to blank
+    rather than sending a business the literal unresolved token.
+
+    Generalizes what was previously whatsapp_followup's own one-token,
+    {{summary}}-only substitution (backed by its own extra Call row
+    lookup) into something any action's text/data fields can use for free
+    - {{summary}} keeps working exactly as before because relay.py's own
+    call.completed dispatch already folds Call.summary into context.
     """
-    summary = None
-    if call_id is not None:
-        from shared.db.models import Call
+    def _sub(match: re.Match) -> str:
+        value = context.get(match.group(1))
+        return str(value) if value else ""
 
-        call_row = await db.get(Call, call_id)
-        summary = call_row.summary if call_row is not None else None
-
-    return message.replace("{{summary}}", summary or "")
+    return re.sub(r"\{\{(\w+)\}\}", _sub, text)
 
 
 async def _place_call(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
@@ -568,7 +571,10 @@ async def _add_tag(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict,
     return True
 
 
-async def _send_flow(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+async def _send_flow(
+    business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession, *,
+    context: dict, call_id: uuid.UUID | None,
+) -> bool:
     """
     Same mechanics as services/api/routers/flows.py's own send_flow
     endpoint - resolve the flow, the customer's phone, the service window,
@@ -579,6 +585,18 @@ async def _send_flow(business_id: uuid.UUID, customer_id: uuid.UUID, config: dic
     Only ever sends a *published* flow - never draft/test mode, since
     nobody is standing by as an app tester for a rule that fires
     unattended.
+
+    `body` and every string value in `data` go through `_resolve_tokens`
+    against this trigger's own `context` - e.g. a call.completed rule can
+    send `{"reason": "{{requested_service}}"}` so the Flow (and its own
+    doctor/service pre-fill, if the vertical's flow template reads it)
+    carries what the caller actually asked for, not a generic message.
+    `call_id`, when this fired from a voice call, is recorded on the
+    outbound Message's own `raw` metadata as `origin_call_id` - enough to
+    tell a voice-triggered WhatsApp booking apart from a plain one without
+    a new IntakeChannel value (channel and "what triggered it" are
+    different axes; every WhatsApp Flow booking is still, correctly,
+    IntakeChannel.whatsapp).
     """
     import datetime as _dt
 
@@ -599,9 +617,13 @@ async def _send_flow(business_id: uuid.UUID, customer_id: uuid.UUID, config: dic
     )
 
     flow_id_raw = config.get("flow_id")
-    body = str(config.get("body") or "").strip()
+    body = _resolve_tokens(str(config.get("body") or ""), context).strip()
     screen = str(config.get("screen") or "").strip()
     cta = str(config.get("cta") or "Open").strip()
+    data = {
+        k: (_resolve_tokens(v, context) if isinstance(v, str) else v)
+        for k, v in (config.get("data") or {}).items()
+    }
     if not (flow_id_raw and body and screen):
         logger.warning("send_flow rule for business=%s is missing flow_id/body/screen, skipping", business_id)
         return False
@@ -654,7 +676,7 @@ async def _send_flow(business_id: uuid.UUID, customer_id: uuid.UUID, config: dic
     try:
         result = await client.send_flow_message(
             identity, body, flow_id=flow.meta_flow_id, flow_token=flow_token,
-            flow_cta=cta, screen=screen, data=config.get("data") or {}, draft=False,
+            flow_cta=cta, screen=screen, data=data, draft=False,
         )
     except WhatsAppError:
         logger.exception("send_flow rule for business=%s failed to send", business_id)
@@ -671,7 +693,10 @@ async def _send_flow(business_id: uuid.UUID, customer_id: uuid.UUID, config: dic
         text=body,
         occurred_at=_dt.datetime.now(_dt.timezone.utc),
         connection_id=connection.id,
-        raw={"flow_id": flow.meta_flow_id, "screen": screen, "flow_token": flow_token, "automation": True},
+        raw={
+            "flow_id": flow.meta_flow_id, "screen": screen, "flow_token": flow_token, "automation": True,
+            **({"origin_call_id": str(call_id)} if call_id is not None else {}),
+        },
         media={"kind": "flow_open", "flow_name": flow.name},
         enqueue_analysis=False,
         db=db,

@@ -1069,6 +1069,14 @@ async def _analyze_call(
                             "sentiment": call_row.sentiment,
                             "escalated": call_row.escalated,
                             "topic": call_row.topic,
+                            "requested_service": call_row.requested_service,
+                            # Not in CONDITION_FIELDS (a condition can't gate
+                            # on it - free text, not something to compare),
+                            # but real: available here for the same reason
+                            # {{summary}} already worked in whatsapp_followup
+                            # before this pass generalized it - see
+                            # _resolve_tokens.
+                            "summary": call_row.summary,
                         },
                     )
                 except Exception:

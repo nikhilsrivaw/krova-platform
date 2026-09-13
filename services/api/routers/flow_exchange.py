@@ -291,19 +291,47 @@ async def _handle_booking_exchange(flow, connection: ChannelConnection, body: di
 
     business = await db.get(Business, flow.business_id)
     customer = await db.get(Customer, send_log.customer_id)
-    doctor = (
-        await db.execute(
-            select(Doctor).where(Doctor.business_id == flow.business_id, Doctor.active == True)  # noqa: E712
-        )
-    ).scalars().first()
+
+    # A rule that sent this Flow (shared/care/post_call_actions.py::
+    # _send_flow's own action_config["data"]) can pre-select which doctor
+    # the customer books - e.g. a voice call where the caller named a
+    # specific service, handed off to WhatsApp already pointed at the
+    # right person, rather than whichever doctor happens to be first.
+    # Falls back to today's original "first active doctor" behaviour when
+    # absent, invalid, or naming a doctor this business doesn't actually
+    # have active - so every flow that never sends doctor_id keeps
+    # working exactly as it always has.
+    doctor = None
+    doctor_id_raw = data.get("doctor_id")
+    if doctor_id_raw:
+        try:
+            doctor_id = uuid.UUID(str(doctor_id_raw))
+        except ValueError:
+            doctor_id = None
+        if doctor_id is not None:
+            doctor = (
+                await db.execute(
+                    select(Doctor).where(
+                        Doctor.id == doctor_id, Doctor.business_id == flow.business_id, Doctor.active == True,  # noqa: E712
+                    )
+                )
+            ).scalars().first()
+    if doctor is None:
+        doctor = (
+            await db.execute(
+                select(Doctor).where(Doctor.business_id == flow.business_id, Doctor.active == True)  # noqa: E712
+            )
+        ).scalars().first()
+
     if business is None or customer is None or doctor is None:
         return {"data": {"error_message": "This business isn't set up for live booking yet."}}
 
-    # Whatever the entry screen collected besides the slot itself - reason
-    # (clinic), property (real estate), time_of_day, ... - carried through
-    # both screens verbatim rather than hardcoding one vertical's field
-    # names, so the same handler serves every live-booking flow template.
-    passthrough = {k: str(v) for k, v in data.items() if k != "selected_slot" and v is not None}
+    # Whatever the entry screen collected besides the slot itself and the
+    # doctor-routing field - reason (clinic), property (real estate),
+    # time_of_day, ... - carried through both screens verbatim rather than
+    # hardcoding one vertical's field names, so the same handler serves
+    # every live-booking flow template.
+    passthrough = {k: str(v) for k, v in data.items() if k not in ("selected_slot", "doctor_id") and v is not None}
 
     if screen == "SELECT_SLOT":
         selected = data.get("selected_slot")

@@ -742,6 +742,18 @@ class CallPipeline:
                 self.provider_call_id, queue_entry.id,
             )
 
+        if first.requested_service and self.call_row_id is not None:
+            # Not a booking attempt - just a record of what the caller
+            # asked for, so a business's own automation rule can react to
+            # it once the call ends (call.completed's own context dict -
+            # see relay.py's _analyze_call). Overwritten by a later turn
+            # if the caller mentions something else; the reply for this
+            # turn still gets spoken normally below, same as any other
+            # reply.
+            call_row = await self.db.get(Call, self.call_row_id)
+            if call_row is not None:
+                call_row.requested_service = first.requested_service
+
         reply_cost = {"paise": 0}
 
         async def reply_text_chunks():

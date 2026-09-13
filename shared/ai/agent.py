@@ -234,10 +234,16 @@ following the exact same booking rules already given above (only when the \
 caller has just confirmed one specific time you offered them, BOOK_DOCTOR \
 only when more than one doctor was listed, BOOK_PROPERTY only for one \
 specific listed property viewing, BOOK_TOKEN only for one specific open \
-shift the caller has just confirmed - never alongside BOOK_SLOT) - then a \
-blank line (always, whether or not you wrote any BOOK_ lines), then the \
-spoken reply itself - one short, natural sentence, the way a person would \
-actually say it out loud, not written prose. Nothing after it.
+shift the caller has just confirmed - never alongside BOOK_SLOT) - or, \
+instead, REQUESTED_SERVICE=<short phrase> when the caller has described \
+something bookable (a specific test, treatment, service, or listing) but \
+you are not booking it yourself on this call - a few words in their own \
+terms, e.g. "wants an X-ray" or "wants to view the 2BHK listing", never \
+alongside BOOK_SLOT/BOOK_TOKEN (those mean you already booked it; this \
+means you did not) - then a blank line (always, whether or not you wrote \
+any of the lines above), then the spoken reply itself - one short, \
+natural sentence, the way a person would actually say it out loud, not \
+written prose. Nothing after it.
 
 If ESCALATE: a blank line, then one short phrase naming exactly what you \
 did not know (five words or fewer) - not a sentence, just the missing \
@@ -333,6 +339,14 @@ class ReplyStart:
     # Set only alongside action == "reply", never alongside book_slot - see
     # REPLY_TOOL's book_token and SYSTEM_STREAM's BOOK_TOKEN= line.
     book_token: str | None = None
+    # Set only alongside action == "reply", never alongside book_slot/
+    # book_token - see SYSTEM_STREAM's own REQUESTED_SERVICE= line. The
+    # caller described something bookable that this call isn't completing
+    # itself - shared/channels/voice/pipeline.py writes this straight onto
+    # the live Call row so a business's own automation rule can react to
+    # it once the call ends (shared/care/post_call_actions.py's
+    # CONDITION_FIELDS["call.completed"] includes "requested_service").
+    requested_service: str | None = None
 
 
 @dataclass(slots=True)
@@ -422,6 +436,7 @@ async def stream_reply(agent_context: ctx.AgentContext):
     book_doctor: str | None = None
     book_property: str | None = None
     book_token: str | None = None
+    requested_service: str | None = None
 
     async for delta in stream:
         buffer += delta
@@ -467,10 +482,13 @@ async def stream_reply(agent_context: ctx.AgentContext):
                     book_property = line[len("BOOK_PROPERTY="):].strip() or None
                 elif line.startswith("BOOK_TOKEN="):
                     book_token = line[len("BOOK_TOKEN="):].strip() or None
+                elif line.startswith("REQUESTED_SERVICE="):
+                    requested_service = line[len("REQUESTED_SERVICE="):].strip() or None
             header_done = True
             yield ReplyStart(
                 action=action, book_slot=book_slot, book_doctor=book_doctor,
                 book_property=book_property, book_token=book_token,
+                requested_service=requested_service,
             )
             sentence_buffer = message_start.lstrip("\n")
             continue

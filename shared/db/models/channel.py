@@ -276,6 +276,15 @@ class Call(UUIDMixin, Base):
     escalated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     escalation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Set live, mid-call, the moment the agent recognises a bookable need
+    # it is not completing itself on this call - same mid-call timing as
+    # escalation_reason above, not the post-call analysis fields below.
+    # Free text (e.g. "wants an X-ray"), not a fixed catalog - see
+    # shared/ai/agent.py's REQUESTED_SERVICE= line for where this is set,
+    # and shared/care/post_call_actions.py's CONDITION_FIELDS for how an
+    # automation rule can gate on it once the call ends.
+    requested_service: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Written once by shared/ai/call_summary.py after the call ends - free
     # for any call to have none of these (an analysis failure, or a call
     # with no caller utterances at all).
