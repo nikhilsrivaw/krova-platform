@@ -50,6 +50,13 @@ REMINDER_TEMPLATE_NAME = "appointment_reminder"
 # both go through the same approved-template mechanics as the two above.
 RECALL_TEMPLATE_NAME = "recall_reminder"
 QUEUE_CHECKIN_TEMPLATE_NAME = "queue_checkin_confirmation"
+# The real fix for a promise queue_checkin_confirmation itself makes
+# ("We'll notify you as your turn nears") that nothing used to keep - see
+# services/api/routers/queue.py::update_queue_entry for where this
+# actually fires. Same real prerequisite as every other proactive
+# template here: a business must submit and get this approved in Meta's
+# WhatsApp Manager before it can actually send.
+QUEUE_TURN_NEAR_TEMPLATE_NAME = "queue_turn_near"
 # Cross-vertical, gated on Business.settings["google_review_url"] being
 # set - see shared/scheduling/recall.py's send_review_requests.
 REVIEW_TEMPLATE_NAME = "review_request"
@@ -262,6 +269,27 @@ async def send_queue_checkin(
         template_name=QUEUE_CHECKIN_TEMPLATE_NAME,
         body_params=[str(queue_number), business.name],
         plain_text=f"You're #{queue_number} in line at {business.name}. We'll notify you as your turn nears.",
+    )
+
+
+async def send_queue_turn_near(
+    db: AsyncSession, *, business: Business, customer: Customer, queue_number: int, tokens_ahead: int,
+) -> bool:
+    """
+    Send the queue_turn_near template - opd_queue capability. Fires once
+    per waiting QueueEntry, when a fixed number of tokens ahead of it have
+    been called (see services/api/routers/queue.py's own
+    _TURN_NEAR_THRESHOLD, not a time estimate - no per-token duration data
+    exists anywhere in this system to base one on).
+    """
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=QUEUE_TURN_NEAR_TEMPLATE_NAME,
+        body_params=[str(queue_number), str(tokens_ahead), business.name],
+        plain_text=(
+            f"You're #{queue_number} at {business.name} - about {tokens_ahead} "
+            "ahead of you. Your turn is coming up soon."
+        ),
     )
 
 

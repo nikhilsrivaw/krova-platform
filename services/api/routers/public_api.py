@@ -173,6 +173,8 @@ async def create_booking(body: BookingIn, business: ApiKeyBusinessDep, db: DbDep
         )
     except queue_booking.ShiftNotOpen as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except queue_booking.OpdQueueNotEnabled as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return BookingOut(booked=True, queue_entry_id=str(entry.id), queue_number=entry.queue_number)
 
 

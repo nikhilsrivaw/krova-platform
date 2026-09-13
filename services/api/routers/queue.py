@@ -16,14 +16,38 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared import verticals
 from shared.db.models import Business, Customer, IntakeChannel, QueueEntry, QueueStatus, Shift, ShiftSession
 from shared.integrations import google_calendar
-from shared.scheduling import queue_booking
+from shared.scheduling import notify, queue_booking
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/queue", tags=["queue"])
+
+# Not a discovered real value - no per-token consultation-duration data
+# exists anywhere in this system to base a time estimate on (confirmed by
+# research), so a fixed token-count threshold is the honest, buildable
+# version of "your turn is near." Same reasoning this codebase already
+# uses for similar constants (e.g. post_call_actions.py's _MAX_DELAY_SECONDS).
+_TURN_NEAR_THRESHOLD = 2
+
+
+async def _require_opd_queue(business_id: uuid.UUID, db: DbDep) -> Business:
+    """
+    Shift open/close and kiosk enable/disable don't route through
+    issue_token() (they never create a QueueEntry), so they need their
+    own capability check - queue_booking.issue_token's own new
+    OpdQueueNotEnabled guard doesn't reach them. Same check, same 403,
+    just here since there's no shared function to fix once for these.
+    """
+    business = await db.get(Business, business_id)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    if not verticals.has_capability(business.vertical, "opd_queue"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This business does not have the opd_queue capability")
+    return business
 
 
 # ── Shifts ───────────────────────────────────────────────────────────────
@@ -50,6 +74,7 @@ class OpenShiftIn(BaseModel):
 @router.post("/shifts/open", response_model=ShiftSessionOut, status_code=status.HTTP_201_CREATED)
 async def open_shift(body: OpenShiftIn, current_user: CurrentUserDep, db: DbDep) -> ShiftSessionOut:
     """Opens today's session for a shift, or reopens it if it was closed earlier today."""
+    await _require_opd_queue(current_user.business, db)
     today = datetime.now(timezone.utc).date()
     existing = await queue_booking.get_open_session(
         db, business_id=current_user.business, shift=body.shift, on_date=today
@@ -88,6 +113,7 @@ async def open_shift(body: OpenShiftIn, current_user: CurrentUserDep, db: DbDep)
 
 @router.post("/shifts/{session_id}/close", response_model=ShiftSessionOut)
 async def close_shift(session_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> ShiftSessionOut:
+    await _require_opd_queue(current_user.business, db)
     session = await db.get(ShiftSession, session_id)
     if session is None or session.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Shift session not found")
@@ -130,9 +156,7 @@ async def enable_kiosk(current_user: CurrentUserDep, db: DbDep) -> KioskConfigOu
     """Generates a new kiosk link, replacing any existing one - the same
     action a business uses both to turn kiosk check-in on for the first
     time and to revoke a leaked/shared link by rotating it."""
-    business = await db.get(Business, current_user.business)
-    if business is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    business = await _require_opd_queue(current_user.business, db)
     business.kiosk_token = secrets.token_urlsafe(24)
     await db.flush()
     logger.info("kiosk enabled/rotated for business=%s", current_user.business)
@@ -207,6 +231,8 @@ async def check_in(body: CheckInIn, current_user: CurrentUserDep, db: DbDep) -> 
         )
     except queue_booking.ShiftNotOpen as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except queue_booking.OpdQueueNotEnabled as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
     return _out(entry)
 
@@ -262,4 +288,49 @@ async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user
             except Exception:
                 logger.exception("calendar cancel-sync failed for queue entry=%s", entry.id)
 
+    # The real fix for queue_checkin_confirmation's own "we'll notify you
+    # as your turn nears" promise - nothing used to keep it. Only checked
+    # when a token gets called in (the queue actually advanced), not on
+    # every patch - a skip/cancel doesn't move anyone's real position the
+    # same way.
+    if body.status == QueueStatus.in_consultation:
+        await _notify_if_turn_near(entry, db)
+
     return _out(entry)
+
+
+async def _notify_if_turn_near(called_entry: QueueEntry, db: DbDep) -> None:
+    waiting = (
+        await db.execute(
+            select(QueueEntry).where(
+                QueueEntry.business_id == called_entry.business_id,
+                QueueEntry.queue_date == called_entry.queue_date,
+                QueueEntry.shift == called_entry.shift,
+                QueueEntry.status == QueueStatus.waiting,
+            ).order_by(QueueEntry.queue_number.asc())
+        )
+    ).scalars().all()
+    if len(waiting) < _TURN_NEAR_THRESHOLD:
+        return
+
+    near = waiting[_TURN_NEAR_THRESHOLD - 1]
+    if near.turn_near_notified_at is not None or near.customer_id is None:
+        return
+
+    business = await db.get(Business, called_entry.business_id)
+    customer = await db.get(Customer, near.customer_id)
+    if business is None or customer is None:
+        return
+
+    # Stamped regardless of whether the send actually succeeded - same
+    # "never retried forever, failure logged loudly instead" shape
+    # Escalation.escalated_further_at already uses. A notification
+    # failure must never block or undo the queue's own real advance.
+    near.turn_near_notified_at = datetime.now(timezone.utc)
+    try:
+        await notify.send_queue_turn_near(
+            db, business=business, customer=customer,
+            queue_number=near.queue_number, tokens_ahead=_TURN_NEAR_THRESHOLD - 1,
+        )
+    except Exception:
+        logger.exception("queue turn-near notification failed for entry=%s", near.id)

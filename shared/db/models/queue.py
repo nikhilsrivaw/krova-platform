@@ -87,6 +87,14 @@ class QueueEntry(UUIDMixin, TimestampMixin, Base):
     # same dedupe shape as Appointment's reminder_*_sent_at columns.
     review_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Stamped once a "your turn is near" WhatsApp message has been sent for
+    # THIS waiting entry - regardless of whether the send actually
+    # succeeded, same "never retried forever, failure logged loudly
+    # instead" shape as Escalation.escalated_further_at. See
+    # services/api/routers/queue.py::update_queue_entry for where this
+    # actually fires.
+    turn_near_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         # The live-list query: today's queue for a doctor, in order.
         Index("idx_queue_business_date_status", "business_id", "queue_date", "status"),

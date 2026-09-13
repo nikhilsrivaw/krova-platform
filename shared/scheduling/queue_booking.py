@@ -45,6 +45,18 @@ class ShiftNotOpen(Exception):
     agent's own "never raise, always None on legitimate failure" contract)."""
 
 
+class OpdQueueNotEnabled(Exception):
+    """Raised when issue_token is called for a business whose vertical
+    doesn't declare the opd_queue capability - callers translate this the
+    same way they already translate ShiftNotOpen (an HTTP 403 for a
+    router, None for the agent's own never-raise contract). Checked here,
+    in the one function every real entry point (staff check-in, the
+    public kiosk, the voice/WhatsApp agent, the public API) already
+    shares, rather than in each caller separately - same reasoning this
+    module's own docstring already gives for "is this shift open" being
+    answered once."""
+
+
 async def get_open_session(
     db: AsyncSession, *, business_id: uuid.UUID, shift: Shift, on_date: date
 ) -> ShiftSession | None:
@@ -107,12 +119,17 @@ async def issue_token(
     source_message_ids: list[uuid.UUID] | None = None,
 ) -> QueueEntry:
     """
-    Raises ShiftNotOpen rather than returning None - unlike the agent's own
-    try_book_token_from_agent wrapper (which does return None for every
-    legitimate failure, matching try_book_from_agent's contract), this
-    lower-level function is shared with HTTP callers that want a real
-    exception to translate into their own status code.
+    Raises ShiftNotOpen/OpdQueueNotEnabled rather than returning None -
+    unlike the agent's own try_book_token_from_agent wrapper (which does
+    return None for every legitimate failure, matching
+    try_book_from_agent's contract), this lower-level function is shared
+    with HTTP callers that want a real exception to translate into their
+    own status code.
     """
+    business = await db.get(Business, business_id)
+    if business is None or not verticals.has_capability(business.vertical, "opd_queue"):
+        raise OpdQueueNotEnabled(f"Business {business_id} does not have the opd_queue capability")
+
     today = datetime.now(timezone.utc).date()
     session = await get_open_session(db, business_id=business_id, shift=shift, on_date=today)
     if session is None:
@@ -160,11 +177,9 @@ async def issue_token(
         entry.id, business_id, shift.value, entry.queue_number, intake_channel.value,
     )
 
-    business = await db.get(Business, business_id)
-
     if customer_id is not None:
         customer = await db.get(Customer, customer_id)
-        if business is not None and customer is not None:
+        if customer is not None:
             try:
                 await notify.send_queue_checkin(
                     db, business=business, customer=customer, queue_number=entry.queue_number
@@ -176,35 +191,36 @@ async def issue_token(
 
     # Same best-effort side channels as shared/scheduling/booking.py's
     # book() - a business's own calendar/webhook, never allowed to undo or
-    # block a token that already has a real place in line.
-    if business is not None:
-        try:
-            await google_calendar.sync_queue_entry(db, business=business, entry=entry, action="upsert")
-        except Exception:
-            logger.exception("calendar sync failed for queue entry=%s", entry.id)
-        try:
-            await webhooks.dispatch_event(
-                db, business_id=business_id, event_type=WebhookEventType.queue_token_issued.value,
-                payload={
-                    "queue_entry_id": str(entry.id),
-                    "customer_id": str(customer_id) if customer_id else None,
-                    "shift": shift.value,
-                    "queue_number": entry.queue_number,
-                    "intake_channel": intake_channel.value,
-                },
-            )
-        except Exception:
-            logger.exception("webhook dispatch failed for queue entry=%s", entry.id)
-        try:
-            from shared.care import post_call_actions
+    # block a token that already has a real place in line. `business` is
+    # guaranteed non-None here (the capability check above already
+    # returned/raised otherwise), so this no longer needs its own guard.
+    try:
+        await google_calendar.sync_queue_entry(db, business=business, entry=entry, action="upsert")
+    except Exception:
+        logger.exception("calendar sync failed for queue entry=%s", entry.id)
+    try:
+        await webhooks.dispatch_event(
+            db, business_id=business_id, event_type=WebhookEventType.queue_token_issued.value,
+            payload={
+                "queue_entry_id": str(entry.id),
+                "customer_id": str(customer_id) if customer_id else None,
+                "shift": shift.value,
+                "queue_number": entry.queue_number,
+                "intake_channel": intake_channel.value,
+            },
+        )
+    except Exception:
+        logger.exception("webhook dispatch failed for queue entry=%s", entry.id)
+    try:
+        from shared.care import post_call_actions
 
-            await post_call_actions.apply_rules(
-                db, business_id=business_id, trigger_type=WebhookEventType.queue_token_issued.value,
-                customer_id=customer_id, channel=intake_channel.value,
-                context={"shift": shift.value, "queue_number": entry.queue_number},
-            )
-        except Exception:
-            logger.exception("automation-rule dispatch failed for queue entry=%s", entry.id)
+        await post_call_actions.apply_rules(
+            db, business_id=business_id, trigger_type=WebhookEventType.queue_token_issued.value,
+            customer_id=customer_id, channel=intake_channel.value,
+            context={"shift": shift.value, "queue_number": entry.queue_number},
+        )
+    except Exception:
+        logger.exception("automation-rule dispatch failed for queue entry=%s", entry.id)
 
     return entry
 
@@ -228,18 +244,12 @@ async def try_book_token_from_agent(
     always "do not confirm a token that was not actually issued", never to
     special-case a parse failure or a race differently from a plain "no").
 
-    Gated on the opd_queue capability here, in this one shared function,
-    not in each of respond.py's and pipeline.py's call sites - same
-    reasoning try_book_from_agent's own docstring gives for scheduling.
+    Gated on the opd_queue capability, but no longer checked here directly
+    - issue_token() itself now raises OpdQueueNotEnabled for this, so this
+    function just catches it alongside ShiftNotOpen below. One source of
+    truth for the gate instead of two copies of the same check.
     """
     if not book_token:
-        return None
-
-    if not verticals.has_capability(business.vertical, "opd_queue"):
-        logger.warning(
-            "agent returned book_token for a non-opd_queue business=%s, ignoring",
-            business.id,
-        )
         return None
 
     try:
@@ -263,4 +273,9 @@ async def try_book_token_from_agent(
         )
     except ShiftNotOpen:
         logger.info("book_token %s no longer open for business=%s", shift.value, business.id)
+        return None
+    except OpdQueueNotEnabled:
+        logger.warning(
+            "agent returned book_token for a non-opd_queue business=%s, ignoring", business.id,
+        )
         return None
