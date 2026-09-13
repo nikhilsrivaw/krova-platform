@@ -69,6 +69,22 @@ Do not interpret, advise or speculate. If the image is unclear or you cannot \
 read part of it, say so plainly rather than guessing - an invented figure is \
 far worse than an admitted gap."""
 
+CATALOG_MATCH_SYSTEM = """You are matching a photo a customer sent on \
+WhatsApp against a business's own real, current product catalog, to work \
+out which product it shows.
+
+You are given the photo and a list of the business's actual products right \
+now - name, price, availability, and a retailer_id you can reference.
+
+Describe what the photo shows, then state clearly which catalog product (if \
+any) it matches - by its exact name and retailer_id from the list given, \
+never a product not in that list.
+
+Never state a price or availability you were not given in the catalog list \
+- an invented price is worse than admitting no confident match. If nothing \
+in the catalog matches confidently, say so plainly rather than guessing the \
+closest one."""
+
 
 async def fetch(media_id: str, access_token: str, phone_number_id: str | None = None) -> Media:
     """
@@ -110,13 +126,32 @@ async def fetch(media_id: str, access_token: str, phone_number_id: str | None = 
     )
 
 
-async def describe(media: Media) -> str | None:
+def _catalog_products_text(catalog_products: list[dict]) -> str:
+    lines = []
+    for p in catalog_products:
+        parts = [f"name: {p.get('name')}", f"retailer_id: {p.get('retailer_id')}"]
+        if p.get("price"):
+            parts.append(f"price: {p['price']}")
+        if p.get("availability"):
+            parts.append(f"availability: {p['availability']}")
+        lines.append("- " + ", ".join(parts))
+    return "\n".join(lines)
+
+
+async def describe(media: Media, catalog_products: list[dict] | None = None) -> str | None:
     """
     Turn an image into text the rest of the platform can work with.
 
     This is what makes a photographed invoice into a commitment. The
     description becomes the message's content, so extraction, the agent and
     the timeline all handle photographs without special-casing them.
+
+    `catalog_products`, when given, switches the prompt to product-matching
+    (the photo is matched against a business's own real, live catalog
+    instead of just described) - the caller (media.read) decides when
+    that's appropriate; this function stays a plain, direct branch either
+    way, not two functions duplicating the fetch/encode/error-handling
+    around them.
     """
     if media.mime_type not in READABLE_IMAGE_TYPES:
         return None
@@ -126,9 +161,19 @@ async def describe(media: Media) -> str | None:
 
     encoded = base64.standard_b64encode(media.content).decode()
 
+    if catalog_products:
+        system = CATALOG_MATCH_SYSTEM
+        prompt_text = (
+            f"The business's current catalog:\n{_catalog_products_text(catalog_products)}\n\n"
+            "Which product does this photo show, if any?"
+        )
+    else:
+        system = DESCRIBE_SYSTEM
+        prompt_text = "What is in this image? Transcribe any text."
+
     try:
         completion = await ai.complete(
-            system=DESCRIBE_SYSTEM,
+            system=system,
             messages=[
                 {
                     "role": "user",
@@ -143,7 +188,7 @@ async def describe(media: Media) -> str | None:
                         },
                         {
                             "type": "text",
-                            "text": "What is in this image? Transcribe any text.",
+                            "text": prompt_text,
                         },
                     ],
                 }
@@ -174,6 +219,7 @@ async def read(
     access_token: str,
     *,
     phone_number_id: str | None = None,
+    catalog_products: list[dict] | None = None,
 ) -> tuple[str | None, dict]:
     """
     Fetch a piece of media and return what it says, plus what it was.
@@ -181,6 +227,11 @@ async def read(
     Never raises for an unreadable file. A PDF we cannot parse should leave
     the message stored with an honest note, not fail the whole webhook and
     make Meta retry it.
+
+    `catalog_products`, when given, is passed straight to describe() - see
+    its own docstring. The caller (services/api/routers/webhooks.py)
+    decides whether this business/message qualifies; this function doesn't
+    know or care why the list is or isn't there.
     """
     try:
         media = await fetch(media_id, access_token, phone_number_id)
@@ -200,9 +251,9 @@ async def read(
         info["read_as"] = "text"
         return text, info
 
-    described = await describe(media)
+    described = await describe(media, catalog_products)
     if described is not None:
-        info["read_as"] = "image_description"
+        info["read_as"] = "catalog_match" if catalog_products else "image_description"
         return described, info
 
     # Understood as a file, not as content. Say so rather than storing an

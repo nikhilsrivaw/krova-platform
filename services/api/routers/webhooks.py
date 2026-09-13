@@ -270,10 +270,36 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                 # least. Read it now: Meta's download URL lasts five minutes
                 # and the media id only seven days.
                 if media_info.get("id") and connection.access_token:
+                    catalog_products = None
+                    # A customer photo of a product only needs catalog
+                    # matching (not just a generic description) for a
+                    # business that both has this capability and has
+                    # actually told us which Meta catalog is theirs - a
+                    # cheap capability+extra check, so this never costs an
+                    # extra Graph API round trip for every other business.
+                    if media_info.get("kind") == "image":
+                        catalog_id = (connection.extra or {}).get("catalog_id")
+                        if catalog_id:
+                            from shared import verticals
+
+                            business = await db.get(Business, connection.business_id)
+                            if business and verticals.has_capability(business.vertical, "photo_product_match"):
+                                from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
+
+                                try:
+                                    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+                                    catalog_products = await client.list_catalog_products(catalog_id)
+                                except WhatsAppError:
+                                    logger.warning(
+                                        "could not read catalog=%s for business=%s - falling back to a plain image description",
+                                        catalog_id, connection.business_id,
+                                    )
+
                     read_text, details = await media.read(
                         media_info["id"],
                         decrypt(connection.access_token),
                         phone_number_id=connection.external_account_id,
+                        catalog_products=catalog_products,
                     )
                     media_info.update(details)
                     if read_text:

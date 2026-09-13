@@ -560,6 +560,33 @@ class WhatsAppClient:
         )
         return self._result(payload)
 
+    async def list_catalog_products(self, catalog_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        """
+        The business's own real, live catalog - read, not sent. Unlike
+        every other method here, this hits `{catalog_id}/products` directly,
+        not `{phone_number_id}/messages` (`self._base` doesn't apply - a
+        catalog belongs to the business's Meta Business Manager, not to any
+        one phone number). Same access token, though: whatever permission
+        already lets this business send catalog/product messages is what
+        this read needs too.
+
+        Returns Meta's own product fields (name, retailer_id, price,
+        image_url, availability) - never cached, never mirrored into a
+        Krova table, so it can never go stale against what the business
+        actually has for sale (same reasoning `shared/db/models/order.py`
+        gives for order data never being locally owned either).
+        """
+        url = f"{settings.graph_base_url}/{catalog_id}/products"
+        params = {"fields": "name,retailer_id,price,image_url,availability", "limit": limit}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(url, headers=self._headers, params=params)
+        payload = response.json() if response.content else {}
+        if response.status_code != 200:
+            error = _explain(payload)
+            logger.warning("whatsapp catalog read failed catalog=%s code=%s: %s", catalog_id, error.code, error)
+            raise error
+        return payload.get("data", [])
+
     async def send_flow_message(
         self,
         to: str,

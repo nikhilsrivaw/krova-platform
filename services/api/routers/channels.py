@@ -257,6 +257,38 @@ async def set_ad_tracking(body: AdTrackingIn, current_user: CurrentUserDep, db: 
     return {"dataset_id": body.dataset_id}
 
 
+class CatalogIdIn(BaseModel):
+    # The business's own Meta Commerce Catalog id - not something Krova can
+    # supply, same reasoning as AdTrackingIn.dataset_id above. Already
+    # implicitly required for send_single_product_message/
+    # send_multi_product_message/send_catalog_message (each takes one as a
+    # parameter per-send); this is the first place it's ever saved rather
+    # than typed in every time. Pass null to clear it.
+    catalog_id: str | None = None
+
+
+@router.post("/whatsapp/catalog-id")
+async def set_catalog_id(body: CatalogIdIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.whatsapp,
+            ChannelConnection.status == ConnectionStatus.active,
+        )
+    )
+    connection = result.scalars().first()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Connect a WhatsApp number first"
+        )
+    connection.extra = {**(connection.extra or {}), "catalog_id": body.catalog_id}
+    logger.info(
+        "whatsapp catalog_id set business=%s configured=%s",
+        current_user.business, bool(body.catalog_id),
+    )
+    return {"catalog_id": body.catalog_id}
+
+
 class PaymentConfigIn(BaseModel):
     # WhatsApp Payments (India) is Meta-native, not something Krova builds
     # against a gateway's own API - a business sets this up directly on
