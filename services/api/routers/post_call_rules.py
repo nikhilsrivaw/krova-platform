@@ -110,6 +110,7 @@ class StepIn(BaseModel):
 
 class PostCallRuleOut(BaseModel):
     id: str
+    name: str | None = None
     trigger_type: str
     is_active: bool
     channel: str | None = None
@@ -119,6 +120,7 @@ class PostCallRuleOut(BaseModel):
 def _to_out(rule: PostCallActionRule, steps: list[AutomationStep]) -> PostCallRuleOut:
     return PostCallRuleOut(
         id=str(rule.id),
+        name=rule.name,
         trigger_type=rule.trigger_type,
         is_active=rule.is_active,
         channel=rule.channel,
@@ -158,6 +160,10 @@ async def list_rules(current_user: CurrentUserDep, db: DbDep) -> list[PostCallRu
 
 
 class PostCallRuleIn(BaseModel):
+    # Purely descriptive, the business's own label - never interpreted,
+    # never validated beyond length. See PostCallActionRule.name's own
+    # docstring for why this exists.
+    name: str | None = Field(default=None, max_length=255)
     trigger_type: str
     is_active: bool = True
     # None (omitted) = any channel, matching the model's own default.
@@ -251,6 +257,7 @@ async def create_rule(body: PostCallRuleIn, current_user: CurrentUserDep, db: Db
     first = body.steps[0]
     rule = PostCallActionRule(
         business_id=current_user.business,
+        name=body.name,
         trigger_type=body.trigger_type,
         # Mirror of step 0 - these columns are NOT NULL and nothing else
         # reads them (see this module's own docstring).
@@ -290,6 +297,7 @@ async def update_rule(
     _validate(body)
     rule = await _owned_rule(rule_id, current_user, db)
     first = body.steps[0]
+    rule.name = body.name
     rule.trigger_type = body.trigger_type
     rule.action_type = first.action_type
     rule.action_config = first.action_config

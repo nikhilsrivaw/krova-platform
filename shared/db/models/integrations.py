@@ -298,11 +298,14 @@ class PostCallActionRule(UUIDMixin, TimestampMixin, Base):
     (nothing in this schema is, per OutboundWebhook.event_types' own
     precedent), just validated at the API layer.
 
-    action_type is deliberately one of exactly two supported values for
-    v1, not an open-ended action language: "whatsapp_followup" (needs an
-    approved WhatsApp template - see notify.send_post_call_followup) and
-    "create_escalation_task" (reuses the existing Escalation model via
-    agent_module.notify_escalation, not a new Task concept).
+    action_type is one of a fixed, generic action menu (see
+    services/api/routers/post_call_rules.py::_VALID_ACTIONS) - deliberately
+    not an open-ended action language, and deliberately never a
+    per-vertical action (no "create_case" just for law firms, etc.). A
+    business gets the same action vocabulary regardless of what it sells;
+    what differs per business is which of these it wires up, and to what -
+    see send_flow, whose actual form content is a WhatsAppFlow the
+    business authors itself, not something Krova hardcodes per vertical.
     """
 
     __tablename__ = "post_call_action_rules"
@@ -310,6 +313,11 @@ class PostCallActionRule(UUIDMixin, TimestampMixin, Base):
     business_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
+    # The business's own label for this rule ("New patient no-show
+    # recovery") - optional, purely descriptive, never interpreted. Without
+    # it a rule only ever exists as "trigger X -> action Y", which is
+    # Krova's language, not the business's own.
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
     trigger_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # None (the default) means "any channel" - the rule fires regardless of
     # where the trigger came from, today's original behaviour, unchanged.
