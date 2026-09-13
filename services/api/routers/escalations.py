@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.db.models import Escalation
@@ -49,6 +49,16 @@ async def list_escalations(
     query = query.order_by(Escalation.created_at.desc())
     rows = await db.execute(query)
     return [_out(e) for e in rows.scalars().all()]
+
+
+@router.get("/count")
+async def pending_count(current_user: CurrentUserDep, db: DbDep) -> dict:
+    """For the sidebar badge - same shape as approvals.py's own /count."""
+    result = await db.execute(select(func.count(Escalation.id)).where(
+        Escalation.business_id == current_user.business,
+        Escalation.acknowledged_at.is_(None),
+    ))
+    return {"open": int(result.scalar_one())}
 
 
 @router.post("/{escalation_id}/acknowledge", response_model=EscalationOut)

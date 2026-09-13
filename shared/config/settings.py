@@ -149,6 +149,17 @@ class Settings(BaseSettings):
     postmark_account_token: str = Field(default="", alias="POSTMARK_ACCOUNT_TOKEN")
     postmark_server_token: str = Field(default="", alias="POSTMARK_SERVER_TOKEN")
 
+    # A Krova-owned, Postmark-verified sender address used ONLY for
+    # internal-ops alerts to a business's own staff (e.g. the escalation
+    # failsafe's email fallback, shared/care/escalation_failsafe.py) -
+    # never customer-facing, so it doesn't need a per-business
+    # EmailSendConnection the way a business's own outbound mail does.
+    # Must be verified as a sender signature in Krova's own Postmark
+    # account (via postmark_account_token above) before use, same
+    # requirement postmark.send_email's own docstring already states for
+    # any From address.
+    notifications_from_email: str = Field(default="", alias="NOTIFICATIONS_FROM_EMAIL")
+
     # Comma-separated. Empty in production by default was the bug this
     # replaced - it silently blocked every browser request to the API with
     # no origin allowed at all, discovered only once something was actually
