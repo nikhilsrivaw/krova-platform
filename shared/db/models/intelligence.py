@@ -325,6 +325,13 @@ class Escalation(UUIDMixin, Base):
     )
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Stamped by shared/care/escalation_failsafe.py::categorize_new_escalations
+    # a few minutes after creation, not by notify_escalation() itself - the
+    # AI classification call is deliberately kept off the hot path
+    # notify_escalation() runs on (live voice turns, live chat replies).
+    # None until that sweep runs; one of shared/ai/escalation_categorize.py's
+    # own fixed category set once it has.
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

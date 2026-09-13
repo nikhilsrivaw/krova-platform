@@ -27,6 +27,7 @@ class EscalationOut(BaseModel):
     customer_id: str | None
     channel: str
     reason: str
+    category: str | None
     created_at: datetime
     acknowledged_at: datetime | None
     escalated_further_at: datetime | None
@@ -35,7 +36,7 @@ class EscalationOut(BaseModel):
 def _out(e: Escalation) -> EscalationOut:
     return EscalationOut(
         id=str(e.id), customer_id=str(e.customer_id) if e.customer_id else None,
-        channel=e.channel, reason=e.reason, created_at=e.created_at,
+        channel=e.channel, reason=e.reason, category=e.category, created_at=e.created_at,
         acknowledged_at=e.acknowledged_at, escalated_further_at=e.escalated_further_at,
     )
 

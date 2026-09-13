@@ -57,6 +57,14 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "flow.completed": ("flow_id",),
     "appointment.booked": ("starts_at", "intake_channel"),
     "appointment.cancelled": ("starts_at", "intake_channel", "reason"),
+    # category deliberately NOT a condition field here - it's stamped by a
+    # cold-path sweep (shared/care/escalation_failsafe.py::
+    # categorize_new_escalations) AFTER notify_escalation()'s own
+    # real-time apply_rules() call already fired with context={"reason":
+    # reason} - category is never actually in scope at dispatch time, so
+    # a condition on it could never match anything. Exposed for display
+    # (the /escalations card badge) and, once true dispatch-time timing
+    # allows it, a real future condition field - not this round.
     "escalation.raised": ("reason",),
     "queue_token.issued": ("shift", "queue_number"),
     "competitor.mentioned": ("severity", "title", "body"),

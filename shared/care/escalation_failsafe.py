@@ -37,7 +37,9 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.ai import escalation_categorize
 from shared.auth.encryption import decrypt
+from shared.billing import usage
 from shared.channels.voice import plivo_client
 from shared.config.settings import settings
 from shared.db.models import (
@@ -49,6 +51,7 @@ from shared.db.models import (
     ConnectionStatus,
     Escalation,
     User,
+    UsageEventType,
 )
 from shared.integrations import postmark
 from shared.utils.logging import get_logger
@@ -167,3 +170,51 @@ async def _try_email_fallback(escalation: Escalation, business: Business, db: As
     except postmark.PostmarkError as exc:
         logger.warning("escalation failsafe email failed id=%s: %s", escalation.id, exc)
         return False
+
+
+async def categorize_new_escalations(db: AsyncSession) -> int:
+    """
+    A completely independent sweep from check_unacknowledged above - runs
+    much more often (every 2 minutes, see services/api/scheduler.py) since
+    it's not gated on the 15-minute unacknowledged window at all: an
+    escalation acknowledged in the first minute still deserves a category,
+    for the same reason every escalation does (the badge on
+    /escalations). Display-only, deliberately not an Automations
+    condition field - see CONDITION_FIELDS["escalation.raised"] in
+    shared/care/post_call_actions.py for why. See
+    shared/ai/escalation_categorize.py's own docstring for why this is
+    never called from notify_escalation() itself.
+
+    Returns how many rows were DUE and attempted - not how many actually
+    got a category stamped, since a real AI-call failure is caught,
+    logged, and skipped (left for the next sweep to retry) rather than
+    raised. Never re-classifies a row that already has one.
+    """
+    result = await db.execute(select(Escalation).where(Escalation.category.is_(None)))
+    due = list(result.scalars().all())
+    if not due:
+        return 0
+
+    for escalation in due:
+        try:
+            outcome = await escalation_categorize.categorize(escalation.reason)
+        except Exception:
+            logger.exception("escalation categorize failed id=%s", escalation.id)
+            continue
+
+        escalation.category = outcome.category
+        if outcome.cost_paise:
+            usage.record(
+                business_id=escalation.business_id,
+                event_type=UsageEventType.ai_escalation_categorization,
+                channel=escalation.channel,
+                quantity=1,
+                unit="call",
+                krova_cost_paise=outcome.cost_paise,
+                source_type="escalation",
+                source_id=escalation.id,
+                db=db,
+            )
+
+    logger.info("escalation failsafe: categorized %s escalation(s)", len(due))
+    return len(due)

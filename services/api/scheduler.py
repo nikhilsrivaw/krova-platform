@@ -205,6 +205,26 @@ async def escalate_unacknowledged() -> None:
         logger.exception("escalation failsafe job failed")
 
 
+async def categorize_new_escalations() -> None:
+    """
+    AI-categorizes any Escalation still missing one - deliberately off the
+    hot path (notify_escalation() itself is untouched), runs much more
+    often than the failsafe above since it isn't gated on the 15-minute
+    unacknowledged window. See shared/care/escalation_failsafe.py.
+    """
+    from shared.care import escalation_failsafe
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            categorized = await escalation_failsafe.categorize_new_escalations(db)
+            await db.commit()
+            if categorized:
+                logger.info("categorized %s escalation(s)", categorized)
+    except Exception:
+        logger.exception("escalation categorize job failed")
+
+
 async def send_cod_confirmations() -> None:
     """D2C, order_sync capability. See shared/scheduling/recall.py."""
     from shared.db.session import AsyncSessionLocal
@@ -604,6 +624,14 @@ def build() -> AsyncIOScheduler:
         id="escalate_unacknowledged",
         replace_existing=True,
         misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        categorize_new_escalations,
+        IntervalTrigger(minutes=2),
+        id="categorize_new_escalations",
+        replace_existing=True,
+        misfire_grace_time=120,
     )
 
     scheduler.add_job(

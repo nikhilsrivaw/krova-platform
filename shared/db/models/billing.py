@@ -43,6 +43,11 @@ class UsageEventType(str, enum.Enum):
     # One structured outcome/sentiment/topic/summary read on a finished
     # call - see shared/ai/call_summary.py.
     ai_call_analysis = "ai_call_analysis"
+    # One escalation classified into a fixed category - see
+    # shared/ai/escalation_categorize.py. Always off the hot path (a
+    # periodic sweep, not notify_escalation() itself), so channel below is
+    # the escalation's own original channel, not "when this ran."
+    ai_escalation_categorization = "ai_escalation_categorization"
 
     # Voice-specific, one row per cost component per call, matching the
     # breakdown already computed in relay.py rather than collapsing them
