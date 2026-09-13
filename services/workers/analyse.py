@@ -44,16 +44,6 @@ from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# The Insight `kind` values (shared/ai/signals.py) worth acting on the
-# instant they're extracted, mapped to the WebhookEventType each fires -
-# see _extract_signals' own comment on why these four and not every kind.
-_REALTIME_SIGNAL_TRIGGERS = {
-    "competitor_mention": "competitor.mentioned",
-    "churn_risk": "churn_risk.detected",
-    "demo_request": "demo.requested",
-    "pricing_question": "pricing_question.asked",
-}
-
 QUEUE = "analyse_message"
 BUSINESS_QUEUE = "analyse_business"
 
@@ -194,43 +184,22 @@ async def _extract_signals(
         already.add(found.title.strip().lower())
         stored += 1
 
-        # Real-time, not batched, for these four signal kinds specifically
-        # - unlike every other signal kind, which just waits on the
-        # Signals page. competitor_mention's own research found the ~83
-        # seconds after a competitor comes up decide the deal; churn_risk,
-        # demo_request and pricing_question are the same shape of "this
-        # is worth acting on before the conversation moves on," not a
-        # nightly sweep. "Real-time" means "as fast as this
-        # per-message ANALYSE_QUEUE worker already is," not a new
-        # fast-path built for this.
-        trigger_type = _REALTIME_SIGNAL_TRIGGERS.get(found.kind)
-        if trigger_type:
-            from shared.integrations import webhooks
+        # Real-time, not batched - as fast as this per-message
+        # ANALYSE_QUEUE worker already is, not a new fast-path built for
+        # this. All 8 AI-extracted kinds now dispatch (competitor_mention's
+        # own research found the ~83 seconds after a competitor comes up
+        # decide the deal; every other kind here is the same shape of
+        # "worth acting on before the conversation moves on"). See
+        # shared/care/signal_dispatch.py for the actual kind->trigger
+        # mapping and why two other, business-level kinds never reach
+        # here at all (they're never extracted by this function).
+        from shared.care.signal_dispatch import dispatch_signal
 
-            try:
-                await webhooks.dispatch_event(
-                    db, business_id=message.business_id, event_type=trigger_type,
-                    payload={
-                        "customer_id": str(message.customer_id),
-                        "title": found.title,
-                        "body": found.body,
-                        "severity": found.severity,
-                        "source_quote": found.source_quote,
-                    },
-                )
-            except Exception:
-                logger.exception("%s webhook dispatch failed business=%s", trigger_type, message.business_id)
-
-            try:
-                from shared.care import post_call_actions
-
-                await post_call_actions.apply_rules(
-                    db, business_id=message.business_id, trigger_type=trigger_type,
-                    customer_id=message.customer_id, channel=message.channel.value,
-                    context={"severity": found.severity, "title": found.title, "body": found.body},
-                )
-            except Exception:
-                logger.exception("%s automation-rule dispatch failed business=%s", trigger_type, message.business_id)
+        await dispatch_signal(
+            db, business_id=message.business_id, customer_id=message.customer_id,
+            channel=message.channel.value, kind=found.kind, title=found.title,
+            body=found.body, severity=found.severity, source_quote=found.source_quote,
+        )
 
     if stored:
         logger.info("stored %s product feedback signal(s) for message=%s", stored, message.id)

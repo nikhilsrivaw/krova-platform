@@ -59,6 +59,18 @@ _VALID_TRIGGERS = {
     WebhookEventType.churn_risk_detected.value,
     WebhookEventType.demo_requested.value,
     WebhookEventType.pricing_question_asked.value,
+    WebhookEventType.bug_detected.value,
+    WebhookEventType.feature_request_detected.value,
+    WebhookEventType.complaint_detected.value,
+    WebhookEventType.praise_detected.value,
+    WebhookEventType.overdue_followup_detected.value,
+    WebhookEventType.report_not_collected_detected.value,
+    WebhookEventType.overdue_refund_detected.value,
+    WebhookEventType.intent_leakage_detected.value,
+    WebhookEventType.rto_risk_detected.value,
+    # escalation_rate_detected / account_health_detected deliberately
+    # excluded - business-level signals with no customer_id, so a rule on
+    # either could never actually fire (see shared/care/signal_dispatch.py).
 }
 _VALID_ACTIONS = {
     "whatsapp_followup", "create_escalation_task", "add_tag", "send_flow",

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.care.signal_dispatch import dispatch_signal
 from shared.db.models import Business, Call, Channel, ChannelConnection, ConnectionStatus, Insight
 from shared.utils.logging import get_logger
 
@@ -87,30 +88,37 @@ async def check_business(business_id, db: AsyncSession) -> None:
 
     if now_high and not previously_high:
         severity = "critical" if rate >= _RATE_THRESHOLD * 2 else "warning"
+        title = f"{round(rate * 100)}% of calls this week needed a human"
+        body = (
+            f"{escalated} of the last {total} calls (7 days) ended in an escalation - "
+            f"above the {round(_RATE_THRESHOLD * 100)}% watch threshold. Worth checking "
+            "what the agent keeps failing to handle before it becomes a pattern customers notice."
+        )
         db.add(Insight(
-            business_id=business_id,
-            kind="escalation_rate",
-            title=f"{round(rate * 100)}% of calls this week needed a human",
-            body=(
-                f"{escalated} of the last {total} calls (7 days) ended in an escalation - "
-                f"above the {round(_RATE_THRESHOLD * 100)}% watch threshold. Worth checking "
-                "what the agent keeps failing to handle before it becomes a pattern customers notice."
-            ),
-            severity=severity,
-            created_at=datetime.now(timezone.utc),
+            business_id=business_id, kind="escalation_rate", title=title, body=body,
+            severity=severity, created_at=datetime.now(timezone.utc),
         ))
+        # No customer_id - this is about the business's own rate, not any
+        # one conversation, so it only ever reaches a webhook, never
+        # apply_rules (see shared/care/signal_dispatch.py's own docstring).
+        await dispatch_signal(
+            db, business_id=business_id, customer_id=None, channel=None,
+            kind="escalation_rate", title=title, body=body, severity=severity,
+        )
         logger.warning(
             "escalation rate crossed threshold business=%s rate=%.2f calls=%s", business_id, rate, total,
         )
     elif not now_high and previously_high:
+        title = "Call escalation rate is back to normal"
+        body = f"{escalated} of the last {total} calls (7 days) needed a human - back under {round(_RATE_THRESHOLD * 100)}%."
         db.add(Insight(
-            business_id=business_id,
-            kind="escalation_rate",
-            title="Call escalation rate is back to normal",
-            body=f"{escalated} of the last {total} calls (7 days) needed a human - back under {round(_RATE_THRESHOLD * 100)}%.",
-            severity="info",
-            created_at=datetime.now(timezone.utc),
+            business_id=business_id, kind="escalation_rate", title=title, body=body,
+            severity="info", created_at=datetime.now(timezone.utc),
         ))
+        await dispatch_signal(
+            db, business_id=business_id, customer_id=None, channel=None,
+            kind="escalation_rate", title=title, body=body, severity="info",
+        )
 
     await db.flush()
 

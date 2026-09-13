@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
+from shared.care.signal_dispatch import dispatch_signal
 from shared.db.models import Business, Commitment, CommitmentDirection, CommitmentKind, CommitmentStatus, Insight
 from shared.utils.logging import get_logger
 
@@ -86,17 +87,22 @@ async def check_clinic_commitments(db: AsyncSession) -> int:
             title = _title_for(commitment)
             if title.strip().lower() in existing:
                 continue
+            kind = _KIND_TO_INSIGHT[commitment.kind]
             db.add(
                 Insight(
                     business_id=business.id,
                     customer_id=commitment.customer_id,
-                    kind=_KIND_TO_INSIGHT[commitment.kind],
+                    kind=kind,
                     title=title,
                     body=commitment.description,
                     severity="warning",
                     source_message_ids=commitment.source_message_ids,
                     created_at=now,
                 )
+            )
+            await dispatch_signal(
+                db, business_id=business.id, customer_id=commitment.customer_id, channel=None,
+                kind=kind, title=title, body=commitment.description, severity="warning",
             )
             existing.add(title.strip().lower())
             created += 1
@@ -166,6 +172,10 @@ async def check_ecommerce_commitments(db: AsyncSession) -> int:
                     source_message_ids=commitment.source_message_ids,
                     created_at=now,
                 )
+            )
+            await dispatch_signal(
+                db, business_id=business.id, customer_id=commitment.customer_id, channel=None,
+                kind="overdue_refund", title=title, body=commitment.description, severity="warning",
             )
             existing.add(title.strip().lower())
             created += 1

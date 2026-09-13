@@ -217,6 +217,37 @@ class WebhookEventType(str, enum.Enum):
     churn_risk_detected = "churn_risk.detected"
     demo_requested = "demo.requested"
     pricing_question_asked = "pricing_question.asked"
+    # The rest of shared/ai/signals.py's own 8 AI-extracted kinds - same
+    # dispatch site and gate as the three above, just never wired until
+    # the Signals feature audit found they were being detected and shown
+    # on /signals with no path to automation at all. See
+    # shared/care/signal_dispatch.py, the one place that now owns this
+    # mapping (this enum only defines the values, doesn't decide who gets
+    # dispatched).
+    bug_detected = "bug.detected"
+    feature_request_detected = "feature_request.detected"
+    complaint_detected = "complaint.detected"
+    praise_detected = "praise.detected"
+    # shared/ai/recall_insights.py's deterministic sweeps - real customer-
+    # scoped Insight kinds (Commitment/order-based, not AI-extracted) that
+    # had the exact same "detected but never dispatched" gap.
+    overdue_followup_detected = "overdue_followup.detected"
+    report_not_collected_detected = "report_not_collected.detected"
+    overdue_refund_detected = "overdue_refund.detected"
+    # shared/care/intent_leakage.py's two sweeps - same reasoning.
+    intent_leakage_detected = "intent_leakage.detected"
+    rto_risk_detected = "rto_risk.detected"
+    # Business-level Insight kinds (escalation_alerts.py, health_monitor.py) -
+    # neither ever has a customer_id, so post_call_actions.apply_rules can
+    # never meaningfully act on them (every action type needs a customer).
+    # Deliberately webhook-only: present here so a business can subscribe
+    # its own external system (Settings' outbound-webhook picker), but
+    # never added as an Automations trigger anywhere - see
+    # signal_dispatch.py's own docstring for why exposing these as
+    # triggers would just be a second version of the silent-trap bug this
+    # whole pass was meant to close.
+    escalation_rate_detected = "escalation_rate.detected"
+    account_health_detected = "account_health.detected"
 
 
 class OutboundWebhook(UUIDMixin, TimestampMixin, Base):

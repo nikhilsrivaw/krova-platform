@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.auth.encryption import decrypt
+from shared.care.signal_dispatch import dispatch_signal
 from shared.channels.whatsapp.account import AccountClient, AccountError
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus, Insight
 from shared.utils.logging import get_logger
@@ -70,57 +71,70 @@ async def check_connection(connection: ChannelConnection, db: AsyncSession) -> N
         },
     }
 
+    # No customer_id anywhere in this function - account_health is about
+    # the business's own connection, not any one conversation, so every
+    # Insight below only ever reaches a webhook, never apply_rules (see
+    # shared/care/signal_dispatch.py's own docstring).
     if _rank(health.quality_rating) > _rank(previous_rating):
+        title = f"WhatsApp number quality dropped to {health.quality_rating}"
+        body = (
+            f"{_label(connection)}'s quality rating fell from {previous_rating or 'unrated'} "
+            f"to {health.quality_rating}. Meta restricts messaging volume before a number "
+            "stops sending entirely - worth checking what's driving complaints or blocks "
+            "before it gets worse."
+        )
+        severity = "critical" if health.quality_rating == "RED" else "warning"
         db.add(Insight(
-            business_id=connection.business_id,
-            kind="account_health",
-            title=f"WhatsApp number quality dropped to {health.quality_rating}",
-            body=(
-                f"{_label(connection)}'s quality rating fell from {previous_rating or 'unrated'} "
-                f"to {health.quality_rating}. Meta restricts messaging volume before a number "
-                "stops sending entirely - worth checking what's driving complaints or blocks "
-                "before it gets worse."
-            ),
-            severity="critical" if health.quality_rating == "RED" else "warning",
-            created_at=now,
+            business_id=connection.business_id, kind="account_health", title=title, body=body,
+            severity=severity, created_at=now,
         ))
+        await dispatch_signal(
+            db, business_id=connection.business_id, customer_id=None, channel=None,
+            kind="account_health", title=title, body=body, severity=severity,
+        )
         logger.warning(
             "quality rating worsened business=%s %s -> %s",
             connection.business_id, previous_rating, health.quality_rating,
         )
     elif _rank(health.quality_rating) < _rank(previous_rating) and previous_rating:
+        title = f"WhatsApp number quality recovered to {health.quality_rating}"
+        body = f"{_label(connection)}'s quality rating improved from {previous_rating} to {health.quality_rating}."
         db.add(Insight(
-            business_id=connection.business_id,
-            kind="account_health",
-            title=f"WhatsApp number quality recovered to {health.quality_rating}",
-            body=f"{_label(connection)}'s quality rating improved from {previous_rating} to {health.quality_rating}.",
-            severity="info",
-            created_at=now,
+            business_id=connection.business_id, kind="account_health", title=title, body=body,
+            severity="info", created_at=now,
         ))
+        await dispatch_signal(
+            db, business_id=connection.business_id, customer_id=None, channel=None,
+            kind="account_health", title=title, body=body, severity="info",
+        )
 
     if readiness.can_send != "AVAILABLE" and previous_can_send in (None, "AVAILABLE"):
         reasons = "; ".join(b.message for b in readiness.blockers) or "Meta gave no specific reason"
         fix = next((b.fix for b in readiness.blockers if b.fix), None)
+        title = f"WhatsApp number can no longer send freely ({readiness.can_send})"
+        body = reasons + (f" Fix: {fix}" if fix else "")
         db.add(Insight(
-            business_id=connection.business_id,
-            kind="account_health",
-            title=f"WhatsApp number can no longer send freely ({readiness.can_send})",
-            body=reasons + (f" Fix: {fix}" if fix else ""),
-            severity="critical",
-            created_at=now,
+            business_id=connection.business_id, kind="account_health", title=title, body=body,
+            severity="critical", created_at=now,
         ))
+        await dispatch_signal(
+            db, business_id=connection.business_id, customer_id=None, channel=None,
+            kind="account_health", title=title, body=body, severity="critical",
+        )
         logger.warning(
             "connection blocked business=%s can_send=%s", connection.business_id, readiness.can_send,
         )
     elif readiness.can_send == "AVAILABLE" and previous_can_send not in (None, "AVAILABLE"):
+        title = "WhatsApp number can send again"
+        body = f"Whatever was blocking {_label(connection)} has cleared."
         db.add(Insight(
-            business_id=connection.business_id,
-            kind="account_health",
-            title="WhatsApp number can send again",
-            body=f"Whatever was blocking {_label(connection)} has cleared.",
-            severity="info",
-            created_at=now,
+            business_id=connection.business_id, kind="account_health", title=title, body=body,
+            severity="info", created_at=now,
         ))
+        await dispatch_signal(
+            db, business_id=connection.business_id, customer_id=None, channel=None,
+            kind="account_health", title=title, body=body, severity="info",
+        )
 
     await db.flush()
 

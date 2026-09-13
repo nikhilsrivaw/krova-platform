@@ -63,6 +63,19 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "churn_risk.detected": ("severity", "title", "body"),
     "demo.requested": ("severity", "title", "body"),
     "pricing_question.asked": ("severity", "title", "body"),
+    "bug.detected": ("severity", "title", "body"),
+    "feature_request.detected": ("severity", "title", "body"),
+    "complaint.detected": ("severity", "title", "body"),
+    "praise.detected": ("severity", "title", "body"),
+    "overdue_followup.detected": ("severity", "title", "body"),
+    "report_not_collected.detected": ("severity", "title", "body"),
+    "overdue_refund.detected": ("severity", "title", "body"),
+    "intent_leakage.detected": ("severity", "title", "body"),
+    "rto_risk.detected": ("severity", "title", "body"),
+    # escalation_rate.detected / account_health.detected deliberately
+    # absent - business-level Insight kinds with no customer_id, so they
+    # never reach apply_rules at all (see shared/care/signal_dispatch.py).
+    # A condition field here would gate a step that can never run.
 }
 
 # Deliberately this short list, not an expression language - a condition is

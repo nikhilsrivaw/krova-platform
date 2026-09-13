@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
+from shared.care.signal_dispatch import dispatch_signal
 from shared.db.models import AbandonedCheckout, Business, Customer, Message, Order
 from shared.db.models.intelligence import Insight
 from shared.utils.logging import get_logger
@@ -115,20 +116,27 @@ async def check_intent_leakage(db: AsyncSession) -> int:
             if title.strip().lower() in existing:
                 continue
 
+            body = (
+                (
+                    f"Started checking out (₹{checkout.total_paise / 100:,.0f}) "
+                    if checkout.total_paise else "Started checking out "
+                ) + "and messaged the business separately, but never completed the order."
+            )
             db.add(
                 Insight(
                     business_id=business.id,
                     customer_id=customer.id,
                     kind="intent_leakage",
                     title=title,
-                    body=(
-                        f"Started checking out (₹{checkout.total_paise / 100:,.0f}) "
-                        if checkout.total_paise else "Started checking out "
-                    ) + "and messaged the business separately, but never completed the order.",
+                    body=body,
                     severity="info",
                     source_message_ids=list(message_ids),
                     created_at=now,
                 )
+            )
+            await dispatch_signal(
+                db, business_id=business.id, customer_id=customer.id, channel=None,
+                kind="intent_leakage", title=title, body=body, severity="info",
             )
             existing.add(title.strip().lower())
             created += 1
@@ -193,21 +201,26 @@ async def check_rto_risk_pincodes(db: AsyncSession) -> int:
             if title.strip().lower() in existing:
                 continue
 
+            body = (
+                f"{len(prior)} prior orders shipped to pincode {order.shipping_pincode} "
+                "were not delivered (NDR) - consider a verification call before shipping "
+                f"order #{order.order_number or order.id}."
+            )
             db.add(
                 Insight(
                     business_id=business.id,
                     customer_id=order.customer_id,
                     kind="rto_risk",
                     title=title,
-                    body=(
-                        f"{len(prior)} prior orders shipped to pincode {order.shipping_pincode} "
-                        "were not delivered (NDR) - consider a verification call before shipping "
-                        f"order #{order.order_number or order.id}."
-                    ),
+                    body=body,
                     severity="warning",
                     source_message_ids=[],
                     created_at=now,
                 )
+            )
+            await dispatch_signal(
+                db, business_id=business.id, customer_id=order.customer_id, channel=None,
+                kind="rto_risk", title=title, body=body, severity="warning",
             )
             existing.add(title.strip().lower())
             created += 1
