@@ -56,7 +56,7 @@ async def send_onboarding_dropoff_nudges(db: AsyncSession) -> int:
         trial_event.nudge_sent_at = now
 
         business = await db.get(Business, trial_event.business_id)
-        if business is None or not verticals.has_capability(business.vertical, "product_feedback"):
+        if business is None or not verticals.has_capability(business, "product_feedback"):
             continue
 
         activated = (

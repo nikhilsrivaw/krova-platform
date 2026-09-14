@@ -127,7 +127,7 @@ async def issue_token(
     own status code.
     """
     business = await db.get(Business, business_id)
-    if business is None or not verticals.has_capability(business.vertical, "opd_queue"):
+    if business is None or not verticals.has_capability(business, "opd_queue"):
         raise OpdQueueNotEnabled(f"Business {business_id} does not have the opd_queue capability")
 
     today = datetime.now(timezone.utc).date()

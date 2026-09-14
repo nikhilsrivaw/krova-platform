@@ -67,7 +67,7 @@ async def check_clinic_commitments(db: AsyncSession) -> int:
             Business.vertical == "clinic",
         )
     )
-    businesses = [b for b in result.scalars().all() if verticals.has_capability(b.vertical, "care_recall")]
+    businesses = [b for b in result.scalars().all() if verticals.has_capability(b, "care_recall")]
     if not businesses:
         return 0
 
@@ -140,7 +140,7 @@ async def check_ecommerce_commitments(db: AsyncSession) -> int:
             Business.vertical == "ecommerce",
         )
     )
-    businesses = [b for b in result.scalars().all() if verticals.has_capability(b.vertical, "order_sync")]
+    businesses = [b for b in result.scalars().all() if verticals.has_capability(b, "order_sync")]
     if not businesses:
         return 0
 

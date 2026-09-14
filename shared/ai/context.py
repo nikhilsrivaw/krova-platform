@@ -47,6 +47,7 @@ from shared.db.models import (
 )
 from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import queue_booking
+from shared.verticals import labels
 
 # Doctors listed per reply, when the business has the scheduling capability.
 # Bounded deliberately - this sits on the same latency-sensitive path as the
@@ -340,7 +341,7 @@ async def build(
     )
 
     availability_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "scheduling"):
+    if business and verticals.has_capability(business, "scheduling"):
         doctors = (
             await db.execute(
                 select(Doctor)
@@ -362,7 +363,7 @@ async def build(
         availability_text = "\n".join(doctor_lines)
 
     cases_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "case_tracking"):
+    if business and verticals.has_capability(business, "case_tracking"):
         rows = (
             await db.execute(
                 select(Case)
@@ -378,7 +379,7 @@ async def build(
         cases_text = "\n".join(case_lines)
 
     orders_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "order_sync"):
+    if business and verticals.has_capability(business, "order_sync"):
         rows = (
             await db.execute(
                 select(Order)
@@ -399,7 +400,7 @@ async def build(
         orders_text = "\n".join(order_lines)
 
     properties_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "property_listings"):
+    if business and verticals.has_capability(business, "property_listings"):
         rows = (
             await db.execute(
                 select(Appointment, Property)
@@ -426,7 +427,7 @@ async def build(
         properties_text = "\n".join(property_lines)
 
     claims_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "tpa_claim_tracking"):
+    if business and verticals.has_capability(business, "tpa_claim_tracking"):
         rows = (
             await db.execute(
                 select(InsuranceClaim)
@@ -443,10 +444,16 @@ async def build(
         claims_text = "\n".join(claim_lines)
 
     open_shifts_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "opd_queue"):
+    if business and verticals.has_capability(business, "opd_queue"):
         summary = await queue_booking.open_shift_summary(db, business_id=business_id)
+        # This business's own word for each shift rides along here, in the
+        # per-business context, rather than being interpolated into the
+        # system prompt - that stays static and vertical-neutral so it keeps
+        # caching across every business.
+        shift_labels = labels.queue_labels(business)["shifts"]
         open_shifts_text = "\n".join(
-            f"- {shift.value}: {count} waiting" for shift, count in summary
+            f"- {shift.value} ({shift_labels.get(shift.value, shift.value)}): {count} waiting"
+            for shift, count in summary
         )
 
     return AgentContext(
@@ -557,7 +564,7 @@ async def build_anonymous(
     )
 
     availability_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "scheduling"):
+    if business and verticals.has_capability(business, "scheduling"):
         doctors = (
             await db.execute(
                 select(Doctor)
@@ -575,10 +582,16 @@ async def build_anonymous(
         availability_text = "\n".join(doctor_lines)
 
     open_shifts_text: str | None = None
-    if business and verticals.has_capability(business.vertical, "opd_queue"):
+    if business and verticals.has_capability(business, "opd_queue"):
         summary = await queue_booking.open_shift_summary(db, business_id=business_id)
+        # This business's own word for each shift rides along here, in the
+        # per-business context, rather than being interpolated into the
+        # system prompt - that stays static and vertical-neutral so it keeps
+        # caching across every business.
+        shift_labels = labels.queue_labels(business)["shifts"]
         open_shifts_text = "\n".join(
-            f"- {shift.value}: {count} waiting" for shift, count in summary
+            f"- {shift.value} ({shift_labels.get(shift.value, shift.value)}): {count} waiting"
+            for shift, count in summary
         )
 
     return AgentContext(

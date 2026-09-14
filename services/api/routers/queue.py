@@ -1,6 +1,8 @@
 """
-The OPD Queue capability's door: open/close today's shifts, check a patient
-in, see today's live list, call the next one. See shared/db/models/queue.py
+The OPD Queue capability's door: open/close today's shifts, check someone
+in, see today's live list, call the next one. What a business calls any of
+this - patient, guest, applicant - is its own setting, resolved by
+shared/verticals/labels.py. See shared/db/models/queue.py
 and shared/db/models/shift.py for why this is not the Scheduling capability
 with different labels, and shared/scheduling/queue_booking.py for the
 shared "issue a token" logic every entry point (this router, the public
@@ -12,7 +14,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
@@ -20,18 +22,30 @@ from shared import verticals
 from shared.db.models import Business, Customer, IntakeChannel, QueueEntry, QueueStatus, Shift, ShiftSession
 from shared.integrations import google_calendar
 from shared.scheduling import notify, queue_booking
+from shared.verticals import labels
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/queue", tags=["queue"])
 
-# Not a discovered real value - no per-token consultation-duration data
-# exists anywhere in this system to base a time estimate on (confirmed by
-# research), so a fixed token-count threshold is the honest, buildable
-# version of "your turn is near." Same reasoning this codebase already
-# uses for similar constants (e.g. post_call_actions.py's _MAX_DELAY_SECONDS).
-_TURN_NEAR_THRESHOLD = 2
+_TURN_NEAR_THRESHOLD_DEFAULT = 2
+
+
+def _turn_near_threshold(business: Business) -> int:
+    """
+    How many ahead counts as "your turn is near" - a per-business setting,
+    because two tables ahead at a restaurant is nothing like two patients
+    ahead at a clinic.
+
+    Still a count and not a time estimate: no per-token duration data exists
+    anywhere in this system to base one on (same reasoning this codebase
+    already uses for post_call_actions.py's _MAX_DELAY_SECONDS). Guarded on
+    read because this runs inside the live "call next" action - junk in the
+    JSONB bag must not 500 a real queue advance.
+    """
+    raw = ((business.settings or {}).get("queue") or {}).get("turn_near_threshold")
+    return raw if isinstance(raw, int) and raw >= 1 else _TURN_NEAR_THRESHOLD_DEFAULT
 
 
 async def _require_opd_queue(business_id: uuid.UUID, db: DbDep) -> Business:
@@ -45,9 +59,98 @@ async def _require_opd_queue(business_id: uuid.UUID, db: DbDep) -> Business:
     business = await db.get(Business, business_id)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
-    if not verticals.has_capability(business.vertical, "opd_queue"):
+    if not verticals.has_capability(business, "opd_queue"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This business does not have the opd_queue capability")
     return business
+
+
+# ── Settings ─────────────────────────────────────────────────────────────
+
+class QueueShiftLabelsIn(BaseModel):
+    morning: str | None = Field(default=None, max_length=40)
+    evening: str | None = Field(default=None, max_length=40)
+    emergency: str | None = Field(default=None, max_length=40)
+
+
+class QueueLabelsIn(BaseModel):
+    person: str | None = Field(default=None, max_length=40)
+    ticket: str | None = Field(default=None, max_length=40)
+    serving: str | None = Field(default=None, max_length=40)
+    shifts: QueueShiftLabelsIn | None = None
+
+
+class QueueSettingsIn(BaseModel):
+    enabled: bool | None = None
+    labels: QueueLabelsIn | None = None
+    turn_near_threshold: int | None = Field(default=None, ge=1, le=50)
+
+
+class QueueSettingsOut(BaseModel):
+    enabled: bool
+    labels: dict
+    turn_near_threshold: int
+
+
+def _settings_out(business: Business) -> QueueSettingsOut:
+    return QueueSettingsOut(
+        enabled=verticals.has_capability(business, "opd_queue"),
+        labels=labels.queue_labels(business),
+        turn_near_threshold=_turn_near_threshold(business),
+    )
+
+
+@router.get("/settings", response_model=QueueSettingsOut)
+async def get_queue_settings(current_user: CurrentUserDep, db: DbDep) -> QueueSettingsOut:
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    return _settings_out(business)
+
+
+@router.put("/settings", response_model=QueueSettingsOut)
+async def update_queue_settings(
+    body: QueueSettingsIn, current_user: CurrentUserDep, db: DbDep
+) -> QueueSettingsOut:
+    """
+    Turn the queue on for this business and set what it calls things.
+
+    Deliberately NOT behind _require_opd_queue: this is the endpoint a
+    business uses to turn the capability on in the first place, so gating it
+    on already having the capability would make it unreachable for exactly
+    the businesses it exists for.
+
+    Named fields rather than a settings passthrough, for the reason
+    auth.py's UpdateMeRequest already gives: Business.settings is the
+    storage, not an arbitrary-JSONB write surface.
+    """
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+
+    settings = {**(business.settings or {})}
+
+    if body.enabled is not None:
+        overrides = dict(settings.get("capability_overrides") or {})
+        overrides["opd_queue"] = body.enabled
+        settings["capability_overrides"] = overrides
+
+    queue_cfg = dict(settings.get("queue") or {})
+    if body.labels is not None:
+        # Replaced wholesale, not merged: the Settings form posts every
+        # label field together, and a field cleared there must actually
+        # clear rather than leave the old word stranded in the bag. A
+        # cleared field then falls back through labels.queue_labels' own
+        # tiers, which is what makes "blank" mean "use the default".
+        queue_cfg["labels"] = body.labels.model_dump(exclude_none=True)
+    if body.turn_near_threshold is not None:
+        queue_cfg["turn_near_threshold"] = body.turn_near_threshold
+    if queue_cfg:
+        settings["queue"] = queue_cfg
+
+    business.settings = settings
+    await db.commit()
+    logger.info("queue settings updated for business=%s", current_user.business)
+    return _settings_out(business)
 
 
 # ── Shifts ───────────────────────────────────────────────────────────────
@@ -300,6 +403,11 @@ async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user
 
 
 async def _notify_if_turn_near(called_entry: QueueEntry, db: DbDep) -> None:
+    business = await db.get(Business, called_entry.business_id)
+    if business is None:
+        return
+    threshold = _turn_near_threshold(business)
+
     waiting = (
         await db.execute(
             select(QueueEntry).where(
@@ -310,16 +418,15 @@ async def _notify_if_turn_near(called_entry: QueueEntry, db: DbDep) -> None:
             ).order_by(QueueEntry.queue_number.asc())
         )
     ).scalars().all()
-    if len(waiting) < _TURN_NEAR_THRESHOLD:
+    if len(waiting) < threshold:
         return
 
-    near = waiting[_TURN_NEAR_THRESHOLD - 1]
+    near = waiting[threshold - 1]
     if near.turn_near_notified_at is not None or near.customer_id is None:
         return
 
-    business = await db.get(Business, called_entry.business_id)
     customer = await db.get(Customer, near.customer_id)
-    if business is None or customer is None:
+    if customer is None:
         return
 
     # Stamped regardless of whether the send actually succeeded - same
@@ -330,7 +437,7 @@ async def _notify_if_turn_near(called_entry: QueueEntry, db: DbDep) -> None:
     try:
         await notify.send_queue_turn_near(
             db, business=business, customer=customer,
-            queue_number=near.queue_number, tokens_ahead=_TURN_NEAR_THRESHOLD - 1,
+            queue_number=near.queue_number, tokens_ahead=threshold - 1,
         )
     except Exception:
         logger.exception("queue turn-near notification failed for entry=%s", near.id)

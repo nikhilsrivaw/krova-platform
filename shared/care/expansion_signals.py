@@ -48,7 +48,7 @@ async def send_expansion_nudges(db: AsyncSession) -> int:
         event.nudge_sent_at = now
 
         business = await db.get(Business, event.business_id)
-        if business is None or not verticals.has_capability(business.vertical, "product_feedback"):
+        if business is None or not verticals.has_capability(business, "product_feedback"):
             continue
 
         customer = await db.get(Customer, event.customer_id)

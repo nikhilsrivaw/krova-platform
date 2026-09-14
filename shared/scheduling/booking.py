@@ -184,7 +184,7 @@ async def try_book_from_agent(
     if not book_slot:
         return None
 
-    if not verticals.has_capability(business.vertical, "scheduling"):
+    if not verticals.has_capability(business, "scheduling"):
         logger.warning(
             "agent returned book_slot for a non-scheduling business=%s, ignoring",
             business.id,

@@ -22,6 +22,7 @@ from services.api.dependencies import DbDep
 from shared.db.models import Business, IdentityKind, IntakeChannel, QueueEntry, QueueStatus, Shift
 from shared.identity import resolver
 from shared.scheduling import queue_booking
+from shared.verticals import labels
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -47,6 +48,11 @@ class OpenShiftOut(BaseModel):
 class KioskStatusOut(BaseModel):
     business_name: str
     open_shifts: list[OpenShiftOut]
+    # The kiosk is a separate public page with no session and no /auth/me, so
+    # its vocabulary has to arrive here or it can't have any. Without this the
+    # screen in front of a real customer would keep saying whatever the code
+    # was first written for, whatever the business set.
+    labels: dict
 
 
 @router.get("/{token}/status", response_model=KioskStatusOut)
@@ -54,7 +60,11 @@ async def kiosk_status(token: str, db: DbDep) -> KioskStatusOut:
     business = await _business_for_token(token, db)
     summary = await queue_booking.open_shift_summary(db, business_id=business.id)
     open_shifts = [OpenShiftOut(shift=shift.value, waiting_count=count) for shift, count in summary]
-    return KioskStatusOut(business_name=business.name, open_shifts=open_shifts)
+    return KioskStatusOut(
+        business_name=business.name,
+        open_shifts=open_shifts,
+        labels=labels.queue_labels(business),
+    )
 
 
 class KioskCheckInIn(BaseModel):

@@ -20,6 +20,10 @@ list on a pricing page.
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from shared.db.models import Business
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -75,19 +79,42 @@ def get(key: str) -> dict:
     return templates[key]
 
 
-def has_capability(key: str, capability: str) -> bool:
+def capabilities_for(business: "Business") -> list[str]:
     """
-    Whether this vertical declares a given capability - Scheduling, Voice
+    What this business can actually use: its vertical's declared list, then
+    its own on/off overrides from settings["capability_overrides"].
+
+    The vertical is where a business starts, not what it is forever. A
+    restaurant running a walk-in waitlist needs exactly the mechanism a
+    clinic's OPD queue already is; the alternative is a near-identical
+    capability per vertical, and by the fourth one every vertical is a fork
+    of the codebase - the failure this module's own docstring exists to
+    prevent. So the template answers "what should this kind of business have
+    by default" and the business answers "what do I actually use".
+    """
+    caps = list(get(business.vertical).get("capabilities", []))
+    overrides = (business.settings or {}).get("capability_overrides") or {}
+    for capability, enabled in overrides.items():
+        if enabled and capability not in caps:
+            caps.append(capability)
+        elif not enabled and capability in caps:
+            caps.remove(capability)
+    return caps
+
+
+def has_capability(business: "Business", capability: str) -> bool:
+    """
+    Whether this business gets a given capability - Scheduling, Voice
     Booking, and so on.
 
     The check, not the capability itself: the module implementing a
     capability (shared/scheduling, for instance) is written once and shared
-    by every vertical that declares it, per the project's standing rule
-    against per-vertical subclassing. This function is how a caller (a
-    WhatsApp reply handler, a voice turn) asks "does this business get to
-    use this" without knowing or caring which vertical it is.
+    by every business that has it, per the project's standing rule against
+    per-vertical subclassing. This function is how a caller (a WhatsApp reply
+    handler, a voice turn) asks "does this business get to use this" without
+    knowing or caring which vertical it is.
     """
-    return capability in get(key).get("capabilities", [])
+    return capability in capabilities_for(business)
 
 
 def seed_dna(key: str) -> dict:

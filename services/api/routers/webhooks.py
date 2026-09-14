@@ -283,7 +283,7 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                             from shared import verticals
 
                             business = await db.get(Business, connection.business_id)
-                            if business and verticals.has_capability(business.vertical, "photo_product_match"):
+                            if business and verticals.has_capability(business, "photo_product_match"):
                                 from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
 
                                 try:

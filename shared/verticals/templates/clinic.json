@@ -3,6 +3,14 @@
   "label": "Clinic, dental practice, or small hospital",
   "summary": "A clinic, dental practice, or small hospital where patients book appointments, ask about treatments, fees, and insurance, chase reports and prescriptions, and need reminding about follow-ups and refills.",
   "capabilities": ["conversation_intelligence", "scheduling", "care_recall", "opd_queue", "tpa_claim_tracking"],
+  "labels": {
+    "queue": {
+      "person": "patient",
+      "ticket": "token",
+      "serving": "In Consultation",
+      "shifts": { "morning": "Morning", "evening": "Evening", "emergency": "Emergency" }
+    }
+  },
   "tone": "Calm, precise and reassuring. Patients messaging a clinic are often worried. Answer the question first, then offer the next step. Never sound rushed.",
   "policies": "Never give medical advice, never suggest a diagnosis, and never estimate whether a symptom is serious. Those go to the doctor, always. Quote only fees listed in the business details - treatment costs vary by case and a wrong number becomes an argument at the counter. Never confirm an appointment slot that is not in the calendar. Never name a specific medical condition, diagnosis, or medication in any message, including routine reminders - describe it generically instead ('your scheduled follow-up', never 'your diabetes check'; 'your refill reminder', never naming the drug). Any reply that goes beyond routine scheduling, billing, or logistics into clinical territory - symptoms, medication instructions, or anything that reads as medical counsel rather than admin - must be escalated for the doctor to handle directly, never sent automatically, regardless of the business's autonomy setting.",
   "known_gaps": [

@@ -83,7 +83,7 @@ async def send_due_recalls(db: AsyncSession) -> int:
     sent = 0
     for commitment in due:
         business = await db.get(Business, commitment.business_id)
-        if business is None or not verticals.has_capability(business.vertical, "care_recall"):
+        if business is None or not verticals.has_capability(business, "care_recall"):
             continue
         customer = await db.get(Customer, commitment.customer_id)
         if customer is None:
@@ -189,7 +189,7 @@ async def send_cod_confirmations(db: AsyncSession) -> int:
     for order in due:
         order.cod_confirmation_sent_at = now  # stamped regardless - see review-request precedent above
         business = await db.get(Business, order.business_id)
-        if business is None or not verticals.has_capability(business.vertical, "order_sync"):
+        if business is None or not verticals.has_capability(business, "order_sync"):
             continue
         if order.customer_id is None:
             continue
@@ -224,7 +224,7 @@ async def send_abandoned_cart_recovery(db: AsyncSession) -> int:
     for checkout in due:
         checkout.recovery_sent_at = now  # stamped regardless - see review-request precedent above
         business = await db.get(Business, checkout.business_id)
-        if business is None or not verticals.has_capability(business.vertical, "order_sync"):
+        if business is None or not verticals.has_capability(business, "order_sync"):
             continue
         if checkout.customer_id is None or not checkout.checkout_url:
             continue
@@ -266,7 +266,7 @@ async def send_repeat_purchase_nudges(db: AsyncSession) -> int:
         if order.customer_id is None:
             continue
         business = await db.get(Business, order.business_id)
-        if business is None or not verticals.has_capability(business.vertical, "order_sync"):
+        if business is None or not verticals.has_capability(business, "order_sync"):
             continue
 
         later_order = (

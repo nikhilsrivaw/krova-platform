@@ -69,7 +69,7 @@ async def check_intent_leakage(db: AsyncSession) -> int:
     result = await db.execute(
         select(Business).where(Business.is_active.is_(True))
     )
-    businesses = [b for b in result.scalars().all() if verticals.has_capability(b.vertical, "order_sync")]
+    businesses = [b for b in result.scalars().all() if verticals.has_capability(b, "order_sync")]
     if not businesses:
         return 0
 
@@ -163,7 +163,7 @@ async def check_rto_risk_pincodes(db: AsyncSession) -> int:
     result = await db.execute(
         select(Business).where(Business.is_active.is_(True))
     )
-    businesses = [b for b in result.scalars().all() if verticals.has_capability(b.vertical, "order_sync")]
+    businesses = [b for b in result.scalars().all() if verticals.has_capability(b, "order_sync")]
     if not businesses:
         return 0
 

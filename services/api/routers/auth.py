@@ -16,6 +16,7 @@ from shared.auth.passwords import (
 )
 from shared.db.models import Business, User
 from shared import verticals
+from shared.verticals import labels
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -51,15 +52,21 @@ class MeResponse(BaseModel):
     business_id: str | None
     business_name: str | None
     vertical: str | None
-    # What this business's vertical actually declares - e.g. "scheduling",
-    # "case_tracking" - the one thing the frontend is allowed to gate a
-    # nav item or a page on. Never a second, frontend-side copy of the
-    # vertical->capability map: that map already lives in
-    # shared/verticals/templates/*.json, and duplicating it here is exactly
-    # the kind of drift the template system exists to prevent.
+    # What this business actually has - e.g. "scheduling", "case_tracking" -
+    # the one thing the frontend is allowed to gate a nav item or a page on.
+    # Its vertical's declared list adjusted by the business's own overrides
+    # (verticals.capabilities_for); the vertical is the default, not the
+    # verdict. Never a second, frontend-side copy of the vertical->capability
+    # map: that map already lives in shared/verticals/templates/*.json, and
+    # duplicating it here is exactly the kind of drift the template system
+    # exists to prevent.
     capabilities: list[str]
     autonomy: str | None
     role: str | None
+    # What this business calls the parts of its queue, resolved across code
+    # defaults, its vertical's template, and its own settings. Sent from here
+    # because every page already fetches /auth/me, exactly like capabilities.
+    queue_labels: dict
     # Settings.google_review_url made a first-class field on this response
     # rather than a raw settings passthrough - see UpdateMeRequest's own
     # reasoning for why this one key gets a named field instead of an
@@ -188,9 +195,8 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         business_id=str(current_user.business_id) if current_user.business_id else None,
         business_name=business.name if business else None,
         vertical=business.vertical if business else None,
-        capabilities=(
-            verticals.get(business.vertical).get("capabilities", []) if business else []
-        ),
+        capabilities=verticals.capabilities_for(business) if business else [],
+        queue_labels=labels.queue_labels(business) if business else {},
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
@@ -249,9 +255,8 @@ async def update_me(
         business_id=str(current_user.business_id) if current_user.business_id else None,
         business_name=business.name if business else None,
         vertical=business.vertical if business else None,
-        capabilities=(
-            verticals.get(business.vertical).get("capabilities", []) if business else []
-        ),
+        capabilities=verticals.capabilities_for(business) if business else [],
+        queue_labels=labels.queue_labels(business) if business else {},
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,

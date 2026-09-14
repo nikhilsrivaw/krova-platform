@@ -117,15 +117,17 @@ REPLY_TOOL = {
             "book_token": {
                 "type": "string",
                 "description": (
-                    "Only for a business with an OPD queue: the exact shift name "
-                    "(e.g. 'morning', 'evening', 'emergency') from the open "
-                    "shifts you were shown, set only when the customer has just "
-                    "confirmed they want to be added to that specific open "
-                    "shift - not a doctor slot, a queue token. Omit entirely if "
-                    "no shift is currently open, or the customer has not yet "
-                    "confirmed. Never set alongside book_slot - a customer is "
-                    "either booking a doctor's calendar slot or getting a queue "
-                    "token, never both from the same message."
+                    "Only for a business that runs a walk-in queue: the exact "
+                    "shift name (e.g. 'morning', 'evening', 'emergency') from "
+                    "the open shifts you were shown, set only when the customer "
+                    "has just confirmed they want to be added to that specific "
+                    "open shift - a place in the line, not a reserved slot. Use "
+                    "the business's own words for it in what you write; the "
+                    "open-shift list tells you what it calls them. Omit "
+                    "entirely if no shift is currently open, or the customer has "
+                    "not yet confirmed. Never set alongside book_slot - a "
+                    "customer is either reserving a time on the calendar or "
+                    "joining the walk-in line, never both from the same message."
                 ),
             },
             "share_catalog": {
@@ -193,12 +195,13 @@ have clearly agreed to a specific slot, not while they are still asking \
 what's available.
 
 If the business details list which shifts are open right now, that list is \
-the only source of truth for a queue token - never a shift you assume is \
-running. When the customer has just confirmed they want to be added to one \
-specific open shift, set book_token to its exact name so a real token \
-actually gets issued. This is a different thing from book_slot: a token is \
-a place in a walk-in queue, not a doctor's calendar slot, and a message \
-never sets both.
+the only source of truth for joining the walk-in line - never a shift you \
+assume is running. When the customer has just confirmed they want to be \
+added to one specific open shift, set book_token to its exact name so their \
+place actually gets issued. Each open shift is listed with the word this \
+business uses for it - use that word when you write, not the internal name. \
+This is a different thing from book_slot: it is a place in a line, not a \
+reserved time on the calendar, and a message never sets both.
 
 If the business details mention a connected product catalog, set \
 share_catalog to true when the customer is actually asking what's \

@@ -92,7 +92,7 @@ async def check_feature_request_dedup(db: AsyncSession) -> int:
     now = datetime.now(timezone.utc)
 
     result = await db.execute(select(Business).where(Business.is_active.is_(True)))
-    businesses = [b for b in result.scalars().all() if verticals.has_capability(b.vertical, "product_feedback")]
+    businesses = [b for b in result.scalars().all() if verticals.has_capability(b, "product_feedback")]
     if not businesses:
         return 0
 

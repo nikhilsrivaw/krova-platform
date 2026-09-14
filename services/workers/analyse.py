@@ -252,7 +252,7 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         db=db,
     )
 
-    if business and verticals.has_capability(business.vertical, "product_feedback"):
+    if business and verticals.has_capability(business, "product_feedback"):
         await _extract_signals(message, conversation, context, db)
 
     already = await _existing_quotes(message.customer_id, db)

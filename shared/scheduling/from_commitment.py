@@ -62,7 +62,7 @@ async def try_book_from_commitment(
         return None
 
     business = await db.get(Business, business_id)
-    if business is None or not verticals.has_capability(business.vertical, "scheduling"):
+    if business is None or not verticals.has_capability(business, "scheduling"):
         return None
 
     if due_at.tzinfo is None:
