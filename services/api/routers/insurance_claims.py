@@ -12,12 +12,31 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import ClaimStatus, Customer, InsuranceClaim
+from shared import verticals
+from shared.db.models import Business, ClaimStatus, Customer, InsuranceClaim
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/insurance-claims", tags=["insurance_claims"])
+
+
+async def _require_tpa_claim_tracking(business_id: uuid.UUID, db: DbDep) -> Business:
+    """
+    Every endpoint here needs this - unlike Queue there is no single shared
+    "issue a token" choke point to gate once, so each entry point checks for
+    itself. The sidebar hides the /claims link for a business without the
+    capability, but that was the only boundary before this: a business
+    could otherwise hit these endpoints directly regardless of vertical.
+    """
+    business = await db.get(Business, business_id)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    if not verticals.has_capability(business, "tpa_claim_tracking"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This business does not have the tpa_claim_tracking capability"
+        )
+    return business
 
 
 class ClaimIn(BaseModel):
@@ -74,6 +93,7 @@ async def list_claims(
     customer_id: str | None = None,
     status_filter: ClaimStatus | None = Query(default=None, alias="status"),
 ) -> list[ClaimOut]:
+    await _require_tpa_claim_tracking(current_user.business, db)
     query = select(InsuranceClaim).where(
         InsuranceClaim.business_id == current_user.business
     ).order_by(InsuranceClaim.submitted_at.desc().nullslast())
@@ -87,6 +107,7 @@ async def list_claims(
 
 @router.post("", response_model=ClaimOut, status_code=status.HTTP_201_CREATED)
 async def create_claim(body: ClaimIn, current_user: CurrentUserDep, db: DbDep) -> ClaimOut:
+    await _require_tpa_claim_tracking(current_user.business, db)
     customer = await db.get(Customer, uuid.UUID(body.customer_id))
     if customer is None or customer.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
@@ -109,6 +130,7 @@ async def create_claim(body: ClaimIn, current_user: CurrentUserDep, db: DbDep) -
 
 @router.patch("/{claim_id}", response_model=ClaimOut)
 async def update_claim(claim_id: uuid.UUID, body: ClaimPatch, current_user: CurrentUserDep, db: DbDep) -> ClaimOut:
+    await _require_tpa_claim_tracking(current_user.business, db)
     claim = await db.get(InsuranceClaim, claim_id)
     if claim is None or claim.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Claim not found")
