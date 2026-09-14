@@ -16,7 +16,9 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared import verticals
-from shared.db.models import Appointment, AvailabilityRule, Business, Customer, Doctor, IntakeChannel
+from shared.db.models import (
+    Appointment, AvailabilityException, AvailabilityRule, Business, Customer, Doctor, IntakeChannel,
+)
 from shared.verticals import labels
 from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import booking as scheduling_booking
@@ -224,6 +226,81 @@ async def delete_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDe
     await db.flush()
 
 
+# ── One-off exceptions to the weekly pattern ────────────────────────────
+# A day a provider is out (leave, a conference), or exceptionally in
+# (an extra Saturday). shared/scheduling/availability.py already reads
+# these rows on every slot computation - this is the only way to write one.
+
+class AvailabilityExceptionIn(BaseModel):
+    date: date
+    is_unavailable: bool = True
+    start_time: time | None = None
+    end_time: time | None = None
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class AvailabilityExceptionOut(BaseModel):
+    id: str
+    date: date
+    is_unavailable: bool
+    start_time: time | None
+    end_time: time | None
+    reason: str | None
+
+
+def _exception_out(e: AvailabilityException) -> AvailabilityExceptionOut:
+    return AvailabilityExceptionOut(
+        id=str(e.id), date=e.date, is_unavailable=e.is_unavailable,
+        start_time=e.start_time, end_time=e.end_time, reason=e.reason,
+    )
+
+
+@router.get("/doctors/{doctor_id}/availability-exceptions", response_model=list[AvailabilityExceptionOut])
+async def list_exceptions(
+    doctor_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+) -> list[AvailabilityExceptionOut]:
+    await _require_scheduling(current_user.business, db)
+    await _owned_doctor(doctor_id, current_user.business, db)
+    rows = await db.execute(
+        select(AvailabilityException)
+        .where(AvailabilityException.doctor_id == doctor_id)
+        .order_by(AvailabilityException.date)
+    )
+    return [_exception_out(e) for e in rows.scalars().all()]
+
+
+@router.post(
+    "/doctors/{doctor_id}/availability-exceptions",
+    response_model=AvailabilityExceptionOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_exception(
+    doctor_id: uuid.UUID, body: AvailabilityExceptionIn, current_user: CurrentUserDep, db: DbDep
+) -> AvailabilityExceptionOut:
+    await _require_scheduling(current_user.business, db)
+    if body.start_time is not None and body.end_time is not None and body.end_time <= body.start_time:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "end_time must be after start_time")
+    doctor = await _owned_doctor(doctor_id, current_user.business, db)
+    exception = AvailabilityException(
+        business_id=current_user.business, doctor_id=doctor.id,
+        date=body.date, is_unavailable=body.is_unavailable,
+        start_time=body.start_time, end_time=body.end_time, reason=body.reason,
+    )
+    db.add(exception)
+    await db.flush()
+    return _exception_out(exception)
+
+
+@router.delete("/availability-exceptions/{exception_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_exception(exception_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    await _require_scheduling(current_user.business, db)
+    exception = await db.get(AvailabilityException, exception_id)
+    if exception is None or exception.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Availability exception not found")
+    await db.delete(exception)
+    await db.flush()
+
+
 # ── Reading the calendar ─────────────────────────────────────────────────
 
 class SlotOut(BaseModel):
@@ -343,6 +420,60 @@ async def create_appointment(
             notes=body.notes,
             property_id=uuid.UUID(body.property_id) if body.property_id else None,
         )
+    except SlotUnavailable:
+        raise HTTPException(status.HTTP_409_CONFLICT, "That slot was just taken")
+
+    return _appointment_out(appointment, doctor.name)
+
+
+async def _owned_appointment(appointment_id: uuid.UUID, business_id: uuid.UUID, db: DbDep) -> Appointment:
+    appointment = await db.get(Appointment, appointment_id)
+    if appointment is None or appointment.business_id != business_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Appointment not found")
+    return appointment
+
+
+class AppointmentCancelIn(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/appointments/{appointment_id}/cancel", response_model=AppointmentOut)
+async def cancel_appointment(
+    appointment_id: uuid.UUID, body: AppointmentCancelIn, current_user: CurrentUserDep, db: DbDep
+) -> AppointmentOut:
+    await _require_scheduling(current_user.business, db)
+    appointment = await _owned_appointment(appointment_id, current_user.business, db)
+    doctor = await db.get(Doctor, appointment.doctor_id)
+    appointment = await scheduling_booking.cancel(db, appointment=appointment, reason=body.reason)
+    return _appointment_out(appointment, doctor.name if doctor else "")
+
+
+class AppointmentRescheduleIn(BaseModel):
+    starts_at: datetime
+
+
+@router.post("/appointments/{appointment_id}/reschedule", response_model=AppointmentOut)
+async def reschedule_appointment(
+    appointment_id: uuid.UUID, body: AppointmentRescheduleIn, current_user: CurrentUserDep, db: DbDep
+) -> AppointmentOut:
+    """Same real-slot check create_appointment makes - a new time must
+    actually be open, never trusted from the request alone."""
+    business = await _require_scheduling(current_user.business, db)
+    appointment = await _owned_appointment(appointment_id, current_user.business, db)
+    doctor = await _owned_doctor(appointment.doctor_id, current_user.business, db)
+
+    day_slots = await scheduling_availability.open_slots(
+        db, business=business, doctor=doctor, on_date=body.starts_at.date()
+    )
+    slot = next((s for s in day_slots if s.starts_at == body.starts_at), None)
+    if slot is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{body.starts_at.isoformat()} is not an open slot for this doctor",
+        )
+
+    try:
+        appointment = await scheduling_booking.reschedule(db, appointment=appointment, new_slot=slot)
     except SlotUnavailable:
         raise HTTPException(status.HTTP_409_CONFLICT, "That slot was just taken")
 

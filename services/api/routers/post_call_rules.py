@@ -53,6 +53,7 @@ _VALID_TRIGGERS = {
     WebhookEventType.flow_completed.value,
     WebhookEventType.appointment_booked.value,
     WebhookEventType.appointment_cancelled.value,
+    WebhookEventType.appointment_rescheduled.value,
     WebhookEventType.escalation_raised.value,
     WebhookEventType.queue_token_issued.value,
     WebhookEventType.competitor_mentioned.value,

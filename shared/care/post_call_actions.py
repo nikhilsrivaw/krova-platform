@@ -57,6 +57,7 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "flow.completed": ("flow_id",),
     "appointment.booked": ("starts_at", "intake_channel"),
     "appointment.cancelled": ("starts_at", "intake_channel", "reason"),
+    "appointment.rescheduled": ("starts_at", "intake_channel"),
     # category deliberately NOT a condition field here - it's stamped by a
     # cold-path sweep (shared/care/escalation_failsafe.py::
     # categorize_new_escalations) AFTER notify_escalation()'s own

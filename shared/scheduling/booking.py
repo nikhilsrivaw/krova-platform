@@ -341,4 +341,36 @@ async def reschedule(
         "appointment rescheduled id=%s from=%s to=%s",
         appointment_id, previous_start.isoformat(), new_slot.starts_at.isoformat(),
     )
+
+    business = await db.get(Business, appointment.business_id)
+    if business is not None:
+        try:
+            await google_calendar.sync_appointment(db, business=business, appointment=appointment, action="upsert")
+        except Exception:
+            logger.exception("calendar reschedule-sync failed for appointment=%s", appointment.id)
+        try:
+            await webhooks.dispatch_event(
+                db, business_id=appointment.business_id, event_type=WebhookEventType.appointment_rescheduled.value,
+                payload={
+                    "appointment_id": str(appointment.id),
+                    "previous_starts_at": previous_start.isoformat(),
+                    "starts_at": appointment.starts_at.isoformat(),
+                },
+            )
+        except Exception:
+            logger.exception("webhook dispatch failed for rescheduled appointment=%s", appointment.id)
+        try:
+            from shared.care import post_call_actions
+
+            await post_call_actions.apply_rules(
+                db, business_id=appointment.business_id, trigger_type=WebhookEventType.appointment_rescheduled.value,
+                customer_id=appointment.customer_id, channel=appointment.intake_channel.value,
+                context={
+                    "starts_at": appointment.starts_at.isoformat(),
+                    "intake_channel": appointment.intake_channel.value,
+                },
+            )
+        except Exception:
+            logger.exception("automation-rule dispatch failed for rescheduled appointment=%s", appointment.id)
+
     return appointment

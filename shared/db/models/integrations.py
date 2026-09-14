@@ -177,6 +177,7 @@ class StripeConnection(UUIDMixin, TimestampMixin, Base):
 class WebhookEventType(str, enum.Enum):
     appointment_booked = "appointment.booked"
     appointment_cancelled = "appointment.cancelled"
+    appointment_rescheduled = "appointment.rescheduled"
     queue_token_issued = "queue_token.issued"
     escalation_raised = "escalation.raised"
     # software-startup vertical - fired the moment a competitor_mention
