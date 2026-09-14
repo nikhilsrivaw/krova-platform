@@ -55,6 +55,9 @@ SIGNAL_KIND_TRIGGERS: dict[str, str] = {
     # Business-level - webhook only, see module docstring
     "escalation_rate": "escalation_rate.detected",
     "account_health": "account_health.detected",
+    # services/api/routers/insurance_claims.py (direct status comparison,
+    # same shape as health_monitor.py - not an AI extraction or a sweep)
+    "claim_status_changed": "claim.status_changed",
 }
 
 

@@ -5,7 +5,7 @@ why this is not the Case Tracking capability with different labels.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -13,7 +13,9 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared import verticals
-from shared.db.models import Business, ClaimStatus, Customer, InsuranceClaim
+from shared.care.signal_dispatch import dispatch_signal
+from shared.db.models import Business, ClaimStatus, Customer, InsuranceClaim, Insight
+from shared.scheduling import notify
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -130,10 +132,12 @@ async def create_claim(body: ClaimIn, current_user: CurrentUserDep, db: DbDep) -
 
 @router.patch("/{claim_id}", response_model=ClaimOut)
 async def update_claim(claim_id: uuid.UUID, body: ClaimPatch, current_user: CurrentUserDep, db: DbDep) -> ClaimOut:
-    await _require_tpa_claim_tracking(current_user.business, db)
+    business = await _require_tpa_claim_tracking(current_user.business, db)
     claim = await db.get(InsuranceClaim, claim_id)
     if claim is None or claim.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Claim not found")
+
+    old_status = claim.status
     for field in (
         "insurer_or_tpa_name", "policy_number", "claim_number", "status",
         "claim_amount_paise", "approved_amount_paise", "submitted_at", "decided_at", "notes",
@@ -142,4 +146,45 @@ async def update_claim(claim_id: uuid.UUID, body: ClaimPatch, current_user: Curr
         if value is not None:
             setattr(claim, field, value)
     await db.flush()
+
+    if body.status is not None and body.status != old_status:
+        await _on_status_changed(claim, business, db)
+
     return _out(claim)
+
+
+async def _on_status_changed(claim: InsuranceClaim, business: Business, db: DbDep) -> None:
+    """
+    A real transition (not just any PATCH - old_status != new status,
+    checked by the caller) becomes a Signal for staff and a proactive
+    WhatsApp update for the customer. Both best-effort - a failure here
+    must never fail the staff PATCH that changed the status.
+    """
+    status_label = claim.status.value if hasattr(claim.status, "value") else str(claim.status)
+    insurer = claim.insurer_or_tpa_name or "an insurer"
+    title = f"Claim with {insurer} is now {status_label}"
+    body_text = (
+        f"Claim {claim.claim_number or claim.id} with {insurer} moved to "
+        f"'{status_label}'" + (f" - {claim.notes}" if claim.notes else ".")
+    )
+
+    db.add(Insight(
+        business_id=claim.business_id, customer_id=claim.customer_id,
+        kind="claim_status_changed", title=title, body=body_text, severity="info",
+        created_at=datetime.now(timezone.utc),
+    ))
+    await db.flush()
+    # dispatch_signal never raises (see its own docstring) - no try/except
+    # needed here, unlike the notification below which can.
+    await dispatch_signal(
+        db, business_id=claim.business_id, customer_id=claim.customer_id, channel=None,
+        kind="claim_status_changed", title=title, body=body_text, severity="info",
+    )
+
+    customer = await db.get(Customer, claim.customer_id)
+    if customer is None:
+        return
+    try:
+        await notify.send_claim_status_update(db, business=business, customer=customer, claim=claim)
+    except Exception:
+        logger.exception("claim status customer notification failed claim=%s", claim.id)

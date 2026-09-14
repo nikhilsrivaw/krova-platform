@@ -26,6 +26,7 @@ from shared.db.models import (
     Business,
     Channel,
     ChannelConnection,
+    ClaimStatus,
     Commitment,
     ConnectionStatus,
     Customer,
@@ -33,6 +34,7 @@ from shared.db.models import (
     Direction,
     Doctor,
     IdentityKind,
+    InsuranceClaim,
     MessageTemplate,
     TemplateStatus,
 )
@@ -57,6 +59,12 @@ QUEUE_CHECKIN_TEMPLATE_NAME = "queue_checkin_confirmation"
 # template here: a business must submit and get this approved in Meta's
 # WhatsApp Manager before it can actually send.
 QUEUE_TURN_NEAR_TEMPLATE_NAME = "queue_turn_near"
+# tpa_claim_tracking capability. Fires from services/api/routers/
+# insurance_claims.py::update_claim when staff records a real status
+# change - the real fix for the other half of the gap update_claim's own
+# capability-gate commit already flagged: a patient could only find out
+# their claim moved by asking the AI, never proactively.
+CLAIM_STATUS_TEMPLATE_NAME = "claim_status_update"
 # Cross-vertical, gated on Business.settings["google_review_url"] being
 # set - see shared/scheduling/recall.py's send_review_requests.
 REVIEW_TEMPLATE_NAME = "review_request"
@@ -290,6 +298,42 @@ async def send_queue_turn_near(
             f"You're #{queue_number} at {business.name} - about {tokens_ahead} "
             "ahead of you. Your turn is coming up soon."
         ),
+    )
+
+
+# Plain words for a customer message, never the raw enum value - this is
+# status vocabulary (fixed, same for every business that has the
+# capability), not vertical vocabulary, so it does not need the
+# three-tier resolution shared/verticals/labels.py built for Queue: Claims
+# is a clinic-only capability by design, not a mechanism shared across
+# verticals with different names for it.
+CLAIM_STATUS_LABEL: dict[ClaimStatus, str] = {
+    ClaimStatus.submitted: "has been submitted",
+    ClaimStatus.under_review: "is now under review",
+    ClaimStatus.query_raised: "needs more documents - your insurer has raised a query",
+    ClaimStatus.approved: "has been approved",
+    ClaimStatus.rejected: "has been rejected",
+    ClaimStatus.settled: "has been settled",
+}
+
+
+async def send_claim_status_update(
+    db: AsyncSession, *, business: Business, customer: Customer, claim: InsuranceClaim,
+) -> bool:
+    """
+    Send the claim_status_update template - tpa_claim_tracking capability.
+    Fires once per real status transition (see update_claim's own
+    old-status-vs-new-status comparison; a PATCH that doesn't actually
+    change status never reaches here, so this needs no separate
+    "already notified" guard the way Queue's turn-near does).
+    """
+    insurer = claim.insurer_or_tpa_name or "your insurer"
+    status_phrase = CLAIM_STATUS_LABEL.get(claim.status, f"is now {claim.status.value}")
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=CLAIM_STATUS_TEMPLATE_NAME,
+        body_params=[insurer, status_phrase],
+        plain_text=f"Update from {business.name}: your claim with {insurer} {status_phrase}.",
     )
 
 

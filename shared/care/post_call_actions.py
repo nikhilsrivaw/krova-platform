@@ -80,6 +80,7 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "overdue_refund.detected": ("severity", "title", "body"),
     "intent_leakage.detected": ("severity", "title", "body"),
     "rto_risk.detected": ("severity", "title", "body"),
+    "claim.status_changed": ("severity", "title", "body"),
     # escalation_rate.detected / account_health.detected deliberately
     # absent - business-level Insight kinds with no customer_id, so they
     # never reach apply_rules at all (see shared/care/signal_dispatch.py).
