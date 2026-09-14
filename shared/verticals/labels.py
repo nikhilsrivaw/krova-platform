@@ -36,6 +36,15 @@ _QUEUE_DEFAULTS: dict = {
     },
 }
 
+_SCHEDULING_DEFAULTS: dict = {
+    "provider": "Provider",
+    "provider_plural": "Providers",
+    "credential_label": "Details",
+    "fee_label": "Fee",
+    "booking_noun": "booking",
+    "booking_noun_plural": "bookings",
+}
+
 
 def _merge(base: dict, overlay: object) -> dict:
     """
@@ -65,3 +74,17 @@ def queue_labels(business: "Business") -> dict:
     template = get(business.vertical).get("labels", {}).get("queue")
     own = ((business.settings or {}).get("queue") or {}).get("labels")
     return _merge(_merge(_QUEUE_DEFAULTS, template), own)
+
+
+def scheduling_labels(business: "Business") -> dict:
+    """
+    What this business calls the parts of its scheduling - a clinic's
+    "Doctor" and a real estate agency's "Agent" are the same underlying
+    row (a person with recurring hours a customer books against), so this
+    is vocabulary, not two different mechanisms. A vertical need not
+    declare every key - real_estate omits fee_label since an agent's row
+    rarely has one, and it falls through to the neutral default below.
+    """
+    template = get(business.vertical).get("labels", {}).get("scheduling")
+    own = ((business.settings or {}).get("scheduling") or {}).get("labels")
+    return _merge(_merge(_SCHEDULING_DEFAULTS, template), own)

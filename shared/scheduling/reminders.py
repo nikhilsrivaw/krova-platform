@@ -1,9 +1,14 @@
 """
-The 24-hour and 2-hour appointment reminder sweep.
+The first and second appointment reminder sweep - 24h and 2h out by
+default, business-configurable per Business.settings["scheduling"]
+["reminder_windows"].
 
 Research on this exact pattern (see the vertical-templates planning
 conversation) showed WhatsApp reminders cut clinic no-shows 35-70% - the
 single highest-leverage thing this capability does after booking itself.
+The 24h/2h pair is right for a clinic's next-day visit; a real_estate
+viewing booked weeks out plausibly wants a longer lead time, hence the
+override.
 
 A time-window sweep, not a scheduled-per-appointment job: simpler to reason
 about, and naturally self-limiting - an appointment whose window passed
@@ -27,36 +32,62 @@ logger = get_logger(__name__)
 # appointment's window even if one run is late or misfires.
 _WINDOW = timedelta(minutes=10)
 
+_DEFAULT_FIRST_HOURS = 24.0
+_DEFAULT_SECOND_HOURS = 2.0
 
-async def _due(db: AsyncSession, *, target_in: timedelta, already_sent) -> list[Appointment]:
+# Not a discovered real value - a generous ceiling nobody would plausibly
+# configure a reminder past (a "reminder" more than 2 days out stops being
+# one). Needed because the DB query below can no longer filter on one
+# global target the way it used to: each business may have its own window,
+# so the query fetches every confirmed candidate in this range and the
+# precise per-business check happens in Python once that business's row is
+# in hand.
+_MAX_LOOKAHEAD = timedelta(hours=48)
+
+
+def _reminder_hours(business: Business) -> tuple[float, float]:
+    raw = ((business.settings or {}).get("scheduling") or {}).get("reminder_windows") or {}
+    first, second = raw.get("first_hours"), raw.get("second_hours")
+    first = float(first) if isinstance(first, (int, float)) and first > 0 else _DEFAULT_FIRST_HOURS
+    second = float(second) if isinstance(second, (int, float)) and second > 0 else _DEFAULT_SECOND_HOURS
+    return first, second
+
+
+async def _candidates(db: AsyncSession, *, already_sent) -> list[Appointment]:
     now = datetime.now(timezone.utc)
-    target = now + target_in
     result = await db.execute(
         select(Appointment).where(
             Appointment.status == AppointmentStatus.confirmed,
             already_sent.is_(None),
-            Appointment.starts_at >= target - _WINDOW,
-            Appointment.starts_at <= target + _WINDOW,
+            Appointment.starts_at >= now,
+            Appointment.starts_at <= now + _MAX_LOOKAHEAD,
         )
     )
     return list(result.scalars().all())
 
 
 async def send_due_reminders(db: AsyncSession) -> int:
-    """Send every 24h and 2h reminder currently due. Returns how many actually sent."""
+    """Send every first/second reminder currently due. Returns how many actually sent."""
     sent = 0
     now = datetime.now(timezone.utc)
 
-    due_24h = await _due(db, target_in=timedelta(hours=24), already_sent=Appointment.reminder_24h_sent_at)
-    due_2h = await _due(db, target_in=timedelta(hours=2), already_sent=Appointment.reminder_2h_sent_at)
+    candidates_first = await _candidates(db, already_sent=Appointment.reminder_24h_sent_at)
+    candidates_second = await _candidates(db, already_sent=Appointment.reminder_2h_sent_at)
 
-    for appointment, field in [(a, "reminder_24h_sent_at") for a in due_24h] + [
-        (a, "reminder_2h_sent_at") for a in due_2h
+    for appointment, field, which in [(a, "reminder_24h_sent_at", "first") for a in candidates_first] + [
+        (a, "reminder_2h_sent_at", "second") for a in candidates_second
     ]:
         business = await db.get(Business, appointment.business_id)
+        if business is None:
+            continue
+        first_hours, second_hours = _reminder_hours(business)
+        target = appointment.starts_at - timedelta(hours=first_hours if which == "first" else second_hours)
+        if not (now - _WINDOW <= target <= now + _WINDOW):
+            continue
+
         doctor = await db.get(Doctor, appointment.doctor_id)
         customer = await db.get(Customer, appointment.customer_id)
-        if business is None or doctor is None or customer is None:
+        if doctor is None or customer is None:
             continue
 
         ok = await notify.send_reminder(

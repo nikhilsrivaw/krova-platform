@@ -9,6 +9,14 @@
       "ticket": "token",
       "serving": "In Consultation",
       "shifts": { "morning": "Morning", "evening": "Evening", "emergency": "Emergency" }
+    },
+    "scheduling": {
+      "provider": "Doctor",
+      "provider_plural": "Doctors",
+      "credential_label": "Qualifications",
+      "fee_label": "Consultation fee",
+      "booking_noun": "appointment",
+      "booking_noun_plural": "appointments"
     }
   },
   "tone": "Calm, precise and reassuring. Patients messaging a clinic are often worried. Answer the question first, then offer the next step. Never sound rushed.",

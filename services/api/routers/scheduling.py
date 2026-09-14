@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import Appointment, AvailabilityRule, Customer, Doctor, IntakeChannel
+from shared import verticals
+from shared.db.models import Appointment, AvailabilityRule, Business, Customer, Doctor, IntakeChannel
+from shared.verticals import labels
 from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import booking as scheduling_booking
 from shared.scheduling.booking import SlotUnavailable
@@ -24,6 +26,45 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/scheduling", tags=["scheduling"])
+
+
+async def _require_scheduling(business_id: uuid.UUID, db: DbDep) -> Business:
+    """
+    Every endpoint here needs this - like Claims, there is no single shared
+    "book a slot" choke point to gate once at the shared/scheduling layer
+    (try_book_from_agent already gates itself, but that's the AI path only -
+    every one of this router's 10 endpoints is a separate direct entry
+    point). The sidebar hides /scheduling for a business without the
+    capability, but that was the only boundary before this.
+    """
+    business = await db.get(Business, business_id)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    if not verticals.has_capability(business, "scheduling"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This business does not have the scheduling capability"
+        )
+    return business
+
+
+class SchedulingLabelsOut(BaseModel):
+    provider: str
+    provider_plural: str
+    credential_label: str
+    fee_label: str
+    booking_noun: str
+    booking_noun_plural: str
+
+
+@router.get("/labels", response_model=SchedulingLabelsOut)
+async def get_scheduling_labels(current_user: CurrentUserDep, db: DbDep) -> SchedulingLabelsOut:
+    """
+    What this business calls a provider, a booking, and the rest -
+    resolved across code defaults, its vertical's template, and its own
+    settings. See shared/verticals/labels.py::scheduling_labels.
+    """
+    business = await _require_scheduling(current_user.business, db)
+    return SchedulingLabelsOut(**labels.scheduling_labels(business))
 
 
 # ── Doctors ──────────────────────────────────────────────────────────────
@@ -62,12 +103,14 @@ def _doctor_out(d: Doctor) -> DoctorOut:
 
 @router.get("/doctors", response_model=list[DoctorOut])
 async def list_doctors(current_user: CurrentUserDep, db: DbDep) -> list[DoctorOut]:
+    await _require_scheduling(current_user.business, db)
     rows = await db.execute(select(Doctor).where(Doctor.business_id == current_user.business))
     return [_doctor_out(d) for d in rows.scalars().all()]
 
 
 @router.post("/doctors", response_model=DoctorOut, status_code=status.HTTP_201_CREATED)
 async def create_doctor(body: DoctorIn, current_user: CurrentUserDep, db: DbDep) -> DoctorOut:
+    await _require_scheduling(current_user.business, db)
     doctor = Doctor(
         business_id=current_user.business,
         name=body.name,
@@ -83,6 +126,7 @@ async def create_doctor(body: DoctorIn, current_user: CurrentUserDep, db: DbDep)
 
 @router.patch("/doctors/{doctor_id}", response_model=DoctorOut)
 async def update_doctor(doctor_id: uuid.UUID, body: DoctorPatch, current_user: CurrentUserDep, db: DbDep) -> DoctorOut:
+    await _require_scheduling(current_user.business, db)
     doctor = await db.get(Doctor, doctor_id)
     if doctor is None or doctor.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Doctor not found")
@@ -96,6 +140,7 @@ async def update_doctor(doctor_id: uuid.UUID, body: DoctorPatch, current_user: C
 
 @router.delete("/doctors/{doctor_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_doctor(doctor_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    await _require_scheduling(current_user.business, db)
     doctor = await db.get(Doctor, doctor_id)
     if doctor is None or doctor.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Doctor not found")
@@ -132,6 +177,7 @@ async def _owned_doctor(doctor_id: uuid.UUID, business_id: uuid.UUID, db: DbDep)
 
 @router.get("/doctors/{doctor_id}/availability-rules", response_model=list[AvailabilityRuleOut])
 async def list_rules(doctor_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> list[AvailabilityRuleOut]:
+    await _require_scheduling(current_user.business, db)
     await _owned_doctor(doctor_id, current_user.business, db)
     rows = await db.execute(select(AvailabilityRule).where(AvailabilityRule.doctor_id == doctor_id))
     return [
@@ -151,6 +197,7 @@ async def list_rules(doctor_id: uuid.UUID, current_user: CurrentUserDep, db: DbD
 async def create_rule(
     doctor_id: uuid.UUID, body: AvailabilityRuleIn, current_user: CurrentUserDep, db: DbDep
 ) -> AvailabilityRuleOut:
+    await _require_scheduling(current_user.business, db)
     if body.end_time <= body.start_time:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "end_time must be after start_time")
     doctor = await _owned_doctor(doctor_id, current_user.business, db)
@@ -169,6 +216,7 @@ async def create_rule(
 
 @router.delete("/availability-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    await _require_scheduling(current_user.business, db)
     rule = await db.get(AvailabilityRule, rule_id)
     if rule is None or rule.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Availability rule not found")
@@ -188,9 +236,7 @@ async def get_open_slots(
     doctor_id: uuid.UUID, on: date, current_user: CurrentUserDep, db: DbDep
 ) -> list[SlotOut]:
     """What a WhatsApp or voice conversation would see, exposed for the dashboard too."""
-    from shared.db.models import Business
-
-    business = await db.get(Business, current_user.business)
+    business = await _require_scheduling(current_user.business, db)
     doctor = await _owned_doctor(doctor_id, current_user.business, db)
     slots = await scheduling_availability.open_slots(db, business=business, doctor=doctor, on_date=on)
     return [SlotOut(starts_at=s.starts_at, ends_at=s.ends_at) for s in slots]
@@ -232,6 +278,7 @@ async def list_appointments(
     One calendar, whichever channel the booking came from - intake_channel
     is always in the response, never hidden from staff.
     """
+    await _require_scheduling(current_user.business, db)
     query = (
         select(Appointment, Doctor.name)
         .join(Doctor, Doctor.id == Appointment.doctor_id)
@@ -269,14 +316,12 @@ async def create_appointment(
     booking both go through - a front desk fat-fingering a time is exactly
     the kind of double-booking this whole engine exists to prevent.
     """
-    from shared.db.models import Business
-
+    business = await _require_scheduling(current_user.business, db)
     doctor = await _owned_doctor(uuid.UUID(body.doctor_id), current_user.business, db)
     customer = await db.get(Customer, uuid.UUID(body.customer_id))
     if customer is None or customer.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
 
-    business = await db.get(Business, current_user.business)
     day_slots = await scheduling_availability.open_slots(
         db, business=business, doctor=doctor, on_date=body.starts_at.date()
     )

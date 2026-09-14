@@ -99,9 +99,9 @@ REPLY_TOOL = {
             "book_doctor": {
                 "type": "string",
                 "description": (
-                    "The doctor's name exactly as given in the business details. "
-                    "Required whenever book_slot is set and more than one doctor "
-                    "was listed."
+                    "The provider's name exactly as given in the business "
+                    "details. Required whenever book_slot is set and more than "
+                    "one provider was listed."
                 ),
             },
             "book_property": {
@@ -188,7 +188,7 @@ even when the customer pushes.
 If the business details list real current availability, that list is the \
 only source of truth for booking - never a time you calculate or assume. \
 When the customer has just confirmed one specific time from that list, set \
-book_slot to it exactly (and book_doctor, if more than one doctor was \
+book_slot to it exactly (and book_doctor, if more than one provider was \
 listed, and book_property if this is a property viewing for one specific \
 listed property) so it actually gets reserved - do this only once they \
 have clearly agreed to a specific slot, not while they are still asking \
@@ -235,7 +235,7 @@ If REPLY: optionally, one or more lines of BOOK_SLOT=<ISO 8601 datetime>, \
 BOOK_DOCTOR=<name>, BOOK_PROPERTY=<name>, BOOK_TOKEN=<shift name> - \
 following the exact same booking rules already given above (only when the \
 caller has just confirmed one specific time you offered them, BOOK_DOCTOR \
-only when more than one doctor was listed, BOOK_PROPERTY only for one \
+only when more than one provider was listed, BOOK_PROPERTY only for one \
 specific listed property viewing, BOOK_TOKEN only for one specific open \
 shift the caller has just confirmed - never alongside BOOK_SLOT) - or, \
 instead, REQUESTED_SERVICE=<short phrase> when the caller has described \
@@ -748,7 +748,7 @@ class Draft:
     # book_doctor is matched by name; unset for every other vertical.
     book_property: str | None = None
     # Which shift a queue token was issued for - see REPLY_TOOL's book_token.
-    # Never set alongside book_slot - a message is booking a doctor's
+    # Never set alongside book_slot - a message is booking a provider's
     # calendar slot or getting a queue token, never both.
     book_token: str | None = None
     # order_sync capability - see REPLY_TOOL's share_catalog. Text-channel
