@@ -370,6 +370,7 @@ class QueuePatch(BaseModel):
 
 @router.patch("/{entry_id}", response_model=QueueEntryOut)
 async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user: CurrentUserDep, db: DbDep) -> QueueEntryOut:
+    business = await _require_opd_queue(current_user.business, db)
     entry = await db.get(QueueEntry, entry_id)
     if entry is None or entry.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue entry not found")
@@ -384,12 +385,10 @@ async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user
     await db.flush()
 
     if body.status == QueueStatus.cancelled and entry.google_calendar_event_id:
-        business = await db.get(Business, entry.business_id)
-        if business is not None:
-            try:
-                await google_calendar.sync_queue_entry(db, business=business, entry=entry, action="cancel")
-            except Exception:
-                logger.exception("calendar cancel-sync failed for queue entry=%s", entry.id)
+        try:
+            await google_calendar.sync_queue_entry(db, business=business, entry=entry, action="cancel")
+        except Exception:
+            logger.exception("calendar cancel-sync failed for queue entry=%s", entry.id)
 
     # The real fix for queue_checkin_confirmation's own "we'll notify you
     # as your turn nears" promise - nothing used to keep it. Only checked

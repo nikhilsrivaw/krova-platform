@@ -15,12 +15,30 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import ListingType, Property, PropertyStatus
+from shared import verticals
+from shared.db.models import Business, ListingType, Property, PropertyStatus
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/properties", tags=["properties"])
+
+
+async def _require_property_listings(business_id: uuid.UUID, db: DbDep) -> Business:
+    """
+    Same shape as insurance_claims.py's _require_tpa_claim_tracking - no
+    shared choke point across these 4 endpoints, so each gates itself. The
+    sidebar hides /properties for a business without the capability, but
+    that was the only boundary before this.
+    """
+    business = await db.get(Business, business_id)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    if not verticals.has_capability(business, "property_listings"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This business does not have the property_listings capability"
+        )
+    return business
 
 
 class PropertyIn(BaseModel):
@@ -89,6 +107,7 @@ async def list_properties(
     listing_type: ListingType | None = None,
     include_inactive: bool = False,
 ) -> list[PropertyOut]:
+    await _require_property_listings(current_user.business, db)
     query = select(Property).where(Property.business_id == current_user.business).order_by(
         Property.created_at.desc()
     )
@@ -104,6 +123,7 @@ async def list_properties(
 
 @router.post("", response_model=PropertyOut, status_code=status.HTTP_201_CREATED)
 async def create_property(body: PropertyIn, current_user: CurrentUserDep, db: DbDep) -> PropertyOut:
+    await _require_property_listings(current_user.business, db)
     prop = Property(
         business_id=current_user.business,
         title=body.title,
@@ -128,6 +148,7 @@ async def create_property(body: PropertyIn, current_user: CurrentUserDep, db: Db
 async def update_property(
     property_id: uuid.UUID, body: PropertyPatch, current_user: CurrentUserDep, db: DbDep
 ) -> PropertyOut:
+    await _require_property_listings(current_user.business, db)
     prop = await db.get(Property, property_id)
     if prop is None or prop.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Property not found")
@@ -144,6 +165,7 @@ async def update_property(
 
 @router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_property(property_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    await _require_property_listings(current_user.business, db)
     prop = await db.get(Property, property_id)
     if prop is None or prop.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Property not found")

@@ -16,14 +16,32 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared import verticals
 from shared.auth.encryption import encrypt
 from shared.care import shiprocket_sync
-from shared.db.models import Order, OrderStatus, ShippingConnection, StoreConnection
+from shared.db.models import Business, Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+
+
+async def _require_order_sync(business_id: uuid.UUID, db: DbDep) -> Business:
+    """
+    Same shape as insurance_claims.py's _require_tpa_claim_tracking - no
+    shared choke point across these 9 endpoints, so each gates itself. The
+    sidebar hides /orders for a business without the capability, but that
+    was the only boundary before this.
+    """
+    business = await db.get(Business, business_id)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    if not verticals.has_capability(business, "order_sync"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This business does not have the order_sync capability"
+        )
+    return business
 
 
 # ── Store connections ────────────────────────────────────────────────────
@@ -51,6 +69,7 @@ def _connection_out(c: StoreConnection) -> StoreConnectionOut:
 
 @router.get("/connections", response_model=list[StoreConnectionOut])
 async def list_store_connections(current_user: CurrentUserDep, db: DbDep) -> list[StoreConnectionOut]:
+    await _require_order_sync(current_user.business, db)
     rows = await db.execute(
         select(StoreConnection).where(StoreConnection.business_id == current_user.business)
     )
@@ -61,6 +80,7 @@ async def list_store_connections(current_user: CurrentUserDep, db: DbDep) -> lis
 async def connect_store(
     body: StoreConnectionIn, current_user: CurrentUserDep, db: DbDep
 ) -> StoreConnectionOut:
+    await _require_order_sync(current_user.business, db)
     from datetime import datetime, timezone
 
     connection = StoreConnection(
@@ -85,6 +105,7 @@ async def connect_store(
 
 @router.delete("/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_store(connection_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    await _require_order_sync(current_user.business, db)
     connection = await db.get(StoreConnection, connection_id)
     if connection is None or connection.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Store connection not found")
@@ -139,6 +160,7 @@ async def list_orders(
     status_filter: OrderStatus | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, le=200),
 ) -> list[OrderOut]:
+    await _require_order_sync(current_user.business, db)
     query = (
         select(Order)
         .where(Order.business_id == current_user.business)
@@ -155,6 +177,7 @@ async def list_orders(
 
 @router.get("/{order_id}", response_model=OrderOut)
 async def get_order(order_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> OrderOut:
+    await _require_order_sync(current_user.business, db)
     order = await db.get(Order, order_id)
     if order is None or order.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Order not found")
@@ -176,6 +199,7 @@ async def update_order(order_id: uuid.UUID, body: OrderPatch, current_user: Curr
     Shopify does. Also usable on a synced Shopify order for a manual
     correction, though the webhook is that one's real source of truth.
     """
+    await _require_order_sync(current_user.business, db)
     order = await db.get(Order, order_id)
     if order is None or order.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Order not found")
@@ -217,6 +241,7 @@ def _shipping_out(c: ShippingConnection) -> ShippingConnectionOut:
 
 @router.get("/shipping-connections", response_model=list[ShippingConnectionOut])
 async def list_shipping_connections(current_user: CurrentUserDep, db: DbDep) -> list[ShippingConnectionOut]:
+    await _require_order_sync(current_user.business, db)
     rows = await db.execute(
         select(ShippingConnection).where(ShippingConnection.business_id == current_user.business)
     )
@@ -227,6 +252,7 @@ async def list_shipping_connections(current_user: CurrentUserDep, db: DbDep) -> 
 async def connect_shipping(
     body: ShippingConnectionIn, current_user: CurrentUserDep, db: DbDep
 ) -> ShippingConnectionOut:
+    await _require_order_sync(current_user.business, db)
     from datetime import datetime, timezone
 
     # A real login, not just stored credentials - confirms the email/
@@ -257,6 +283,7 @@ async def connect_shipping(
 
 @router.delete("/shipping-connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_shipping(connection_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    await _require_order_sync(current_user.business, db)
     connection = await db.get(ShippingConnection, connection_id)
     if connection is None or connection.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Shipping connection not found")

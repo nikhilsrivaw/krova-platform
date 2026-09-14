@@ -16,12 +16,30 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import BusinessMember, Case, CaseStatus, Customer
+from shared import verticals
+from shared.db.models import Business, BusinessMember, Case, CaseStatus, Customer
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/cases", tags=["cases"])
+
+
+async def _require_case_tracking(business_id: uuid.UUID, db: DbDep) -> Business:
+    """
+    Same shape as insurance_claims.py's _require_tpa_claim_tracking - no
+    shared choke point across these 4 endpoints, so each gates itself. The
+    sidebar hides /cases for a business without the capability, but that
+    was the only boundary before this.
+    """
+    business = await db.get(Business, business_id)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    if not verticals.has_capability(business, "case_tracking"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This business does not have the case_tracking capability"
+        )
+    return business
 
 
 class CaseIn(BaseModel):
@@ -80,6 +98,7 @@ async def list_cases(
     customer_id: str | None = None,
     status_filter: CaseStatus | None = Query(default=None, alias="status"),
 ) -> list[CaseOut]:
+    await _require_case_tracking(current_user.business, db)
     query = select(Case).where(Case.business_id == current_user.business).order_by(
         Case.next_hearing_at.asc().nullslast()
     )
@@ -93,6 +112,7 @@ async def list_cases(
 
 @router.post("", response_model=CaseOut, status_code=status.HTTP_201_CREATED)
 async def create_case(body: CaseIn, current_user: CurrentUserDep, db: DbDep) -> CaseOut:
+    await _require_case_tracking(current_user.business, db)
     customer = await db.get(Customer, uuid.UUID(body.customer_id))
     if customer is None or customer.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
@@ -115,6 +135,7 @@ async def create_case(body: CaseIn, current_user: CurrentUserDep, db: DbDep) -> 
 
 @router.patch("/{case_id}", response_model=CaseOut)
 async def update_case(case_id: uuid.UUID, body: CasePatch, current_user: CurrentUserDep, db: DbDep) -> CaseOut:
+    await _require_case_tracking(current_user.business, db)
     case = await db.get(Case, case_id)
     if case is None or case.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Case not found")
@@ -146,6 +167,7 @@ async def update_case(case_id: uuid.UUID, body: CasePatch, current_user: Current
 @router.get("/upcoming-hearings", response_model=list[CaseOut])
 async def upcoming_hearings(current_user: CurrentUserDep, db: DbDep, within_days: int = 14) -> list[CaseOut]:
     """What a lawyer actually opens this screen to see - the docket, not the case list."""
+    await _require_case_tracking(current_user.business, db)
     from datetime import timedelta, timezone
 
     now = datetime.now(timezone.utc)
