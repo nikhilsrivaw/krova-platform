@@ -39,6 +39,7 @@ from shared.db.models import (
     TemplateStatus,
 )
 from shared.utils.logging import get_logger
+from shared.verticals.labels import claim_labels
 
 logger = get_logger(__name__)
 
@@ -301,16 +302,15 @@ async def send_queue_turn_near(
     )
 
 
-# Plain words for a customer message, never the raw enum value - this is
-# status vocabulary (fixed, same for every business that has the
-# capability), not vertical vocabulary, so it does not need the
-# three-tier resolution shared/verticals/labels.py built for Queue: Claims
-# is a clinic-only capability by design, not a mechanism shared across
-# verticals with different names for it.
+# Plain words for a customer message, never the raw enum value. Fixed
+# per-status phrasing, not vertical vocabulary itself - the one word that
+# does vary by vertical (an insurer vs a manufacturer) is filled in from
+# the resolved claim_labels() at send time, same "party_noun" used
+# everywhere else Claims renders text.
 CLAIM_STATUS_LABEL: dict[ClaimStatus, str] = {
     ClaimStatus.submitted: "has been submitted",
     ClaimStatus.under_review: "is now under review",
-    ClaimStatus.query_raised: "needs more documents - your insurer has raised a query",
+    ClaimStatus.query_raised: "needs more documents - your {party} has raised a query",
     ClaimStatus.approved: "has been approved",
     ClaimStatus.rejected: "has been rejected",
     ClaimStatus.settled: "has been settled",
@@ -327,13 +327,16 @@ async def send_claim_status_update(
     change status never reaches here, so this needs no separate
     "already notified" guard the way Queue's turn-near does).
     """
-    insurer = claim.insurer_or_tpa_name or "your insurer"
-    status_phrase = CLAIM_STATUS_LABEL.get(claim.status, f"is now {claim.status.value}")
+    party_noun = claim_labels(business)["party_noun"]
+    party = claim.insurer_or_tpa_name or f"your {party_noun}"
+    status_phrase = CLAIM_STATUS_LABEL.get(
+        claim.status, f"is now {claim.status.value}"
+    ).format(party=party_noun)
     return await _send(
         db, business=business, customer=customer,
         template_name=CLAIM_STATUS_TEMPLATE_NAME,
-        body_params=[insurer, status_phrase],
-        plain_text=f"Update from {business.name}: your claim with {insurer} {status_phrase}.",
+        body_params=[party, status_phrase],
+        plain_text=f"Update from {business.name}: your claim with {party} {status_phrase}.",
     )
 
 

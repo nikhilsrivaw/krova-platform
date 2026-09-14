@@ -125,6 +125,12 @@ class AgentContext:
     customer_since: str | None
     identities: list[str]
 
+    # This business's own word for who reviews a claim (an "insurer" for a
+    # clinic, a "manufacturer" for a D2C store) - carried alongside `claims`
+    # since _static_lines() only has self, never the business object
+    # directly. None whenever `claims` itself is None.
+    claim_party_noun: str | None = None
+
     # What the owner has written down. Injected whole - see the knowledge
     # module for why this is not a retrieval step.
     knowledge: list[dict] = field(default_factory=list)
@@ -218,14 +224,15 @@ class AgentContext:
                 else "\nNo viewing on record for this customer yet."
             )
         if self.claims is not None:
+            party_noun = self.claim_party_noun or "reviewer"
             lines.append(
-                f"\nTheir insurance/TPA claim(s) - the only source of truth for "
-                f"status, never a guess, and never predict whether it will be "
-                f"approved (that decision belongs to the insurer/TPA alone):"
+                f"\nTheir claim(s) - the only source of truth for status, never a "
+                f"guess, and never predict whether it will be approved (that "
+                f"decision belongs to the {party_noun} alone):"
                 f"\n{self.claims}"
                 if self.claims
-                else "\nNo insurance/TPA claim on record for this customer yet. If "
-                "they say they submitted one, escalate rather than guessing at status."
+                else f"\nNo claim on record for this customer yet. If they say "
+                f"they submitted one, escalate rather than guessing at status."
             )
         if self.open_shifts is not None:
             lines.append(
@@ -427,6 +434,7 @@ async def build(
         properties_text = "\n".join(property_lines)
 
     claims_text: str | None = None
+    claim_party_noun: str | None = None
     if business and verticals.has_capability(business, "tpa_claim_tracking"):
         rows = (
             await db.execute(
@@ -435,12 +443,13 @@ async def build(
                 .order_by(InsuranceClaim.submitted_at.desc().nullslast())
             )
         ).scalars().all()
+        claim_party_noun = labels.claim_labels(business)["party_noun"]
         claim_lines = []
         for c in rows:
-            insurer = c.insurer_or_tpa_name or "insurer/TPA on file"
+            party = c.insurer_or_tpa_name or f"{claim_party_noun} on file"
             number = f" ({c.claim_number})" if c.claim_number else ""
             status_value = c.status.value if hasattr(c.status, "value") else str(c.status)
-            claim_lines.append(f"- {insurer}{number} - status: {status_value}")
+            claim_lines.append(f"- {party}{number} - status: {status_value}")
         claims_text = "\n".join(claim_lines)
 
     open_shifts_text: str | None = None
@@ -472,6 +481,7 @@ async def build(
         orders=orders_text,
         properties=properties_text,
         claims=claims_text,
+        claim_party_noun=claim_party_noun,
         open_shifts=open_shifts_text,
         knowledge=[
             {

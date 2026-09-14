@@ -17,6 +17,12 @@
       "fee_label": "Consultation fee",
       "booking_noun": "appointment",
       "booking_noun_plural": "appointments"
+    },
+    "claims": {
+      "person": "patient",
+      "party_label": "Insurer / TPA",
+      "party_noun": "insurer",
+      "reference_label": "Policy number"
     }
   },
   "tone": "Calm, precise and reassuring. Patients messaging a clinic are often worried. Answer the question first, then offer the next step. Never sound rushed.",

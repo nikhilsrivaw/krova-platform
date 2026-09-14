@@ -45,6 +45,16 @@ _SCHEDULING_DEFAULTS: dict = {
     "booking_noun_plural": "bookings",
 }
 
+_CLAIMS_DEFAULTS: dict = {
+    "person": "customer",
+    "party_label": "External Party",
+    # No article - callers compose it into a sentence themselves
+    # ("your {party_noun} has...", "{party_noun} on file"), same reason
+    # Queue's shift names are plain nouns rather than pre-phrased strings.
+    "party_noun": "reviewer",
+    "reference_label": "Reference number",
+}
+
 
 def _merge(base: dict, overlay: object) -> dict:
     """
@@ -88,3 +98,16 @@ def scheduling_labels(business: "Business") -> dict:
     template = get(business.vertical).get("labels", {}).get("scheduling")
     own = ((business.settings or {}).get("scheduling") or {}).get("labels")
     return _merge(_merge(_SCHEDULING_DEFAULTS, template), own)
+
+
+def claim_labels(business: "Business") -> dict:
+    """
+    What this business calls the parts of a claim - a clinic tracking an
+    insurance claim with an insurer/TPA and a D2C store tracking a
+    warranty/replacement claim with a manufacturer are the same lifecycle
+    (submit -> external party reviews -> approved/rejected/settled -> tell
+    the customer), so this is vocabulary, not two different mechanisms.
+    """
+    template = get(business.vertical).get("labels", {}).get("claims")
+    own = ((business.settings or {}).get("claims") or {}).get("labels")
+    return _merge(_merge(_CLAIMS_DEFAULTS, template), own)

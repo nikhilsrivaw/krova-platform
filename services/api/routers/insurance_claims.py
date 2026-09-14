@@ -17,6 +17,7 @@ from shared.care.signal_dispatch import dispatch_signal
 from shared.db.models import Business, ClaimStatus, Customer, InsuranceClaim, Insight
 from shared.scheduling import notify
 from shared.utils.logging import get_logger
+from shared.verticals import labels
 
 logger = get_logger(__name__)
 
@@ -39,6 +40,24 @@ async def _require_tpa_claim_tracking(business_id: uuid.UUID, db: DbDep) -> Busi
             status.HTTP_403_FORBIDDEN, "This business does not have the tpa_claim_tracking capability"
         )
     return business
+
+
+class ClaimLabelsOut(BaseModel):
+    person: str
+    party_label: str
+    party_noun: str
+    reference_label: str
+
+
+@router.get("/labels", response_model=ClaimLabelsOut)
+async def get_claim_labels(current_user: CurrentUserDep, db: DbDep) -> ClaimLabelsOut:
+    """
+    What this business calls a claim's parts - resolved across code
+    defaults, its vertical's template, and its own settings. See
+    shared/verticals/labels.py::claim_labels.
+    """
+    business = await _require_tpa_claim_tracking(current_user.business, db)
+    return ClaimLabelsOut(**labels.claim_labels(business))
 
 
 class ClaimIn(BaseModel):
@@ -161,10 +180,10 @@ async def _on_status_changed(claim: InsuranceClaim, business: Business, db: DbDe
     must never fail the staff PATCH that changed the status.
     """
     status_label = claim.status.value if hasattr(claim.status, "value") else str(claim.status)
-    insurer = claim.insurer_or_tpa_name or "an insurer"
-    title = f"Claim with {insurer} is now {status_label}"
+    party = claim.insurer_or_tpa_name or f"a {labels.claim_labels(business)['party_noun']}"
+    title = f"Claim with {party} is now {status_label}"
     body_text = (
-        f"Claim {claim.claim_number or claim.id} with {insurer} moved to "
+        f"Claim {claim.claim_number or claim.id} with {party} moved to "
         f"'{status_label}'" + (f" - {claim.notes}" if claim.notes else ".")
     )
 
