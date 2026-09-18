@@ -75,7 +75,7 @@ _VALID_TRIGGERS = {
 }
 _VALID_ACTIONS = {
     "whatsapp_followup", "create_escalation_task", "add_tag", "send_flow",
-    "place_call", "send_sms", "send_email",
+    "place_call", "send_sms", "send_email", "instagram_followup",
 }
 
 # A generous ceiling, not a real product limit discovered anywhere - just
@@ -232,6 +232,11 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_config.message is required for whatsapp_followup",
+        )
+    if step.action_type == "instagram_followup" and not (step.action_config or {}).get("message"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix}.action_config.message is required for instagram_followup",
         )
     if step.action_type == "add_tag" and not (step.action_config or {}).get("tag"):
         raise HTTPException(

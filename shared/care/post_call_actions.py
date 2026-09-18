@@ -400,6 +400,11 @@ async def _run_step_action(
     if action_type == "add_tag":
         return await _add_tag(business_id, customer_id, action_config or {}, db)
 
+    if action_type == "instagram_followup":
+        message = (action_config or {}).get("message") or ""
+        message = _resolve_tokens(message, context).strip()
+        return await _send_instagram_followup(business_id, customer_id, {"message": message}, db)
+
     if action_type == "send_flow":
         return await _send_flow(business_id, customer_id, action_config or {}, db, context=context, call_id=call_id)
 
@@ -513,6 +518,71 @@ async def _send_sms(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict
     except plivo_client.PlivoError:
         logger.exception("send_sms rule failed business=%s customer=%s", business_id, customer_id)
         return False
+    return True
+
+
+async def _send_instagram_followup(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """
+    A plain Instagram DM to the customer's own IGSID on file - the
+    keyword-triggered "reply to a greeting" case this action exists for,
+    not a private comment-reply (that stays send_draft.py's job, since it
+    needs the source comment_id a rule's own trigger context doesn't
+    carry). Same "resolve connection, resolve identity, send, ingest"
+    shape as _send_sms/_send_email above - not a second lookup path.
+
+    Free-text, unlike WhatsApp's whatsapp_followup: Instagram has no
+    approved-template requirement for messaging inside an open
+    conversation window, so this sends the configured message as-is.
+    """
+    message = str(config.get("message") or "").strip()
+    if not message:
+        logger.warning("instagram_followup rule for business=%s has no message configured, skipping", business_id)
+        return False
+
+    from shared.auth.encryption import decrypt
+    from shared.channels import ingest
+    from shared.channels.instagram.client import InstagramClient, InstagramSendError
+    from shared.db.models import Channel, ChannelConnection, ConnectionStatus, CustomerIdentity, Direction, IdentityKind
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.instagram,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        logger.info("instagram_followup rule skipped business=%s: no Instagram connection", business_id)
+        return False
+
+    to = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.instagram,
+            )
+        )
+    ).scalars().first()
+    if not to:
+        logger.info("instagram_followup rule skipped business=%s customer=%s: no Instagram id on file", business_id, customer_id)
+        return False
+
+    client = InstagramClient.for_connection(connection)
+    try:
+        sent = await client.send_text(to, message)
+    except InstagramSendError:
+        logger.exception("instagram_followup rule failed business=%s customer=%s", business_id, customer_id)
+        return False
+
+    from datetime import datetime, timezone
+
+    await ingest.ingest(
+        business_id=business_id, channel=Channel.instagram, direction=Direction.outbound,
+        identity_kind=IdentityKind.instagram, identity_value=to,
+        external_id=sent.external_id or None, text=message, occurred_at=datetime.now(timezone.utc),
+        connection_id=connection.id, enqueue_analysis=False, db=db,
+    )
     return True
 
 
