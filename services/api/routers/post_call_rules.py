@@ -50,6 +50,7 @@ _VALID_TRIGGERS = {
     WebhookEventType.call_voicemail.value,
     WebhookEventType.call_no_answer.value,
     WebhookEventType.message_received.value,
+    WebhookEventType.comment_received.value,
     WebhookEventType.flow_completed.value,
     WebhookEventType.appointment_booked.value,
     WebhookEventType.appointment_cancelled.value,
@@ -76,6 +77,7 @@ _VALID_TRIGGERS = {
 _VALID_ACTIONS = {
     "whatsapp_followup", "create_escalation_task", "add_tag", "send_flow",
     "place_call", "send_sms", "send_email", "instagram_followup",
+    "instagram_comment_reply",
 }
 
 # A generous ceiling, not a real product limit discovered anywhere - just
@@ -237,6 +239,11 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_config.message is required for instagram_followup",
+        )
+    if step.action_type == "instagram_comment_reply" and not (step.action_config or {}).get("message"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix}.action_config.message is required for instagram_comment_reply",
         )
     if step.action_type == "add_tag" and not (step.action_config or {}).get("tag"):
         raise HTTPException(

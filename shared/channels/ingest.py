@@ -213,12 +213,27 @@ async def ingest(
         # tag, send a flow, ...) the same way it can subscribe an outbound
         # webhook to it. A private customer's messages never reach this
         # branch (see the enqueue_analysis guard below's own comment).
+        #
+        # An Instagram comment funnels through this exact same ingest()
+        # call (see services/api/routers/webhooks.py's _process_instagram)
+        # with media={"kind": "comment", ...} - it needs its own trigger
+        # type, not message.received, so a business can wire "someone
+        # comments on my post" to a different rule (a public reply) than
+        # "someone DMs me" without one keyword rule accidentally firing on
+        # the other. comment_id rides in context so an action that replies
+        # to the comment specifically (not the commenter's inbox) has it.
         from shared.care import post_call_actions
 
+        is_comment = (media or {}).get("kind") == "comment"
+        trigger_type = "comment.received" if is_comment else "message.received"
+        context: dict[str, Any] = {"text": text}
+        if is_comment:
+            context["comment_id"] = media.get("comment_id")
+
         await post_call_actions.apply_rules(
-            db, business_id=business_id, trigger_type="message.received", customer_id=customer.id,
+            db, business_id=business_id, trigger_type=trigger_type, customer_id=customer.id,
             channel=channel.value if isinstance(channel, Channel) else str(channel),
-            context={"text": text},
+            context=context,
         )
 
     if enqueue_analysis and not customer.is_private:

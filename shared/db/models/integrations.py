@@ -203,6 +203,11 @@ class WebhookEventType(str, enum.Enum):
     # just WhatsApp. Outbound sends don't fire this - a business's own
     # system already knows what it sent.
     message_received = "message.received"
+    # Same dispatch site as message_received above (ingest()), but for an
+    # Instagram comment specifically (media.kind == "comment") - split out
+    # so a business can wire "someone comments on my post" to a different
+    # rule than "someone DMs me" without one keyword rule firing on both.
+    comment_received = "comment.received"
     # Fired from services/api/routers/webhooks.py's inbound message loop
     # when a WhatsApp Flow submission arrives (media kind "flow_reply",
     # see shared/channels/whatsapp/webhook.py) - the moment a customer

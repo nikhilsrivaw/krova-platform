@@ -54,6 +54,7 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "call.voicemail": ("campaign_objective",),
     "call.no_answer": ("campaign_objective",),
     "message.received": ("text",),
+    "comment.received": ("text",),
     "flow.completed": ("flow_id",),
     "appointment.booked": ("starts_at", "intake_channel"),
     "appointment.cancelled": ("starts_at", "intake_channel", "reason"),
@@ -405,6 +406,13 @@ async def _run_step_action(
         message = _resolve_tokens(message, context).strip()
         return await _send_instagram_followup(business_id, customer_id, {"message": message}, db)
 
+    if action_type == "instagram_comment_reply":
+        message = (action_config or {}).get("message") or ""
+        message = _resolve_tokens(message, context).strip()
+        return await _send_instagram_comment_reply(
+            business_id, customer_id, {"message": message}, context, db,
+        )
+
     if action_type == "send_flow":
         return await _send_flow(business_id, customer_id, action_config or {}, db, context=context, call_id=call_id)
 
@@ -583,6 +591,82 @@ async def _send_instagram_followup(business_id: uuid.UUID, customer_id: uuid.UUI
         external_id=sent.external_id or None, text=message, occurred_at=datetime.now(timezone.utc),
         connection_id=connection.id, enqueue_analysis=False, db=db,
     )
+    return True
+
+
+async def _send_instagram_comment_reply(
+    business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, context: dict, db: AsyncSession,
+) -> bool:
+    """
+    A private reply to the comment that triggered this rule - the gap
+    _send_instagram_followup's own docstring already named: a keyword
+    rule on comment.received needs the source comment_id, which only
+    that trigger's context carries (see ingest.py's comment.received
+    dispatch). Same Graph contract as send_draft.py's own private-reply
+    path (comment_id, not the commenter's IGSID) - one 7-day-window,
+    once-per-comment reply, enforced by Meta, not re-checked here.
+    """
+    message = str(config.get("message") or "").strip()
+    if not message:
+        logger.warning("instagram_comment_reply rule for business=%s has no message configured, skipping", business_id)
+        return False
+
+    comment_id = context.get("comment_id")
+    if not comment_id:
+        logger.warning(
+            "instagram_comment_reply rule for business=%s has no comment_id in context, skipping", business_id,
+        )
+        return False
+
+    from shared.channels import ingest
+    from shared.channels.instagram.client import InstagramClient, InstagramSendError
+    from shared.db.models import Channel, ChannelConnection, ConnectionStatus, CustomerIdentity, Direction, IdentityKind
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.instagram,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        logger.info("instagram_comment_reply rule skipped business=%s: no Instagram connection", business_id)
+        return False
+
+    to = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.instagram,
+            )
+        )
+    ).scalars().first()
+
+    client = InstagramClient.for_connection(connection)
+    try:
+        sent = await client.send_private_reply(comment_id, message)
+    except InstagramSendError:
+        logger.exception(
+            "instagram_comment_reply rule failed business=%s customer=%s comment=%s",
+            business_id, customer_id, comment_id,
+        )
+        return False
+
+    if to:
+        # Attributable to the customer's own identity when we have one on
+        # file; a private reply to a first-time commenter with no prior
+        # DM still sent successfully above even when this lookup is
+        # empty - not attributing it to a timeline is not the same as
+        # the send having failed.
+        from datetime import datetime, timezone
+
+        await ingest.ingest(
+            business_id=business_id, channel=Channel.instagram, direction=Direction.outbound,
+            identity_kind=IdentityKind.instagram, identity_value=to,
+            external_id=sent.external_id or None, text=message, occurred_at=datetime.now(timezone.utc),
+            connection_id=connection.id, enqueue_analysis=False, db=db,
+        )
     return True
 
 
