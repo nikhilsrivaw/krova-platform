@@ -720,19 +720,20 @@ def build() -> AsyncIOScheduler:
         misfire_grace_time=1200,
     )
 
-    # Seconds, not minutes: this exists specifically to stand in for a
-    # realtime webhook (see backfill.py's own docstring), so it needs to
-    # feel live. Safe to poll this tightly only because connection count
-    # is still low - each tick is one Graph API call per connected
-    # Instagram account, so this interval must widen (or move to a
-    # per-connection stagger) well before that count grows large enough
-    # to risk Meta's rate limits.
+    # Every second: as tight as this stand-in for a realtime webhook can
+    # go (see backfill.py's own docstring for why it exists at all). Each
+    # tick costs 1 + up-to-CONVERSATION_LIMIT Graph API calls per connected
+    # Instagram account (one list_conversations, one list_messages per
+    # conversation) - fine at today's handful of connections and
+    # conversations, but this must widen, or move to a per-connection
+    # stagger, or shrink CONVERSATION_LIMIT, well before either count grows
+    # large enough to risk Meta's rate limits.
     scheduler.add_job(
         sync_instagram,
-        IntervalTrigger(seconds=15),
+        IntervalTrigger(seconds=1),
         id="sync_instagram",
         replace_existing=True,
-        misfire_grace_time=60,
+        misfire_grace_time=10,
     )
 
     # Morning run, after the nightly analysis/profile passes so the day's
