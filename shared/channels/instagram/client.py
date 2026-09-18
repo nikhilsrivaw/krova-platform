@@ -299,20 +299,27 @@ class InstagramClient:
         plain photo. IN_PROGRESS keeps polling; FINISHED returns; ERROR/
         EXPIRED raise immediately rather than waiting out the rest of the
         budget on a container that will never become publishable.
+
+        20 attempts, 2s apart (40s budget) - confirmed live that 10
+        attempts at 1.5s (15s) was not always enough for a plain photo.
         """
-        for _ in range(10):
+        last_status: str | None = None
+        for _ in range(20):
             status_res = await client.get(
                 f"{self._base_url}/{container_id}",
                 params={"fields": "status_code", "access_token": self._token},
             )
-            status_code = status_res.json().get("status_code") if status_res.status_code == 200 else None
-            if status_code == "FINISHED":
+            last_status = status_res.json().get("status_code") if status_res.status_code == 200 else None
+            logger.info("instagram container=%s status=%s", container_id, last_status)
+            if last_status == "FINISHED":
                 return
-            if status_code in ("ERROR", "EXPIRED"):
-                raise InstagramApiError(f"Meta could not process the media (status: {status_code})")
-            await asyncio.sleep(1.5)
+            if last_status in ("ERROR", "EXPIRED"):
+                raise InstagramApiError(f"Meta could not process the media (status: {last_status})")
+            await asyncio.sleep(2)
 
-        raise InstagramApiError("Meta did not finish processing the media in time - try again")
+        raise InstagramApiError(
+            f"Meta did not finish processing the media in time (last status: {last_status}) - try again"
+        )
 
     async def publish_photo(self, image_url: str, caption: str = "") -> PublishResult:
         """
