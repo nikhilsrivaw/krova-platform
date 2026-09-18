@@ -470,7 +470,13 @@ async def instagram_callback(
     connection.token_refresh_failed_at = None
     connection.status = ConnectionStatus.active
     connection.webhook_subscribed = result.webhook_subscribed
-    connection.extra = {**(connection.extra or {}), "account_type": result.account_type}
+    # Reset, not merge: this callback is Instagram Business Login
+    # specifically, so any stale "facebook_login" route (and its page_id)
+    # from a prior connect via the other route must not survive - left in
+    # place, InstagramClient.for_connection() would keep routing this
+    # brand-new Instagram-Login token at graph.facebook.com with a Page
+    # id, which rejects it outright.
+    connection.extra = {"account_type": result.account_type}
 
     logger.info(
         "instagram connected business=%s account=%s username=%s expires=%s",
