@@ -309,7 +309,20 @@ class InstagramClient:
                 f"{self._base_url}/{container_id}",
                 params={"fields": "status_code", "access_token": self._token},
             )
-            last_status = status_res.json().get("status_code") if status_res.status_code == 200 else None
+            if status_res.status_code != 200:
+                # A non-200 here is Meta rejecting the status-check call
+                # itself (auth, a malformed container id, ...) - a
+                # different failure than "still processing", and one more
+                # polling attempts will never fix. Fail fast with the real
+                # body instead of silently retrying into a useless timeout.
+                logger.error(
+                    "instagram container status check failed container=%s status=%s body=%s",
+                    container_id, status_res.status_code, status_res.text[:500],
+                )
+                raise InstagramApiError(
+                    f"Meta rejected the status check ({status_res.status_code}): {status_res.text[:300]}"
+                )
+            last_status = status_res.json().get("status_code")
             logger.info("instagram container=%s status=%s", container_id, last_status)
             if last_status == "FINISHED":
                 return
