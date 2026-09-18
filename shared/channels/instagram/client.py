@@ -19,6 +19,7 @@ against Meta, not assumed. `for_connection` is what picks correctly, so
 neither caller has to know the difference.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -291,19 +292,45 @@ class InstagramClient:
 
         return AccountInsights(period_days=period_days, values=values)
 
+    async def _wait_for_container(self, client: httpx.AsyncClient, container_id: str) -> None:
+        """
+        Poll until Meta reports the container actually finished processing
+        - see publish_photo's own docstring for why this exists even for a
+        plain photo. IN_PROGRESS keeps polling; FINISHED returns; ERROR/
+        EXPIRED raise immediately rather than waiting out the rest of the
+        budget on a container that will never become publishable.
+        """
+        for _ in range(10):
+            status_res = await client.get(
+                f"{self._base_url}/{container_id}",
+                params={"fields": "status_code", "access_token": self._token},
+            )
+            status_code = status_res.json().get("status_code") if status_res.status_code == 200 else None
+            if status_code == "FINISHED":
+                return
+            if status_code in ("ERROR", "EXPIRED"):
+                raise InstagramApiError(f"Meta could not process the media (status: {status_code})")
+            await asyncio.sleep(1.5)
+
+        raise InstagramApiError("Meta did not finish processing the media in time - try again")
+
     async def publish_photo(self, image_url: str, caption: str = "") -> PublishResult:
         """
         Publish a single photo to the feed - the content-publish flow's
-        simplest case, scoped here to just that. Video/Reels need a
-        second step (creating the container returns an id whose upload
-        keeps processing after the call returns, so publishing has to
-        poll a status field until it reports done) - real, deliberately
-        not built yet rather than half-built and silently wrong.
+        simplest case, scoped here to just that. Video/Reels need the
+        same wait below but with much longer processing times and a
+        genuinely unbounded finish time - real, deliberately not built
+        yet rather than half-built and silently wrong.
 
-        Two Graph calls: create a media container from the (already
-        publicly hosted - see shared/integrations/media_storage.py)
-        image URL, then publish that container. A container is not a
-        post; nothing is public until the second call succeeds.
+        Three Graph calls, not two: create a media container from the
+        (already publicly hosted - see shared/integrations/media_storage.py)
+        image URL, wait for Meta to actually finish fetching and
+        processing it, then publish. Publishing immediately after create
+        - the obvious two-call reading of Meta's own docs - fails live
+        with "Media ID is not available" (error_subcode 2207027): the
+        container exists but isn't ready yet, even for a plain photo, not
+        only for video. A container is not a post either way; nothing is
+        public until the publish call succeeds.
         """
         async with httpx.AsyncClient(timeout=25.0) as client:
             create_res = await client.post(
@@ -323,6 +350,8 @@ class InstagramClient:
             container_id = create_res.json().get("id")
             if not container_id:
                 raise InstagramApiError("Meta did not return a media container id")
+
+            await self._wait_for_container(client, container_id)
 
             publish_res = await client.post(
                 f"{self._base_url}/{self._ig_user_id}/media_publish",
