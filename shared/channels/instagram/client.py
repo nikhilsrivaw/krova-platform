@@ -20,7 +20,7 @@ neither caller has to know the difference.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -64,6 +64,26 @@ class ConversationMessage:
     created_time: datetime
 
 
+# Confirmed live against v25.0 for a real connected account (not assumed
+# from docs, which vary by API version): "reach" is a time-series metric -
+# no metric_type param, returns one value per day, summed here into a
+# single number for the window. The rest are "total_value" metrics - they
+# 400 without metric_type="total_value", and return one aggregate number
+# for the window instead of a daily series. follower_count comes back
+# empty for an account under Meta's ~100-follower reporting floor - not a
+# bug, confirmed by Meta's own docs.
+_TIME_SERIES_METRICS = ("reach",)
+_TOTAL_VALUE_METRICS = (
+    "follower_count", "website_clicks", "profile_views", "accounts_engaged", "total_interactions",
+)
+
+
+@dataclass(slots=True)
+class AccountInsights:
+    period_days: int
+    values: dict[str, int]
+
+
 def _parse_created_time(raw: str | None) -> datetime:
     if raw:
         try:
@@ -71,6 +91,23 @@ def _parse_created_time(raw: str | None) -> datetime:
         except ValueError:
             pass
     return datetime.now(timezone.utc)
+
+
+def _sum_time_series(res: httpx.Response) -> int:
+    if res.status_code != 200:
+        logger.warning("instagram insights (time-series) failed: %s", res.text[:300])
+        return 0
+    rows = (res.json().get("data") or [{}])[0].get("values") or []
+    return sum(int(row.get("value") or 0) for row in rows)
+
+
+def _sum_total_value(res: httpx.Response) -> int:
+    if res.status_code != 200:
+        logger.warning("instagram insights (total_value) failed: %s", res.text[:300])
+        return 0
+    data = res.json().get("data") or [{}]
+    total = (data[0].get("total_value") or {}).get("value")
+    return int(total or 0)
 
 
 class InstagramClient:
@@ -206,6 +243,48 @@ class InstagramClient:
                 )
             )
         return messages
+
+    async def get_account_insights(self, period_days: int = 7) -> AccountInsights:
+        """
+        A window of account-level metrics - what an analytics page needs.
+
+        One call per metric, not a single batched call: time-series and
+        total_value metrics take different params and would 400 mixed
+        together in one request (confirmed live - see the module-level
+        comment on _TIME_SERIES_METRICS for exactly what was tested).
+        A metric a business doesn't have data for yet (an empty response,
+        which follower_count returns under Meta's own reporting floor)
+        comes back as 0, not a missing key - a caller should never have to
+        guard every lookup.
+        """
+        url = f"{self._base_url}/{self._ig_user_id}/insights"
+        now = datetime.now(timezone.utc)
+        since = int((now - timedelta(days=period_days)).timestamp())
+        until = int(now.timestamp())
+        values: dict[str, int] = {}
+
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            for metric in _TIME_SERIES_METRICS:
+                res = await client.get(
+                    url,
+                    params={
+                        "metric": metric, "period": "day", "since": since, "until": until,
+                        "access_token": self._token,
+                    },
+                )
+                values[metric] = _sum_time_series(res)
+
+            for metric in _TOTAL_VALUE_METRICS:
+                res = await client.get(
+                    url,
+                    params={
+                        "metric": metric, "period": "day", "metric_type": "total_value",
+                        "since": since, "until": until, "access_token": self._token,
+                    },
+                )
+                values[metric] = _sum_total_value(res)
+
+        return AccountInsights(period_days=period_days, values=values)
 
     async def send_text(self, recipient_id: str, text: str) -> SendResult:
         url = f"{self._base_url}/{self._ig_user_id}/messages"

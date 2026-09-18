@@ -620,3 +620,23 @@ async def send_instagram_text(
         used_template=False,
         window_open=True,
     )
+
+
+class InstagramInsightsOut(BaseModel):
+    period_days: int
+    values: dict[str, int]
+
+
+@router.get("/instagram/insights", response_model=InstagramInsightsOut)
+async def instagram_insights(
+    current_user: CurrentUserDep, db: DbDep, days: int = 7
+) -> InstagramInsightsOut:
+    """
+    Account-level engagement metrics for the connected Instagram account -
+    read live from Meta rather than stored, since Krova has no reason to
+    keep a second copy of numbers Meta already computes and owns.
+    """
+    connection = await _active_instagram_connection(current_user.business, db)
+    client = InstagramClient.for_connection(connection)
+    insights = await client.get_account_insights(period_days=days)
+    return InstagramInsightsOut(period_days=insights.period_days, values=insights.values)
