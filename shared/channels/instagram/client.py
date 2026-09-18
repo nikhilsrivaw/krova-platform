@@ -20,6 +20,7 @@ neither caller has to know the difference.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 
@@ -55,6 +56,23 @@ class Conversation:
     participants: list[Participant]
 
 
+@dataclass(slots=True)
+class ConversationMessage:
+    id: str
+    from_id: str
+    text: str | None
+    created_time: datetime
+
+
+def _parse_created_time(raw: str | None) -> datetime:
+    if raw:
+        try:
+            return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
 class InstagramClient:
     def __init__(
         self,
@@ -71,6 +89,10 @@ class InstagramClient:
         # Distinct from ig_user_id, which on the Facebook Login route is
         # the Page id rather than the Instagram account.
         self._own_account_id = own_account_id or ig_user_id
+
+    @property
+    def own_account_id(self) -> str:
+        return self._own_account_id
 
     @classmethod
     def for_connection(cls, connection) -> "InstagramClient":
@@ -136,6 +158,54 @@ class InstagramClient:
                     Conversation(id=str(row.get("id") or ""), participants=people)
                 )
         return conversations
+
+    async def list_messages(
+        self, conversation_id: str, limit: int = 20
+    ) -> list[ConversationMessage]:
+        """
+        A conversation's own recent messages - what list_conversations
+        above deliberately doesn't fetch (that call is participants only).
+
+        Exists for the periodic sync in instagram/backfill.py: reading
+        what Meta's `messages` webhook would have pushed, on demand,
+        for whenever that push isn't arriving (see that module's own
+        docstring for why that happens even when every subscription
+        check reports correctly configured).
+        """
+        url = f"{self._base_url}/{conversation_id}/messages"
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            res = await client.get(
+                url,
+                params={
+                    "fields": "id,created_time,from,message",
+                    "limit": limit,
+                    "access_token": self._token,
+                },
+            )
+        if res.status_code != 200:
+            logger.error(
+                "instagram list_messages failed conversation=%s status=%s body=%s",
+                conversation_id, res.status_code, res.text[:500],
+            )
+            raise InstagramApiError(
+                f"Meta rejected the request ({res.status_code}): {res.text[:300]}"
+            )
+
+        messages: list[ConversationMessage] = []
+        for row in res.json().get("data") or []:
+            from_id = str((row.get("from") or {}).get("id") or "")
+            message_id = str(row.get("id") or "")
+            if not from_id or not message_id:
+                continue
+            messages.append(
+                ConversationMessage(
+                    id=message_id,
+                    from_id=from_id,
+                    text=row.get("message"),
+                    created_time=_parse_created_time(row.get("created_time")),
+                )
+            )
+        return messages
 
     async def send_text(self, recipient_id: str, text: str) -> SendResult:
         url = f"{self._base_url}/{self._ig_user_id}/messages"

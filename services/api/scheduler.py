@@ -361,6 +361,25 @@ async def sync_shiprocket() -> None:
         logger.exception("Shiprocket sync job failed")
 
 
+async def sync_instagram() -> None:
+    """
+    The ongoing pull that fills the gap when Meta's push webhook isn't
+    delivering - see shared/channels/instagram/backfill.py's own docstring
+    for why this exists and when it's actually needed.
+    """
+    from shared.channels.instagram import backfill
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            stored = await backfill.sync_all_active(db)
+            await db.commit()
+            if stored:
+                logger.info("instagram sync stored %s new message(s)", stored)
+    except Exception:
+        logger.exception("Instagram sync job failed")
+
+
 async def check_deadline_calls() -> None:
     """
     Place one proactive voice call per commitment approaching its due
@@ -699,6 +718,17 @@ def build() -> AsyncIOScheduler:
         id="sync_shiprocket",
         replace_existing=True,
         misfire_grace_time=1200,
+    )
+
+    # Much tighter than a typical sync interval: this exists specifically
+    # to stand in for a realtime webhook (see backfill.py's own docstring),
+    # so it needs to feel close to live, not like an overnight catch-up.
+    scheduler.add_job(
+        sync_instagram,
+        IntervalTrigger(minutes=2),
+        id="sync_instagram",
+        replace_existing=True,
+        misfire_grace_time=300,
     )
 
     # Morning run, after the nightly analysis/profile passes so the day's
