@@ -84,6 +84,11 @@ class AccountInsights:
     values: dict[str, int]
 
 
+@dataclass(slots=True)
+class PublishResult:
+    media_id: str
+
+
 def _parse_created_time(raw: str | None) -> datetime:
     if raw:
         try:
@@ -285,6 +290,57 @@ class InstagramClient:
                 values[metric] = _sum_total_value(res)
 
         return AccountInsights(period_days=period_days, values=values)
+
+    async def publish_photo(self, image_url: str, caption: str = "") -> PublishResult:
+        """
+        Publish a single photo to the feed - the content-publish flow's
+        simplest case, scoped here to just that. Video/Reels need a
+        second step (creating the container returns an id whose upload
+        keeps processing after the call returns, so publishing has to
+        poll a status field until it reports done) - real, deliberately
+        not built yet rather than half-built and silently wrong.
+
+        Two Graph calls: create a media container from the (already
+        publicly hosted - see shared/integrations/media_storage.py)
+        image URL, then publish that container. A container is not a
+        post; nothing is public until the second call succeeds.
+        """
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            create_res = await client.post(
+                f"{self._base_url}/{self._ig_user_id}/media",
+                params={
+                    "image_url": image_url, "caption": caption, "access_token": self._token,
+                },
+            )
+            if create_res.status_code != 200:
+                logger.error(
+                    "instagram media container failed ig_user_id=%s status=%s body=%s",
+                    self._ig_user_id, create_res.status_code, create_res.text[:500],
+                )
+                raise InstagramApiError(
+                    f"Meta rejected the image ({create_res.status_code}): {create_res.text[:300]}"
+                )
+            container_id = create_res.json().get("id")
+            if not container_id:
+                raise InstagramApiError("Meta did not return a media container id")
+
+            publish_res = await client.post(
+                f"{self._base_url}/{self._ig_user_id}/media_publish",
+                params={"creation_id": container_id, "access_token": self._token},
+            )
+            if publish_res.status_code != 200:
+                logger.error(
+                    "instagram media publish failed ig_user_id=%s container=%s status=%s body=%s",
+                    self._ig_user_id, container_id, publish_res.status_code, publish_res.text[:500],
+                )
+                raise InstagramApiError(
+                    f"Meta rejected publishing ({publish_res.status_code}): {publish_res.text[:300]}"
+                )
+            media_id = publish_res.json().get("id")
+            if not media_id:
+                raise InstagramApiError("Meta did not return a published media id")
+
+        return PublishResult(media_id=media_id)
 
     async def send_text(self, recipient_id: str, text: str) -> SendResult:
         url = f"{self._base_url}/{self._ig_user_id}/messages"

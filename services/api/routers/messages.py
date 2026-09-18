@@ -13,7 +13,7 @@ and says plainly when nothing can.
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -25,6 +25,8 @@ from shared.channels.instagram.client import (
     InstagramClient,
     InstagramSendError,
 )
+from shared.integrations import media_storage
+from shared.integrations.media_storage import MediaStorageError
 from shared.channels.whatsapp.client import (
     CarouselSendCard,
     WhatsAppClient,
@@ -640,3 +642,40 @@ async def instagram_insights(
     client = InstagramClient.for_connection(connection)
     insights = await client.get_account_insights(period_days=days)
     return InstagramInsightsOut(period_days=insights.period_days, values=insights.values)
+
+
+class PublishPhotoOut(BaseModel):
+    media_id: str
+    image_url: str
+
+
+@router.post("/instagram/publish", response_model=PublishPhotoOut)
+async def publish_instagram_photo(
+    current_user: CurrentUserDep, db: DbDep,
+    file: UploadFile = File(...), caption: str = Form(default=""),
+) -> PublishPhotoOut:
+    """
+    Publish a photo to this business's Instagram feed.
+
+    Two hops, not one: the file goes to Krova's own public bucket first
+    (shared/integrations/media_storage.py) because Meta's publish API
+    fetches media from a URL itself rather than accepting an upload -
+    only then can Instagram's own two-call container/publish flow run
+    against a URL it can actually reach.
+    """
+    connection = await _active_instagram_connection(current_user.business, db)
+    content = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+
+    try:
+        image_url = await media_storage.upload_media(content, content_type)
+    except MediaStorageError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    client = InstagramClient.for_connection(connection)
+    try:
+        result = await client.publish_photo(image_url, caption=caption)
+    except InstagramApiError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return PublishPhotoOut(media_id=result.media_id, image_url=image_url)

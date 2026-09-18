@@ -40,3 +40,8 @@ plivo==4.62.0
 # The one vendor SDK this codebase uses for webhook verification rather than
 # hand-rolled HMAC - see shared/integrations/stripe_client.py's own docstring.
 stripe==15.6.1
+
+# ── Media hosting ────────────────────────────────────────────────────────────
+# Instagram's content-publish API fetches media from a public URL Krova
+# hosts - see shared/integrations/media_storage.py's own docstring.
+boto3==1.43.97

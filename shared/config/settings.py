@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     meta_instagram_app_id: str = Field(default="", alias="META_INSTAGRAM_APP_ID")
     meta_instagram_app_secret: str = Field(default="", alias="META_INSTAGRAM_APP_SECRET")
 
+    # ── Media hosting (S3) ───────────────────────────────────────────────────
+    # Publicly-readable bucket - Instagram's content-publish API fetches
+    # media from a URL it calls out to, not from a direct upload. See
+    # shared/integrations/media_storage.py's own docstring.
+    aws_access_key_id: str = Field(default="", alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str = Field(default="", alias="AWS_SECRET_ACCESS_KEY")
+    aws_s3_bucket: str = Field(default="", alias="AWS_S3_BUCKET")
+    aws_s3_region: str = Field(default="", alias="AWS_S3_REGION")
+
     # Google Calendar sync - a business's own OAuth Client, created once in
     # Google Cloud Console (Calendar API enabled + an OAuth consent screen).
     # Same "code ships now, feature works once this is set" pattern as the
