@@ -220,6 +220,32 @@ async def _process_instagram(raw_body: bytes) -> None:
                     db=db,
                 )
 
+            for mention in parsed.story_mentions:
+                connection = await ingest.find_connection(
+                    Channel.instagram, mention.ig_account_id, db
+                )
+                if connection is None:
+                    logger.info(
+                        "instagram story mention for unconnected account %s - dropped",
+                        mention.ig_account_id,
+                    )
+                    continue
+
+                await ingest.ingest(
+                    business_id=connection.business_id,
+                    channel=Channel.instagram,
+                    direction=Direction.inbound,
+                    identity_kind=IdentityKind.instagram,
+                    identity_value=mention.from_ig_id,
+                    external_id=mention.external_id,
+                    text=None,
+                    occurred_at=mention.occurred_at,
+                    media={"kind": "story_mention", "story_url": mention.story_url},
+                    raw=mention.raw,
+                    connection_id=connection.id,
+                    db=db,
+                )
+
             await db.commit()
         except Exception:
             logger.exception("instagram webhook processing failed")

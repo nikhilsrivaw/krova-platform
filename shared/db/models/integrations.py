@@ -208,6 +208,12 @@ class WebhookEventType(str, enum.Enum):
     # so a business can wire "someone comments on my post" to a different
     # rule than "someone DMs me" without one keyword rule firing on both.
     comment_received = "comment.received"
+    # Same dispatch site again, for a story mention (media.kind ==
+    # "story_mention") - no text to run a keyword condition against, so a
+    # rule on this trigger is meant to run unconditionally (see
+    # shared/care/post_call_actions.py's CONDITION_FIELDS - deliberately
+    # no entry for this trigger).
+    story_mention_received = "story_mention.received"
     # Fired from services/api/routers/webhooks.py's inbound message loop
     # when a WhatsApp Flow submission arrives (media kind "flow_reply",
     # see shared/channels/whatsapp/webhook.py) - the moment a customer

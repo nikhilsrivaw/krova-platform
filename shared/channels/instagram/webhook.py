@@ -26,6 +26,25 @@ class InboundDirectMessage:
 
 
 @dataclass(slots=True)
+class InboundStoryMention:
+    """
+    Someone tagged this Business account in their own story. Arrives in
+    the same entry[].messaging[] array as a DM (confirmed against Meta's
+    own Messenger Platform docs for this exact shape) - a message object
+    with an attachments[] entry of type "story_mention" instead of a
+    text field, so it's split out here rather than folded into
+    InboundDirectMessage with a permanently-empty text.
+    """
+
+    ig_account_id: str
+    external_id: str          # mid - the idempotency key
+    from_ig_id: str
+    story_url: str | None     # Meta's own CDN url for the story - short-lived
+    occurred_at: datetime
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class InboundComment:
     """A comment on one of our posts or Reels."""
 
@@ -43,13 +62,13 @@ class InboundComment:
 class ParsedInstagramWebhook:
     messages: list[InboundDirectMessage] = field(default_factory=list)
     comments: list[InboundComment] = field(default_factory=list)
-    # Fields we don't handle yet: messaging_postbacks, mentions, story
-    # replies. Kept so nothing arrives unnoticed rather than silently
-    # dropped.
+    story_mentions: list[InboundStoryMention] = field(default_factory=list)
+    # Fields we don't handle yet: messaging_postbacks, story replies.
+    # Kept so nothing arrives unnoticed rather than silently dropped.
     other: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.messages or self.comments or self.other)
+        return bool(self.messages or self.comments or self.story_mentions or self.other)
 
 
 def _as_datetime(ms: Any) -> datetime:
@@ -85,6 +104,22 @@ def parse(payload: dict) -> ParsedInstagramWebhook:
             # input, and ingesting them as inbound would put our own words
             # in the customer's mouth.
             if message.get("is_echo"):
+                continue
+            attachments = message.get("attachments") or []
+            story_mention = next(
+                (a for a in attachments if a.get("type") == "story_mention"), None,
+            )
+            if story_mention is not None:
+                result.story_mentions.append(
+                    InboundStoryMention(
+                        ig_account_id=ig_account_id,
+                        external_id=str(mid),
+                        from_ig_id=str(sender_id),
+                        story_url=(story_mention.get("payload") or {}).get("url"),
+                        occurred_at=_as_datetime(msg.get("timestamp")),
+                        raw=msg,
+                    )
+                )
                 continue
             result.messages.append(
                 InboundDirectMessage(

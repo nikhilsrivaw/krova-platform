@@ -51,6 +51,7 @@ _VALID_TRIGGERS = {
     WebhookEventType.call_no_answer.value,
     WebhookEventType.message_received.value,
     WebhookEventType.comment_received.value,
+    WebhookEventType.story_mention_received.value,
     WebhookEventType.flow_completed.value,
     WebhookEventType.appointment_booked.value,
     WebhookEventType.appointment_cancelled.value,

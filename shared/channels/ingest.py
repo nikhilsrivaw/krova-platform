@@ -224,10 +224,20 @@ async def ingest(
         # to the comment specifically (not the commenter's inbox) has it.
         from shared.care import post_call_actions
 
-        is_comment = (media or {}).get("kind") == "comment"
-        trigger_type = "comment.received" if is_comment else "message.received"
+        media_kind = (media or {}).get("kind")
+        if media_kind == "comment":
+            trigger_type = "comment.received"
+        elif media_kind == "story_mention":
+            # Same reasoning as comment.received above: a story mention
+            # has no text to run a keyword rule against (see
+            # instagram/webhook.py's InboundStoryMention), so it gets its
+            # own trigger rather than firing message.received with a
+            # permanently-empty text a condition could never match.
+            trigger_type = "story_mention.received"
+        else:
+            trigger_type = "message.received"
         context: dict[str, Any] = {"text": text}
-        if is_comment:
+        if media_kind == "comment":
             context["comment_id"] = media.get("comment_id")
 
         await post_call_actions.apply_rules(
