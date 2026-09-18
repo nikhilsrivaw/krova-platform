@@ -427,7 +427,7 @@ async def instagram_callback(
     whatever we put in `state`. Ends by sending the browser on to a page a
     human can actually read; this endpoint has nothing to show anyone.
     """
-    settings_url = f"{settings.frontend_base_url}/settings"
+    settings_url = f"{settings.frontend_base_url}/instagram"
 
     if error or not code or not state:
         return RedirectResponse(f"{settings_url}?instagram=error")
@@ -531,7 +531,7 @@ async def instagram_fb_callback(
     error: str | None = Query(default=None),
 ) -> RedirectResponse:
     """Where Meta sends the browser back to after the Facebook Login route. Mirrors instagram_callback."""
-    settings_url = f"{settings.frontend_base_url}/settings"
+    settings_url = f"{settings.frontend_base_url}/instagram"
 
     if error or not code or not state:
         return RedirectResponse(f"{settings_url}?instagram=error")
