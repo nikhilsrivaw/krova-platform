@@ -23,11 +23,15 @@ and draft replies included - the whole point is making the two paths
 indistinguishable to the rest of the platform.
 """
 
+import asyncio
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.channels import ingest
-from shared.channels.instagram.client import InstagramApiError, InstagramClient
+from shared.channels.instagram.client import (
+    Conversation, ConversationMessage, InstagramApiError, InstagramClient,
+)
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus, Direction, IdentityKind
 from shared.utils.logging import get_logger
 
@@ -36,21 +40,45 @@ logger = get_logger(__name__)
 # How many of a connected account's most recent conversations to check
 # each sweep, and how many of each conversation's most recent messages -
 # generous enough to never miss a burst of testing, cheap enough to run
-# every few minutes across every connected account.
-CONVERSATION_LIMIT = 25
+# every second across every connected account.
+CONVERSATION_LIMIT = 10
 MESSAGES_PER_CONVERSATION = 10
+
+
+async def _read_conversation(
+    client: InstagramClient, connection: ChannelConnection, conversation: Conversation
+) -> list[ConversationMessage]:
+    try:
+        return await client.list_messages(conversation.id, limit=MESSAGES_PER_CONVERSATION)
+    except InstagramApiError:
+        logger.exception(
+            "instagram sync could not read conversation=%s business=%s",
+            conversation.id, connection.business_id,
+        )
+        return []
 
 
 async def sync_connection(connection: ChannelConnection, db: AsyncSession) -> int:
     """
     Pull whatever's new across this one connected account's recent
     conversations. Returns how many new messages were stored.
+
+    Reading each conversation's messages is a Graph API round trip with
+    real network latency - at a 1-second poll interval that adds up fast
+    if done one conversation at a time (APScheduler won't start the next
+    tick until this one returns). Those reads touch nothing but the Graph
+    API, so they run concurrently via asyncio.gather; only the ingest()
+    calls after - which write through the one shared `db` session, unsafe
+    to interleave - stay sequential.
     """
     client = InstagramClient.for_connection(connection)
     stored = 0
 
     try:
-        conversations = await client.list_conversations(limit=CONVERSATION_LIMIT)
+        conversations = [
+            c for c in await client.list_conversations(limit=CONVERSATION_LIMIT)
+            if c.participants
+        ]
     except InstagramApiError:
         logger.exception(
             "instagram sync could not list conversations business=%s",
@@ -58,22 +86,16 @@ async def sync_connection(connection: ChannelConnection, db: AsyncSession) -> in
         )
         return 0
 
-    for conversation in conversations:
-        if not conversation.participants:
-            continue
+    if not conversations:
+        return 0
+
+    per_conversation_messages = await asyncio.gather(
+        *(_read_conversation(client, connection, c) for c in conversations)
+    )
+
+    for conversation, messages in zip(conversations, per_conversation_messages):
         # A DM thread has exactly one other participant - the customer.
         counterparty = conversation.participants[0].id
-
-        try:
-            messages = await client.list_messages(
-                conversation.id, limit=MESSAGES_PER_CONVERSATION
-            )
-        except InstagramApiError:
-            logger.exception(
-                "instagram sync could not read conversation=%s business=%s",
-                conversation.id, connection.business_id,
-            )
-            continue
 
         for message in messages:
             if not message.text:
