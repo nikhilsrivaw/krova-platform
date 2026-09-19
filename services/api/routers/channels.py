@@ -406,7 +406,9 @@ async def instagram_connect_url(current_user: CurrentUserDep) -> ConnectUrlOut:
         "scope": (
             "instagram_business_basic,"
             "instagram_business_manage_messages,"
-            "instagram_business_manage_comments"
+            "instagram_business_manage_comments,"
+            "instagram_business_manage_insights,"
+            "instagram_business_content_publish"
         ),
         "state": state,
     }
