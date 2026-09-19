@@ -55,6 +55,7 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "call.no_answer": ("campaign_objective",),
     "message.received": ("text",),
     "comment.received": ("text",),
+    "story_reply.received": ("text",),
     "flow.completed": ("flow_id",),
     "appointment.booked": ("starts_at", "intake_channel"),
     "appointment.cancelled": ("starts_at", "intake_channel", "reason"),

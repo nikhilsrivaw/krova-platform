@@ -214,6 +214,12 @@ class WebhookEventType(str, enum.Enum):
     # shared/care/post_call_actions.py's CONDITION_FIELDS - deliberately
     # no entry for this trigger).
     story_mention_received = "story_mention.received"
+    # Same dispatch site again, for a reply to this account's own story
+    # (media.kind == "story_reply") - unlike story_mention, this one has
+    # real text (see shared/channels/instagram/webhook.py's
+    # InboundStoryReply), so it's still its own trigger, not
+    # message.received, but does get a CONDITION_FIELDS entry.
+    story_reply_received = "story_reply.received"
     # Fired from services/api/routers/webhooks.py's inbound message loop
     # when a WhatsApp Flow submission arrives (media kind "flow_reply",
     # see shared/channels/whatsapp/webhook.py) - the moment a customer

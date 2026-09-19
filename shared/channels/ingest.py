@@ -234,11 +234,20 @@ async def ingest(
             # own trigger rather than firing message.received with a
             # permanently-empty text a condition could never match.
             trigger_type = "story_mention.received"
+        elif media_kind == "story_reply":
+            # Unlike story_mention, this one has real text (see
+            # instagram/webhook.py's InboundStoryReply) - still its own
+            # trigger, not message.received, so a business can wire
+            # "someone replied to my story" separately from "someone DMed
+            # me cold" even though both carry a text a keyword can match.
+            trigger_type = "story_reply.received"
         else:
             trigger_type = "message.received"
         context: dict[str, Any] = {"text": text}
         if media_kind == "comment":
             context["comment_id"] = media.get("comment_id")
+        elif media_kind == "story_reply":
+            context["story_id"] = media.get("story_id")
 
         await post_call_actions.apply_rules(
             db, business_id=business_id, trigger_type=trigger_type, customer_id=customer.id,

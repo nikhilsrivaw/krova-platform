@@ -45,6 +45,29 @@ class InboundStoryMention:
 
 
 @dataclass(slots=True)
+class InboundStoryReply:
+    """
+    A reply to one of this Business account's own stories - different
+    from InboundStoryMention (someone tagging the business in THEIR
+    story): this is a normal message, with real text, that also carries
+    a reply_to.story reference (confirmed against Meta's own Instagram
+    Platform webhook examples: message.reply_to.story.{id,url}). Split
+    out from InboundDirectMessage anyway, not left to fall through as a
+    plain DM, so a business can wire "someone replied to my story"
+    separately from "someone DMed me cold".
+    """
+
+    ig_account_id: str
+    external_id: str          # mid - the idempotency key
+    from_ig_id: str
+    text: str | None
+    story_id: str | None
+    story_url: str | None
+    occurred_at: datetime
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class InboundComment:
     """A comment on one of our posts or Reels."""
 
@@ -63,12 +86,15 @@ class ParsedInstagramWebhook:
     messages: list[InboundDirectMessage] = field(default_factory=list)
     comments: list[InboundComment] = field(default_factory=list)
     story_mentions: list[InboundStoryMention] = field(default_factory=list)
-    # Fields we don't handle yet: messaging_postbacks, story replies.
-    # Kept so nothing arrives unnoticed rather than silently dropped.
+    story_replies: list[InboundStoryReply] = field(default_factory=list)
+    # Fields we don't handle yet: messaging_postbacks. Kept so nothing
+    # arrives unnoticed rather than silently dropped.
     other: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.messages or self.comments or self.story_mentions or self.other)
+        return bool(
+            self.messages or self.comments or self.story_mentions or self.story_replies or self.other
+        )
 
 
 def _as_datetime(ms: Any) -> datetime:
@@ -116,6 +142,21 @@ def parse(payload: dict) -> ParsedInstagramWebhook:
                         external_id=str(mid),
                         from_ig_id=str(sender_id),
                         story_url=(story_mention.get("payload") or {}).get("url"),
+                        occurred_at=_as_datetime(msg.get("timestamp")),
+                        raw=msg,
+                    )
+                )
+                continue
+            story = (message.get("reply_to") or {}).get("story")
+            if story is not None:
+                result.story_replies.append(
+                    InboundStoryReply(
+                        ig_account_id=ig_account_id,
+                        external_id=str(mid),
+                        from_ig_id=str(sender_id),
+                        text=message.get("text"),
+                        story_id=story.get("id"),
+                        story_url=story.get("url"),
                         occurred_at=_as_datetime(msg.get("timestamp")),
                         raw=msg,
                     )
