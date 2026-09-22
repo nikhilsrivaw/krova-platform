@@ -919,9 +919,21 @@ async def _finalise_call(
 
     Runs detached so a caller hanging up does not race the write that records
     how long the call lasted - that duration is billing data.
+
+    Split into two phases, not one write: STT/TTS cost depends on nothing but
+    this call's own duration and character count, known immediately, but the
+    Plivo voice cost has to wait on Plivo's own CDR becoming queryable, which
+    _fetch_plivo_cdr's own docstring found routinely takes longer than a
+    person checking the call log right after hanging up will wait. The old
+    single-write version held STT/TTS hostage to that same delay for no
+    reason - a call log checked at a completely normal 15-20s showed every
+    cost as 0, STT and TTS included, even though neither needed Plivo at all.
     """
     if call_row_id is None:
         return
+    connection: ChannelConnection | None = None
+    duration_seconds = 0
+    external_id: str | None = None
     try:
         async with AsyncSessionLocal() as db:
             call_row = await db.get(Call, call_row_id)
@@ -931,6 +943,8 @@ async def _finalise_call(
 
             call_row.ended_at = datetime.now(timezone.utc)
             call_row.duration_seconds = int(time.time() - started_at)
+            duration_seconds = call_row.duration_seconds
+            external_id = call_row.external_id
 
             # The call's own language preference improves every call it
             # is heard on, rather than being fixed once - only written
@@ -948,35 +962,25 @@ async def _finalise_call(
                 else None
             )
 
-            cdr = await _fetch_plivo_cdr(connection, call_row.external_id)
-            if cdr is not None:
-                plivo_paise = round(float(cdr.get("total_amount", 0)) * _USD_TO_INR * 100)
-                plivo_source = "cdr"
-                billed_seconds = cdr.get("billed_duration")
-            else:
-                raw_rate = (connection.extra or {}).get("voice_rate") if connection else None
-                plivo_paise = _estimate_plivo_paise(
-                    call_row.duration_seconds, float(raw_rate) if raw_rate else None
-                )
-                plivo_source = "estimate"
-                billed_seconds = None
-
-            stt_paise = round(call_row.duration_seconds * _SARVAM_STT_RUPEES_PER_SECOND * 100)
+            stt_paise = round(duration_seconds * _SARVAM_STT_RUPEES_PER_SECOND * 100)
             tts_paise = round(agent_chars * _SARVAM_TTS_RUPEES_PER_CHAR * 100)
 
+            # plivo_voice_paise/plivo_cost_source land in phase 2 below -
+            # "pending" here (not 0) so the call log can tell "not billed"
+            # apart from "not looked up yet" if it ever wants to.
             call_row.cost_breakdown = {
                 "sarvam_stt_paise": stt_paise,
                 "sarvam_tts_paise": tts_paise,
-                "plivo_voice_paise": plivo_paise,
-                "plivo_cost_source": plivo_source,
+                "plivo_voice_paise": 0,
+                "plivo_cost_source": "pending",
             }
-            call_row.cost_paise = stt_paise + tts_paise + plivo_paise
+            call_row.cost_paise = stt_paise + tts_paise
 
             usage.record(
                 business_id=call_row.business_id,
                 event_type=UsageEventType.voice_stt_seconds,
                 channel="voice",
-                quantity=call_row.duration_seconds,
+                quantity=duration_seconds,
                 unit="second",
                 krova_cost_paise=stt_paise,
                 source_type="call",
@@ -994,11 +998,59 @@ async def _finalise_call(
                 source_id=call_row.id,
                 db=db,
             )
+
+            await db.commit()
+    except Exception:
+        logger.exception("failed to close call record %s", call_row_id)
+        return
+
+    if external_id is not None:
+        await _finalise_plivo_cost(call_row_id, connection, duration_seconds, external_id)
+
+
+async def _finalise_plivo_cost(
+    call_row_id: uuid.UUID, connection: ChannelConnection | None, duration_seconds: int,
+    external_id: str,
+) -> None:
+    """
+    Phase 2 of _finalise_call - the part that has to wait on Plivo. Its own
+    DB session/commit, deliberately after phase 1's has already landed, so a
+    call log checked while this is still retrying shows real STT/TTS numbers
+    and a "pending" Plivo cost rather than every field reading 0.
+    """
+    try:
+        cdr = await _fetch_plivo_cdr(connection, external_id)
+        async with AsyncSessionLocal() as db:
+            call_row = await db.get(Call, call_row_id)
+            if call_row is None:
+                await db.commit()
+                return
+
+            if cdr is not None:
+                plivo_paise = round(float(cdr.get("total_amount", 0)) * _USD_TO_INR * 100)
+                plivo_source = "cdr"
+                billed_seconds = cdr.get("billed_duration")
+            else:
+                raw_rate = (connection.extra or {}).get("voice_rate") if connection else None
+                plivo_paise = _estimate_plivo_paise(
+                    duration_seconds, float(raw_rate) if raw_rate else None
+                )
+                plivo_source = "estimate"
+                billed_seconds = None
+
+            breakdown = dict(call_row.cost_breakdown or {})
+            breakdown["plivo_voice_paise"] = plivo_paise
+            breakdown["plivo_cost_source"] = plivo_source
+            call_row.cost_breakdown = breakdown
+            call_row.cost_paise = (
+                breakdown.get("sarvam_stt_paise", 0) + breakdown.get("sarvam_tts_paise", 0) + plivo_paise
+            )
+
             usage.record(
                 business_id=call_row.business_id,
                 event_type=UsageEventType.voice_call_minutes,
                 channel="voice",
-                quantity=(billed_seconds if billed_seconds is not None else call_row.duration_seconds) / 60,
+                quantity=(billed_seconds if billed_seconds is not None else duration_seconds) / 60,
                 unit="minute",
                 krova_cost_paise=plivo_paise,
                 source_type="call",
@@ -1009,7 +1061,7 @@ async def _finalise_call(
 
             await db.commit()
     except Exception:
-        logger.exception("failed to close call record %s", call_row_id)
+        logger.exception("failed to finalise Plivo cost for call %s", call_row_id)
 
 
 async def _analyze_call(
