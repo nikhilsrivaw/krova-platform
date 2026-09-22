@@ -1030,6 +1030,17 @@ async def _finalise_plivo_cost(
                 plivo_paise = round(float(cdr.get("total_amount", 0)) * _USD_TO_INR * 100)
                 plivo_source = "cdr"
                 billed_seconds = cdr.get("billed_duration")
+                if plivo_paise == 0:
+                    # No error, no retry exhaustion - a real CDR came back
+                    # but "total_amount" produced 0, either genuinely (a
+                    # short-enough call rounds to nothing) or because that
+                    # is not actually the field name this Plivo account's
+                    # CDR shape uses. Only way to tell without guessing is
+                    # to see the real response once.
+                    logger.warning(
+                        "plivo CDR for call %s parsed to 0 paise - raw response: %s",
+                        external_id, cdr,
+                    )
             else:
                 raw_rate = (connection.extra or {}).get("voice_rate") if connection else None
                 plivo_paise = _estimate_plivo_paise(
