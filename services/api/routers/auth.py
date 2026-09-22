@@ -4,16 +4,25 @@ Sign up, sign in, refresh, sign out.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, Request, status
+from fastapi import APIRouter, Body, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.auth import service
+from shared.auth import google_oauth, service
 from shared.auth.passwords import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
     PasswordTooWeak,
 )
+from shared.auth.tokens import (
+    TokenError,
+    create_google_handoff,
+    create_google_oauth_state,
+    decode_google_handoff,
+    decode_google_oauth_state,
+)
+from shared.config.settings import settings
 from shared.db.models import Business, User
 from shared import verticals
 from shared.verticals import labels
@@ -176,6 +185,131 @@ async def logout(
     # Deliberately silent about whether the token existed. Signing out is not
     # a place to confirm whether a token is real.
     await service.revoke_session(refresh_token, db)
+
+
+# ── Google sign-in/sign-up ───────────────────────────────────────────────────
+# Three hops: /google/start hands back where to send the browser, Google
+# redirects to /google/callback with no Krova session of its own, and that
+# redirects the browser again to the frontend with a short-lived handoff code
+# - never the real tokens - for /google/exchange to trade in. See
+# shared/auth/tokens.py's own module comment for why the handoff exists
+# rather than putting access/refresh tokens straight in a URL.
+
+class GoogleStartUrl(BaseModel):
+    authorize_url: str
+
+
+def _google_redirect_uri() -> str:
+    if not settings.public_base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PUBLIC_BASE_URL is not configured on this server",
+        )
+    return f"{settings.public_base_url.rstrip('/')}/api/v1/auth/google/callback"
+
+
+@router.get("/google/start", response_model=GoogleStartUrl)
+async def google_start(
+    business_name: str | None = Query(default=None, max_length=255),
+    vertical: str | None = Query(default=None),
+) -> GoogleStartUrl:
+    """
+    Called from the login page (no params - existing account only) or the
+    signup page (business_name/vertical from the form already on screen,
+    carried through Google's own round trip in the state param - see
+    create_google_oauth_state).
+    """
+    if vertical is not None and vertical not in verticals.keys():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unknown business type",
+        )
+    state = create_google_oauth_state(business_name, vertical)
+    return GoogleStartUrl(
+        authorize_url=google_oauth.authorize_url(state, _google_redirect_uri())
+    )
+
+
+@router.get("/google/callback", include_in_schema=False)
+async def google_callback(
+    db: DbDep,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    frontend = settings.frontend_base_url.rstrip("/")
+
+    if error or not code or not state:
+        return RedirectResponse(f"{frontend}/login?error=google_denied")
+
+    try:
+        parsed_state = decode_google_oauth_state(state)
+    except TokenError:
+        return RedirectResponse(f"{frontend}/login?error=google_expired")
+
+    try:
+        tokens = await google_oauth.exchange_code(code, _google_redirect_uri())
+        userinfo = await google_oauth.fetch_userinfo(tokens["access_token"])
+    except google_oauth.GoogleOAuthError:
+        return RedirectResponse(f"{frontend}/login?error=google_failed")
+
+    email = userinfo.get("email")
+    if not email or not userinfo.get("email_verified"):
+        return RedirectResponse(f"{frontend}/login?error=google_unverified_email")
+
+    full_name = userinfo.get("name")
+    business_name = parsed_state["business_name"]
+    vertical = parsed_state["vertical"]
+
+    # Every branch below either returns before writing anything or reaches
+    # the handoff at the end - nothing here needs a manual commit/rollback,
+    # DbDep's own get_db() already commits on a normal return and rolls back
+    # on a raised exception (shared/db/session.py).
+    try:
+        session = await service.login_via_google(email, full_name, db)
+    except service.UserNotFound:
+        if not business_name:
+            return RedirectResponse(f"{frontend}/signup?error=google_no_account")
+        try:
+            session = await service.register_via_google(
+                email=email,
+                full_name=full_name,
+                business_name=business_name,
+                vertical=vertical or "general",
+                db=db,
+            )
+        except service.EmailAlreadyRegistered:
+            # Lost a race with a second tab, or the account was created by a
+            # password signup between login_via_google's lookup and here -
+            # either way, the account exists now, so fall through to it.
+            # register()'s own EmailAlreadyRegistered check runs before it
+            # writes anything, so there is nothing to undo before retrying.
+            session = await service.login_via_google(email, full_name, db)
+    except service.AccountDisabled:
+        return RedirectResponse(f"{frontend}/login?error=account_disabled")
+
+    handoff = create_google_handoff(session.user.id)
+    return RedirectResponse(f"{frontend}/auth/google/complete?code={handoff}")
+
+
+@router.post("/google/exchange", response_model=SessionResponse)
+async def google_exchange(
+    db: DbDep,
+    code: Annotated[str, Body(embed=True)],
+) -> SessionResponse:
+    """The frontend's only call after the Google round trip - trades the
+    short-lived handoff code from the callback redirect for a real session."""
+    try:
+        user_id = decode_google_handoff(code)
+    except TokenError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    try:
+        session = await service.resume_session(user_id, db)
+    except service.InvalidCredentials as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    return _session_response(session)
 
 
 @router.get("/me", response_model=MeResponse)

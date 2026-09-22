@@ -136,6 +136,90 @@ def decode_connect_state(token: str) -> uuid.UUID:
     return uuid.UUID(claims["biz"])
 
 
+# ── Google sign-in/sign-up ──────────────────────────────────────────────────
+# Same round-trip-through-a-third-party shape as connect_state above, but for
+# logging in rather than connecting a channel: the browser leaves for Google
+# and comes back with no Krova session, only what we carried in Google's own
+# "state" parameter. business_name/vertical are optional - present when the
+# signup form collected them before redirecting, absent for a plain login
+# attempt (which must not silently create a business for an unrecognised
+# email - see login_via_google's own reasoning).
+
+def create_google_oauth_state(business_name: str | None, vertical: str | None) -> str:
+    now = _now()
+    payload = {
+        "typ": "google_oauth_state",
+        "iat": now,
+        "exp": now + timedelta(minutes=15),
+        "jti": secrets.token_urlsafe(8),
+    }
+    if business_name is not None:
+        payload["biz_name"] = business_name
+    if vertical is not None:
+        payload["vertical"] = vertical
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_google_oauth_state(token: str) -> dict:
+    """Returns {"business_name": str | None, "vertical": str | None}."""
+    try:
+        claims = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": ["exp", "iat"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise TokenError("This sign-in attempt has expired - please try again") from exc
+    except jwt.InvalidTokenError as exc:
+        raise TokenError("Invalid sign-in state") from exc
+
+    if claims.get("typ") != "google_oauth_state":
+        raise TokenError("Wrong token type")
+
+    return {
+        "business_name": claims.get("biz_name"),
+        "vertical": claims.get("vertical"),
+    }
+
+
+# A deliberately tiny-TTL, single-purpose token: the Google callback redirects
+# the browser to a Krova page with this in the query string, and that page's
+# only job is to immediately trade it in (POST /auth/google/exchange) for the
+# real access/refresh pair. Keeps the actual session tokens out of the URL -
+# out of browser history, the Referer header, and server access logs.
+
+def create_google_handoff(user_id: uuid.UUID) -> str:
+    now = _now()
+    payload = {
+        "typ": "google_handoff",
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(minutes=2),
+        "jti": secrets.token_urlsafe(8),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_google_handoff(token: str) -> uuid.UUID:
+    try:
+        claims = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": ["exp", "iat", "sub"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise TokenError("This sign-in link has expired - please try again") from exc
+    except jwt.InvalidTokenError as exc:
+        raise TokenError("Invalid sign-in link") from exc
+
+    if claims.get("typ") != "google_handoff":
+        raise TokenError("Wrong token type")
+
+    return uuid.UUID(claims["sub"])
+
+
 # ── Refresh tokens ───────────────────────────────────────────────────────────
 
 def generate_refresh_token() -> tuple[str, str]:

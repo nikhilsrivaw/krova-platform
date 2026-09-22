@@ -5,6 +5,7 @@ Everything that touches credentials lives here rather than in the router, so
 the rules hold no matter which entry point calls them.
 """
 
+import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -138,6 +139,82 @@ async def register(
     session = await _issue_session(user, business, BusinessRole.owner.value, db)
     logger.info("registered user=%s business=%s vertical=%s", user.id, business.id, vertical)
     return session
+
+
+async def resume_session(user_id: uuid.UUID, db: AsyncSession) -> Session:
+    """
+    Issue a fresh session for an already-identified, already-verified user -
+    the last step of the Google handoff (see /auth/google/exchange), where
+    the handoff token itself already proved who this is. Not authenticate():
+    there is no password to check here, only a session to mint.
+    """
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise InvalidCredentials("Session is not valid")
+
+    membership = await _primary_membership(user.id, db)
+    business, role = membership if membership else (None, None)
+    return await _issue_session(user, business, role, db)
+
+
+async def register_via_google(
+    email: str,
+    full_name: str | None,
+    business_name: str,
+    vertical: str,
+    db: AsyncSession,
+) -> Session:
+    """
+    Same shape as register() above - account, first business, sign the
+    person in - for someone who arrived via Google sign-up rather than a
+    password form. Not a copy-paste: reuses register() directly with a
+    generated, never-shown password so User.password_hash's NOT NULL
+    constraint holds without a migration and without this account ever
+    being password-loginable (a password reset would still work if the
+    person ever wants one - a real, if unlikely, escape hatch).
+    """
+    return await register(
+        email=email,
+        password=secrets.token_urlsafe(32),
+        full_name=full_name,
+        business_name=business_name,
+        vertical=vertical,
+        db=db,
+    )
+
+
+class UserNotFound(AuthError):
+    pass
+
+
+async def login_via_google(email: str, full_name: str | None, db: AsyncSession) -> Session:
+    """
+    Sign in an existing account by verified Google email - no password
+    check, Google already proved they own the inbox. Deliberately does not
+    create an account for an unrecognised email: that is register_via_google's
+    job, and only when the signup form actually collected a business name -
+    letting a bare login attempt silently spin up a business would leave
+    orphaned, un-onboarded businesses behind every mistyped click.
+    """
+    email = normalise_email(email)
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise UserNotFound("No Krova account uses this Google email yet - sign up first")
+
+    if not user.is_active:
+        raise AccountDisabled("This account has been disabled")
+
+    if full_name and not user.full_name:
+        user.full_name = full_name
+
+    user.last_login_at = _now()
+
+    membership = await _primary_membership(user.id, db)
+    business, role = membership if membership else (None, None)
+
+    return await _issue_session(user, business, role, db)
 
 
 async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
