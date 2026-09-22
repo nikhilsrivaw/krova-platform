@@ -83,7 +83,7 @@ async def search_numbers(
 
     if res.status_code != 200:
         logger.warning("plivo number search failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not search Plivo's number inventory")
+        raise PlivoError(f"Could not search Plivo's number inventory: {res.text[:300]}")
 
     return res.json().get("objects", [])
 
