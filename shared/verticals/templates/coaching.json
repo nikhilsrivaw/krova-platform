@@ -1,0 +1,193 @@
+{
+  "key": "coaching",
+  "label": "Coaching or tuition centre",
+  "summary": "An exam-prep or skills coaching institute where students and parents ask about batches and fees, book a demo class, and need reminding about fee instalments.",
+  "capabilities": ["conversation_intelligence", "scheduling"],
+  "labels": {
+    "scheduling": {
+      "provider": "Faculty",
+      "provider_plural": "Faculty",
+      "credential_label": "Qualifications / experience",
+      "fee_label": "Course Fee",
+      "booking_noun": "demo class",
+      "booking_noun_plural": "demo classes"
+    }
+  },
+  "tone": "Encouraging and quick, never pushy. A parent or student messaging a coaching centre wants a straight answer on fees, batch timing, and whether a demo class is available - lead with that. Confident about the institute's own facts (faculty, batches, fees); never confident about a student's own outcome.",
+  "policies": "Never claim or imply a guaranteed selection, rank, or passing result - India's CCPA Guidelines for Prevention of Misleading Advertisements in Coaching Sector (2024) make this a real, enforced legal violation, not just an overclaim, with real penalties already issued against institutes for exactly this. Never quote a success rate, rank, or past student's result as a promise about a new student's own chances - only as historical fact if it is written in the business's own details, and never phrased as an assurance ('will help you crack it' is not allowed; 'our last batch had these results' is, if that is actually on file). Never confirm a demo class slot that is not in the calendar. Quote only the fee listed in the business's own details - never estimate or negotiate a discount. Never use a student's name, photo, or result as a testimonial in any generated message without it being explicitly on file as already consented.",
+  "known_gaps": [
+    "Whether a specific student will pass, get selected, or improve their rank",
+    "Fee discounts, scholarships, or negotiated pricing beyond what is on file",
+    "Refund eligibility beyond the business's own written policy",
+    "Comparing this institute's results against a competitor's"
+  ],
+  "watch_for": [
+    {"kind": "meeting",  "note": "A demo class booked, moved, or cancelled"},
+    {"kind": "payment",  "note": "A fee instalment discussed or agreed, or an outstanding balance"},
+    {"kind": "callback", "note": "A promise that a counsellor or faculty member will call back with more details"},
+    {"kind": "document", "note": "Study material, a fee receipt, or a syllabus promised to a student"}
+  ],
+  "common_questions": [
+    "What are the fees for this course?",
+    "Can I attend a free demo class?",
+    "What are the batch timings?",
+    "How experienced is the faculty?",
+    "What's your success rate / how many students cleared last year?",
+    "Is there an instalment option for fees?"
+  ],
+  "escalate_immediately": [
+    "Any question asking to guarantee a result, rank, or selection",
+    "Any complaint about faculty, teaching quality, or a missed class",
+    "Any dispute about a fee already paid or a refund request",
+    "Any request to compare results against a named competitor"
+  ],
+  "flow_templates": [
+    {
+      "key": "book_demo_class",
+      "name": "Book a demo class",
+      "description": "Structured demo-class request - name, subject/course, and preferred date - lands for staff to confirm and assign a Faculty member.",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "cta": "Request",
+      "body": "Let's get your demo class booked:",
+      "screen": "BOOK_DEMO",
+      "flow_json": {
+        "version": "5.0",
+        "screens": [
+          {
+            "id": "BOOK_DEMO",
+            "title": "Book a demo class",
+            "terminal": true,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
+                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {"type": "TextInput", "name": "course", "label": "Which subject / course?", "required": true},
+                    {"type": "DatePicker", "name": "preferred_date", "label": "Preferred date", "required": true},
+                    {
+                      "type": "Footer",
+                      "label": "Request demo class",
+                      "on-click-action": {
+                        "name": "complete",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "course": "${form.course}",
+                          "preferred_date": "${form.preferred_date}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "book_demo_class_live",
+      "name": "Book a demo class (Beta - live availability)",
+      "description": "Same as 'Book a demo class', but the second screen shows only real open Faculty slots - computed live, never a blind date picker. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA.",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "cta": "Schedule",
+      "body": "Let's get your demo class booked:",
+      "screen": "BOOK_DEMO_LIVE",
+      "flow_json": {
+        "version": "7.0",
+        "screens": [
+          {
+            "id": "BOOK_DEMO_LIVE",
+            "title": "Book a demo class",
+            "terminal": false,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
+                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {"type": "TextInput", "name": "course", "label": "Which subject / course?", "required": true},
+                    {
+                      "type": "Footer",
+                      "label": "See open slots",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "course": "${form.course}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "SELECT_SLOT",
+            "title": "Pick a time",
+            "terminal": true,
+            "data": {
+              "available_slots": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {"id": {"type": "string"}, "title": {"type": "string"}}
+                },
+                "__example__": [{"id": "2026-01-01T10:00:00+05:30", "title": "Thu 1 Jan, 10:00 AM"}]
+              },
+              "full_name": {"type": "string", "__example__": "Jane Doe"},
+              "phone": {"type": "string", "__example__": "+919876543210"},
+              "course": {"type": "string", "__example__": "Class 10 Mathematics"},
+              "error_message": {"type": "string", "__example__": ""}
+            },
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "TextBody",
+                  "text": "${data.error_message}",
+                  "visible": "${data.error_message}"
+                },
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "selected_slot",
+                      "label": "Available times",
+                      "required": true,
+                      "data-source": "${data.available_slots}"
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Confirm demo class",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                          "selected_slot": "${form.selected_slot}",
+                          "full_name": "${data.full_name}",
+                          "phone": "${data.phone}",
+                          "course": "${data.course}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
