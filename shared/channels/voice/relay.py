@@ -860,6 +860,9 @@ _USD_TO_INR = 87.0
 def _estimate_plivo_paise(duration_seconds: int, rate_per_min_usd: float | None) -> int:
     """Fallback only - used when the real CDR could not be fetched."""
     if not rate_per_min_usd:
+        logger.warning(
+            "plivo cost estimate has no voice_rate to work with - reporting 0, not an actual cost"
+        )
         return 0
     return round((duration_seconds / 60) * rate_per_min_usd * _USD_TO_INR * 100)
 
@@ -868,8 +871,16 @@ async def _fetch_plivo_cdr(connection: ChannelConnection | None, call_uuid: str)
     """
     The subaccount that owns the number if this connection has one, otherwise
     Krova's parent account - whichever actually placed the call. A call
-    that just hung up may not have a CDR yet, so this retries briefly rather
-    than falling straight back to the estimate on the first miss.
+    that just hung up may not have a CDR yet, so this retries rather than
+    falling straight back to the estimate on the first miss.
+
+    3 attempts 2s apart (a ~4-6s total window) turned out too short in
+    practice - real calls confirmed Plivo's own CDR is routinely not queryable
+    that soon after hangup, and this function runs detached (see
+    _finalise_call's own docstring), so nothing live is waiting on it and
+    there is no real cost to giving Plivo more time before falling back to
+    an estimate that may itself be 0 (see _estimate_plivo_paise) if voice_rate
+    was never captured either - silently wrong either way, not just imprecise.
     """
     auth_id = settings.plivo_auth_id
     auth_token = settings.plivo_auth_token
@@ -880,11 +891,12 @@ async def _fetch_plivo_cdr(connection: ChannelConnection | None, call_uuid: str)
             auth_token = decrypt(connection.access_token)
 
     if not auth_id or not auth_token:
+        logger.warning("plivo CDR fetch skipped for call %s: no usable auth", call_uuid)
         return None
 
-    for attempt in range(3):
+    for attempt in range(6):
         if attempt:
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
         try:
             cdr = await plivo_client.get_call_cdr(
                 auth_id=auth_id, auth_token=auth_token, call_uuid=call_uuid
@@ -894,6 +906,7 @@ async def _fetch_plivo_cdr(connection: ChannelConnection | None, call_uuid: str)
             return None
         if cdr is not None:
             return cdr
+    logger.warning("plivo CDR never became available for call %s after 6 attempts", call_uuid)
     return None
 
 
