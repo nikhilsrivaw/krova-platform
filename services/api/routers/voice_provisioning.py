@@ -374,6 +374,52 @@ async def resubmit_application(current_user: CurrentUserDep, db: DbDep) -> Appli
 
 # ── numbers ──────────────────────────────────────────────────────────────
 
+class OwnedNumberOut(BaseModel):
+    number: str
+    city: str | None = None
+    region: str | None = None
+    is_connected: bool
+
+
+@router.get("/numbers/owned", response_model=list[OwnedNumberOut])
+async def list_owned_numbers(current_user: CurrentUserDep, db: DbDep) -> list[OwnedNumberOut]:
+    """
+    Every number Plivo says this subaccount owns, cross-checked against
+    Krova's own ChannelConnection rows - see plivo_client.list_owned_numbers's
+    own docstring for why this exists: a number bought on Plivo's side but
+    never successfully linked is real, billed inventory invisible to
+    everything else in Krova. is_connected marks the ones already wired to
+    voice; anything false here is a genuine candidate to release.
+    """
+    row = await _require_provisioning(current_user.business, db)
+    try:
+        owned = await plivo_client.list_owned_numbers(_subaccount_of(row))
+    except PlivoError as exc:
+        raise _fail(exc) from exc
+
+    connected = {
+        c.external_account_id
+        for c in (
+            await db.execute(
+                select(ChannelConnection).where(
+                    ChannelConnection.business_id == current_user.business,
+                    ChannelConnection.channel == Channel.voice,
+                    ChannelConnection.status == ConnectionStatus.active,
+                )
+            )
+        ).scalars().all()
+    }
+    return [
+        OwnedNumberOut(
+            number=n["number"],
+            city=n.get("city"),
+            region=n.get("region"),
+            is_connected=n["number"] in connected,
+        )
+        for n in owned
+    ]
+
+
 @router.get("/numbers/search")
 async def search_numbers(
     current_user: CurrentUserDep,
@@ -488,7 +534,15 @@ async def release_number(number: str, current_user: CurrentUserDep, db: DbDep) -
     """
     Give a number back - a business that churns stops being billed the
     monthly rental from here on. The connection is marked disconnected
-    rather than deleted, so its call history stays on the customer timeline.
+    rather than deleted (not dropped from the DB), so its call history
+    stays on the customer timeline.
+
+    Works with or without a matching ChannelConnection row - a number that
+    was bought on Plivo's side but never successfully linked (see
+    list_owned_numbers above) has none, and must still be releasable.
+    Plivo itself is the real authorization boundary here: releasing calls
+    with this business's own subaccount credentials, so Plivo simply
+    refuses a number that subaccount doesn't actually own.
     """
     row = await _require_provisioning(current_user.business, db)
 
@@ -500,15 +554,14 @@ async def release_number(number: str, current_user: CurrentUserDep, db: DbDep) -
         )
     )
     connection = result.scalar_one_or_none()
-    if connection is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such connected number")
 
     try:
         await plivo_client.release_number(_subaccount_of(row), number)
     except PlivoError as exc:
         raise _fail(exc) from exc
 
-    connection.status = ConnectionStatus.disconnected
+    if connection is not None:
+        connection.status = ConnectionStatus.disconnected
     await db.commit()
 
     logger.info("voice number released business=%s number=%s", current_user.business, number)

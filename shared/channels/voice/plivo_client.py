@@ -302,6 +302,30 @@ async def send_sms(*, auth_id: str, auth_token: str, from_number: str, to_number
         raise PlivoError(f"Could not send SMS to {to_number}: {res.text[:300]}")
 
 
+async def list_owned_numbers(subaccount: Subaccount) -> list[dict]:
+    """
+    Every number this subaccount currently owns - not what's searchable to
+    buy (that's search_numbers' /PhoneNumber/ path), the /Number/ path's
+    own list of what's already been purchased. Exists to reconcile against
+    Krova's own ChannelConnection rows: a number bought here but never
+    successfully linked (a crashed request mid-flow, or the exact
+    link_number status-code bug this file just had) is real, billed
+    Plivo inventory with no trace in Krova's database otherwise - there is
+    no other way to find it than asking Plivo directly.
+    """
+    url = f"{BASE_URL}/Account/{subaccount.auth_id}/Number/"
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        res = await client.get(
+            url, auth=httpx.BasicAuth(subaccount.auth_id, subaccount.auth_token)
+        )
+
+    if res.status_code != 200:
+        logger.warning("plivo owned-number list failed: %s %s", res.status_code, res.text)
+        raise PlivoError(f"Could not list owned numbers: {res.text[:300]}")
+
+    return res.json().get("objects", [])
+
+
 async def release_number(subaccount: Subaccount, number: str) -> None:
     """
     Give a number back to Plivo - a business that churns or no longer wants
