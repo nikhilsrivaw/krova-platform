@@ -63,7 +63,7 @@ async def get_requirement(
 
     if res.status_code != 200:
         logger.warning("plivo compliance requirement lookup failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not look up Plivo's KYC requirements")
+        raise PlivoError(f"Could not look up Plivo's KYC requirements: {_plivo_error_detail(res)}")
 
     body = res.json()
     doc_types = [
@@ -84,7 +84,7 @@ async def create_end_user(*, business_name: str, end_user_type: str = "business"
 
     if res.status_code not in (200, 201):
         logger.warning("plivo end_user create failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not register this business with Plivo for KYC")
+        raise PlivoError(f"Could not register this business with Plivo for KYC: {_plivo_error_detail(res)}")
 
     return res.json()["end_user_id"]
 
@@ -123,9 +123,22 @@ async def upload_document(
 
     if res.status_code not in (200, 201):
         logger.warning("plivo document upload failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not upload {alias}")
+        # Surface Plivo's own reason - most rejections of this kind name the
+        # exact missing/invalid field (e.g. "business_name not provided"),
+        # which is the only way anyone finds out what a given document_type_id
+        # actually needs, per this function's own docstring above.
+        raise PlivoError(f"Could not upload {alias}: {_plivo_error_detail(res)}")
 
     return res.json()["document_id"]
+
+
+def _plivo_error_detail(res: httpx.Response) -> str:
+    try:
+        body = res.json()
+    except ValueError:
+        return res.text[:300] or f"HTTP {res.status_code}"
+    detail = body.get("error") or body.get("message") or body.get("detail")
+    return str(detail) if detail else (res.text[:300] or f"HTTP {res.status_code}")
 
 
 async def create_application(
@@ -170,7 +183,7 @@ async def create_application(
 
     if res.status_code not in (200, 201):
         logger.warning("plivo compliance application create failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not create the KYC application")
+        raise PlivoError(f"Could not create the KYC application: {_plivo_error_detail(res)}")
 
     return res.json()["compliance_application_id"]
 
@@ -189,7 +202,7 @@ async def update_application(application_id: str, *, document_ids: list[str]) ->
 
     if res.status_code not in (200, 201, 202):
         logger.warning("plivo compliance application update failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not update the KYC application with new documents")
+        raise PlivoError(f"Could not update the KYC application with new documents: {_plivo_error_detail(res)}")
 
 
 async def submit_application(application_id: str) -> None:
@@ -203,7 +216,7 @@ async def submit_application(application_id: str) -> None:
 
     if res.status_code not in (200, 201, 202):
         logger.warning("plivo compliance application submit failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not submit the KYC application")
+        raise PlivoError(f"Could not submit the KYC application: {_plivo_error_detail(res)}")
 
 
 def apply_status(row: VoiceProvisioning, raw_status: str, rejection_reason: str | None) -> None:
@@ -231,6 +244,6 @@ async def get_application_status(application_id: str) -> dict:
 
     if res.status_code != 200:
         logger.warning("plivo compliance application status failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not check the KYC application's status")
+        raise PlivoError(f"Could not check the KYC application's status: {_plivo_error_detail(res)}")
 
     return res.json()
