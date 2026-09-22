@@ -148,7 +148,7 @@ async def link_number(subaccount: Subaccount, number: str, app_id: str) -> None:
             json={"app_id": app_id},
         )
 
-    if res.status_code != 200:
+    if res.status_code not in (200, 202):
         logger.warning("plivo number link failed: %s %s", res.status_code, res.text)
         raise PlivoError(f"Could not link {number} to its Application: {res.text[:300]}")
 
@@ -197,7 +197,7 @@ async def get_call_cdr(*, auth_id: str, auth_token: str, call_uuid: str) -> dict
         return None
     if res.status_code != 200:
         logger.warning("plivo CDR fetch failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not fetch call record for {call_uuid}")
+        raise PlivoError(f"Could not fetch call record for {call_uuid}: {res.text[:300]}")
 
     return res.json()
 
@@ -224,7 +224,7 @@ async def transfer_call(*, auth_id: str, auth_token: str, call_uuid: str, aleg_u
 
     if res.status_code not in (200, 202):
         logger.warning("plivo call transfer failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not transfer call {call_uuid}")
+        raise PlivoError(f"Could not transfer call {call_uuid}: {res.text[:300]}")
 
 
 async def make_call(
@@ -280,7 +280,7 @@ async def make_call(
 
     if res.status_code not in (200, 201, 202):
         logger.warning("plivo make_call failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not place a call to {to_number}")
+        raise PlivoError(f"Could not place a call to {to_number}: {res.text[:300]}")
 
     return res.json().get("request_uuid", "")
 
@@ -299,7 +299,7 @@ async def send_sms(*, auth_id: str, auth_token: str, from_number: str, to_number
 
     if res.status_code not in (200, 201, 202):
         logger.warning("plivo send_sms failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not send SMS to {to_number}")
+        raise PlivoError(f"Could not send SMS to {to_number}: {res.text[:300]}")
 
 
 async def release_number(subaccount: Subaccount, number: str) -> None:
@@ -315,4 +315,4 @@ async def release_number(subaccount: Subaccount, number: str) -> None:
 
     if res.status_code not in (200, 204):
         logger.warning("plivo number release failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not release {number}")
+        raise PlivoError(f"Could not release {number}: {res.text[:300]}")
