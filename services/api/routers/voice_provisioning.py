@@ -570,7 +570,11 @@ async def release_number(number: str, current_user: CurrentUserDep, db: DbDep) -
 # ── call log ─────────────────────────────────────────────────────────────
 
 def _money(paise: int) -> str:
-    return f"₹{paise / 100:,.0f}"
+    # Two decimals, not whole rupees: one call's total is routinely under a
+    # rupee (STT + TTS + carrier are each tens of paise), and rounding it
+    # away made a real, billed call read "₹0" - or "₹1" over a breakdown of
+    # three "₹0"s, which is worse, because it looks like a bug in the sum.
+    return f"₹{paise / 100:,.2f}"
 
 
 class CallLogOut(BaseModel):
