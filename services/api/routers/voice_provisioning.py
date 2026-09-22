@@ -382,7 +382,20 @@ async def search_numbers(
     number_type: str = "local",
     pattern: str | None = None,
 ) -> list[dict]:
-    """Numbers this business could buy, searched under its own subaccount."""
+    """
+    Numbers this business could buy, searched under its own subaccount.
+
+    Plivo's own numbers carry no leading zero on the STD code (Bengaluru is
+    "8013802883" under +91, not "0801..." - confirmed against a real
+    connected number, +91 80 3180 2883). Every Indian caller writes an STD
+    code with the leading zero out of habit ("080 Bengaluru"), which the
+    search UI's own placeholder text encourages - so strip exactly one
+    leading zero here rather than silently returning nothing for the
+    format anyone will actually type.
+    """
+    if pattern and pattern.startswith("0"):
+        pattern = pattern[1:]
+
     row = await _require_provisioning(current_user.business, db)
     try:
         results = await plivo_client.search_numbers(
