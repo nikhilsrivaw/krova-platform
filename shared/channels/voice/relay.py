@@ -867,12 +867,21 @@ def _estimate_plivo_paise(duration_seconds: int, rate_per_min_usd: float | None)
     return round((duration_seconds / 60) * rate_per_min_usd * _USD_TO_INR * 100)
 
 
-async def _fetch_plivo_cdr(connection: ChannelConnection | None, call_uuid: str) -> dict | None:
+async def _fetch_plivo_cdr(
+    sub_auth_id: str | None, sub_auth_token: str | None, call_uuid: str
+) -> dict | None:
     """
-    The subaccount that owns the number if this connection has one, otherwise
+    The subaccount that owns the number if this call had one, otherwise
     Krova's parent account - whichever actually placed the call. A call
     that just hung up may not have a CDR yet, so this retries rather than
     falling straight back to the estimate on the first miss.
+
+    Takes plain credentials, never the ChannelConnection row they came from:
+    this runs after its caller's DB session has already committed and closed,
+    and a committed SQLAlchemy instance is expired, so reading .extra or
+    .access_token off it here raises DetachedInstanceError - which is exactly
+    what silently killed every phase-2 cost lookup when this function still
+    took the ORM object.
 
     3 attempts 2s apart (a ~4-6s total window) turned out too short in
     practice - real calls confirmed Plivo's own CDR is routinely not queryable
@@ -882,13 +891,8 @@ async def _fetch_plivo_cdr(connection: ChannelConnection | None, call_uuid: str)
     an estimate that may itself be 0 (see _estimate_plivo_paise) if voice_rate
     was never captured either - silently wrong either way, not just imprecise.
     """
-    auth_id = settings.plivo_auth_id
-    auth_token = settings.plivo_auth_token
-    if connection is not None:
-        sub_auth_id = (connection.extra or {}).get("subaccount_auth_id")
-        if sub_auth_id and connection.access_token:
-            auth_id = sub_auth_id
-            auth_token = decrypt(connection.access_token)
+    auth_id = sub_auth_id or settings.plivo_auth_id
+    auth_token = sub_auth_token or settings.plivo_auth_token
 
     if not auth_id or not auth_token:
         logger.warning("plivo CDR fetch skipped for call %s: no usable auth", call_uuid)
@@ -931,7 +935,12 @@ async def _finalise_call(
     """
     if call_row_id is None:
         return
-    connection: ChannelConnection | None = None
+    # Plain values, not the ORM rows they came from - phase 2 runs after this
+    # session has committed and closed, where a committed instance is expired
+    # and every attribute read raises DetachedInstanceError.
+    sub_auth_id: str | None = None
+    sub_auth_token: str | None = None
+    voice_rate: str | None = None
     duration_seconds = 0
     external_id: str | None = None
     try:
@@ -961,6 +970,13 @@ async def _finalise_call(
                 if call_row.connection_id is not None
                 else None
             )
+            if connection is not None:
+                extra = connection.extra or {}
+                candidate_id = extra.get("subaccount_auth_id")
+                if candidate_id and connection.access_token:
+                    sub_auth_id = candidate_id
+                    sub_auth_token = decrypt(connection.access_token)
+                voice_rate = extra.get("voice_rate")
 
             stt_paise = round(duration_seconds * _SARVAM_STT_RUPEES_PER_SECOND * 100)
             tts_paise = round(agent_chars * _SARVAM_TTS_RUPEES_PER_CHAR * 100)
@@ -1005,21 +1021,28 @@ async def _finalise_call(
         return
 
     if external_id is not None:
-        await _finalise_plivo_cost(call_row_id, connection, duration_seconds, external_id)
+        await _finalise_plivo_cost(
+            call_row_id, duration_seconds, external_id,
+            sub_auth_id=sub_auth_id, sub_auth_token=sub_auth_token, voice_rate=voice_rate,
+        )
 
 
 async def _finalise_plivo_cost(
-    call_row_id: uuid.UUID, connection: ChannelConnection | None, duration_seconds: int,
-    external_id: str,
+    call_row_id: uuid.UUID, duration_seconds: int, external_id: str,
+    *, sub_auth_id: str | None, sub_auth_token: str | None, voice_rate: str | None,
 ) -> None:
     """
     Phase 2 of _finalise_call - the part that has to wait on Plivo. Its own
     DB session/commit, deliberately after phase 1's has already landed, so a
     call log checked while this is still retrying shows real STT/TTS numbers
     and a "pending" Plivo cost rather than every field reading 0.
+
+    Every input is a plain value read inside phase 1's session - see
+    _fetch_plivo_cdr's own docstring on why passing the ChannelConnection row
+    itself across that boundary silently broke this whole phase.
     """
     try:
-        cdr = await _fetch_plivo_cdr(connection, external_id)
+        cdr = await _fetch_plivo_cdr(sub_auth_id, sub_auth_token, external_id)
         async with AsyncSessionLocal() as db:
             call_row = await db.get(Call, call_row_id)
             if call_row is None:
@@ -1042,9 +1065,8 @@ async def _finalise_plivo_cost(
                         external_id, cdr,
                     )
             else:
-                raw_rate = (connection.extra or {}).get("voice_rate") if connection else None
                 plivo_paise = _estimate_plivo_paise(
-                    duration_seconds, float(raw_rate) if raw_rate else None
+                    duration_seconds, float(voice_rate) if voice_rate else None
                 )
                 plivo_source = "estimate"
                 billed_seconds = None
