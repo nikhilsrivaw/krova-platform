@@ -81,6 +81,7 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "overdue_followup.detected": ("severity", "title", "body"),
     "report_not_collected.detected": ("severity", "title", "body"),
     "overdue_refund.detected": ("severity", "title", "body"),
+    "callback_overdue.detected": ("severity", "title", "body"),
     "intent_leakage.detected": ("severity", "title", "body"),
     "rto_risk.detected": ("severity", "title", "body"),
     "claim.status_changed": ("severity", "title", "body"),

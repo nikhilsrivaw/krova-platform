@@ -49,6 +49,7 @@ SIGNAL_KIND_TRIGGERS: dict[str, str] = {
     "overdue_followup": "overdue_followup.detected",
     "report_not_collected": "report_not_collected.detected",
     "overdue_refund": "overdue_refund.detected",
+    "callback_overdue": "callback_overdue.detected",
     # shared/care/intent_leakage.py (deterministic, customer-scoped)
     "intent_leakage": "intent_leakage.detected",
     "rto_risk": "rto_risk.detected",

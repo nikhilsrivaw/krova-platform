@@ -72,6 +72,10 @@ class MeResponse(BaseModel):
     # reasoning for why this one key gets a named field instead of an
     # arbitrary-JSONB write endpoint.
     google_review_url: str | None
+    # Same reasoning, same pattern - the only way this business can ever
+    # turn on shared/care/commitment_deadline_calls.py's proactive voice
+    # calls, which previously had no UI path to enable at all.
+    proactive_deadline_calls_enabled: bool
 
 
 def _session_response(s: service.Session) -> SessionResponse:
@@ -200,6 +204,9 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
+        proactive_deadline_calls_enabled=bool(
+            (business.settings or {}).get("proactive_deadline_calls_enabled")
+        ) if business else False,
     )
 
 
@@ -212,6 +219,7 @@ class UpdateMeRequest(BaseModel):
     # reusing Business.settings as the actual storage (same JSONB bag
     # already used for e.g. settings["pipeline_stages"]).
     google_review_url: str | None = Field(default=None, max_length=2000)
+    proactive_deadline_calls_enabled: bool | None = None
 
 
 @router.post("/me", response_model=MeResponse)
@@ -245,6 +253,11 @@ async def update_me(
             business.vertical = body.vertical
         if body.google_review_url is not None:
             business.settings = {**(business.settings or {}), "google_review_url": body.google_review_url}
+        if body.proactive_deadline_calls_enabled is not None:
+            business.settings = {
+                **(business.settings or {}),
+                "proactive_deadline_calls_enabled": body.proactive_deadline_calls_enabled,
+            }
 
     await db.commit()
 
@@ -260,4 +273,7 @@ async def update_me(
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
+        proactive_deadline_calls_enabled=bool(
+            (business.settings or {}).get("proactive_deadline_calls_enabled")
+        ) if business else False,
     )

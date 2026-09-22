@@ -69,6 +69,7 @@ _VALID_TRIGGERS = {
     WebhookEventType.praise_detected.value,
     WebhookEventType.overdue_followup_detected.value,
     WebhookEventType.report_not_collected_detected.value,
+    WebhookEventType.callback_overdue_detected.value,
     WebhookEventType.overdue_refund_detected.value,
     WebhookEventType.intent_leakage_detected.value,
     WebhookEventType.rto_risk_detected.value,

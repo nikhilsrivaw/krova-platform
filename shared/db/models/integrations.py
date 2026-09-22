@@ -252,6 +252,11 @@ class WebhookEventType(str, enum.Enum):
     overdue_followup_detected = "overdue_followup.detected"
     report_not_collected_detected = "report_not_collected.detected"
     overdue_refund_detected = "overdue_refund.detected"
+    # shared/ai/recall_insights.py's generic overdue-commitment sweep -
+    # the one CommitmentKind (callback) every vertical's own watch_for
+    # block names that neither overdue_followup nor report_not_collected
+    # covers (those map to meeting/document specifically).
+    callback_overdue_detected = "callback_overdue.detected"
     # shared/care/intent_leakage.py's two sweeps - same reasoning.
     intent_leakage_detected = "intent_leakage.detected"
     rto_risk_detected = "rto_risk.detected"
