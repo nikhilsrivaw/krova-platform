@@ -955,6 +955,19 @@ async def _finalise_call(
             duration_seconds = call_row.duration_seconds
             external_id = call_row.external_id
 
+            # Who this call was actually with. The Call row is created before
+            # a single word is spoken, when an unrecognised caller has no
+            # Customer row yet on purpose (see the read-only lookup at call
+            # start - a call that never speaks must not create one). By the
+            # time we get here the pipeline has resolved them through the
+            # normal ingest path, and this is the only moment that resolution
+            # can be written back - without it every call stayed
+            # customer_id=NULL forever, which is why the call log showed
+            # every caller as Unknown and post-call signals/analysis got no
+            # customer to attach to either.
+            if customer_id is not None and call_row.customer_id is None:
+                call_row.customer_id = customer_id
+
             # The call's own language preference improves every call it
             # is heard on, rather than being fixed once - only written
             # when Sarvam actually detected something and it differs from
