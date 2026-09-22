@@ -361,6 +361,26 @@ async def sync_shiprocket() -> None:
         logger.exception("Shiprocket sync job failed")
 
 
+async def sync_gmail() -> None:
+    """
+    The ongoing half of Gmail - previously the one-time connection-time
+    backfill was the only thing that ever read a mailbox, so every email
+    after that was invisible to Krova until someone manually clicked
+    "Backfill Now". See shared/channels/email/backfill.py's own docstring.
+    """
+    from shared.channels.email import backfill
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            stored = await backfill.sync_all_active(db)
+            await db.commit()
+            if stored:
+                logger.info("gmail sync stored %s new message(s)", stored)
+    except Exception:
+        logger.exception("Gmail sync job failed")
+
+
 async def sync_instagram() -> None:
     """
     The ongoing pull that fills the gap when Meta's push webhook isn't
@@ -383,8 +403,8 @@ async def sync_instagram() -> None:
 async def check_deadline_calls() -> None:
     """
     Place one proactive voice call per commitment approaching its due
-    date, opt-in per business - cross-vertical, not gated on any
-    capability the way check_clinic_commitments below is.
+    date, opt-in per business - cross-vertical, gated only on the
+    business's own proactive_deadline_calls_enabled setting.
     See shared/care/commitment_deadline_calls.py.
     """
     from shared.care import commitment_deadline_calls
@@ -400,41 +420,24 @@ async def check_deadline_calls() -> None:
         logger.exception("deadline call sweep failed")
 
 
-async def check_clinic_commitments() -> None:
+async def check_overdue_commitments() -> None:
     """
-    Scan overdue commitments for clinic businesses and surface them on the
-    daily briefing - care_recall capability. See shared/ai/recall_insights.py.
-    """
-    from shared.ai import recall_insights
-    from shared.db.session import AsyncSessionLocal
-
-    try:
-        async with AsyncSessionLocal() as db:
-            created = await recall_insights.check_clinic_commitments(db)
-            await db.commit()
-            if created:
-                logger.info("created %s clinic overdue-commitment insight(s)", created)
-    except Exception:
-        logger.exception("clinic commitment sweep failed")
-
-
-async def check_ecommerce_commitments() -> None:
-    """
-    Scan overdue promised-refund/replacement commitments for ecommerce
-    businesses and surface them on the daily briefing - order_sync
-    capability. See shared/ai/recall_insights.py.
+    Scan every business's overdue commitments for the kinds its own
+    vertical template names in watch_for, and surface them on the daily
+    briefing - generic, not gated to any one vertical or capability. See
+    shared/ai/recall_insights.py.
     """
     from shared.ai import recall_insights
     from shared.db.session import AsyncSessionLocal
 
     try:
         async with AsyncSessionLocal() as db:
-            created = await recall_insights.check_ecommerce_commitments(db)
+            created = await recall_insights.check_overdue_commitments(db)
             await db.commit()
             if created:
-                logger.info("created %s ecommerce overdue-refund insight(s)", created)
+                logger.info("created %s overdue-commitment insight(s)", created)
     except Exception:
-        logger.exception("ecommerce commitment sweep failed")
+        logger.exception("overdue commitment sweep failed")
 
 
 async def check_rto_risk_pincodes() -> None:
@@ -720,6 +723,14 @@ def build() -> AsyncIOScheduler:
         misfire_grace_time=1200,
     )
 
+    scheduler.add_job(
+        sync_gmail,
+        IntervalTrigger(minutes=30),
+        id="sync_gmail",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
     # Every second: as tight as this stand-in for a realtime webhook can
     # go (see backfill.py's own docstring for why it exists at all). Each
     # tick costs 1 + up-to-CONVERSATION_LIMIT Graph API calls per connected
@@ -740,19 +751,9 @@ def build() -> AsyncIOScheduler:
     # briefing reflects last night's extraction - not wired to run before
     # commitments exist to scan, same ordering reasoning as compress_profiles.
     scheduler.add_job(
-        check_clinic_commitments,
+        check_overdue_commitments,
         CronTrigger(hour=7, minute=0, timezone=IST),
-        id="check_clinic_commitments",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
-
-    # Same morning slot as check_clinic_commitments - after the nightly
-    # analysis pass, for the identical reason.
-    scheduler.add_job(
-        check_ecommerce_commitments,
-        CronTrigger(hour=7, minute=15, timezone=IST),
-        id="check_ecommerce_commitments",
+        id="check_overdue_commitments",
         replace_existing=True,
         misfire_grace_time=3600,
     )

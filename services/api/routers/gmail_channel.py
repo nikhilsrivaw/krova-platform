@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.auth.encryption import decrypt, encrypt
+from shared.auth.encryption import encrypt
 from shared.channels.email import backfill, gmail
 from shared.config.settings import settings
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus
@@ -238,37 +238,16 @@ async def _usable_token(connection: ChannelConnection, db: DbDep) -> str:
     """
     A live access token, refreshing if the stored one has expired.
 
-    Google's last an hour, so this refreshes constantly - unlike Meta's, which
-    need a scheduled job because they last sixty days and fail silently.
+    Delegates to shared.channels.email.backfill.usable_access_token - the
+    same refresh logic the periodic sync sweep uses (services/api/
+    scheduler.py's gmail sync job), so it exists once. This wrapper only
+    translates that function's NeedsReauth into the HTTP error a live
+    request needs.
     """
-    now = datetime.now(timezone.utc)
-    if connection.token_expires_at and connection.token_expires_at > now + timedelta(
-        minutes=2
-    ):
-        return decrypt(connection.access_token)
-
-    if not connection.refresh_token:
-        connection.status = ConnectionStatus.needs_reauth
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Gmail access has expired. Please reconnect the mailbox.",
-        )
-
     try:
-        tokens = await gmail.refresh_access_token(decrypt(connection.refresh_token))
-    except gmail.GmailError as exc:
-        connection.status = ConnectionStatus.needs_reauth
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
-
-    access_token = tokens["access_token"]
-    connection.access_token = encrypt(access_token)
-    connection.token_issued_at = now
-    connection.token_expires_at = now + timedelta(
-        seconds=int(tokens.get("expires_in", 3600))
-    )
-    return access_token
+        return await backfill.usable_access_token(connection, db)
+    except backfill.NeedsReauth as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 def _page(title: str, body: str) -> HTMLResponse:
