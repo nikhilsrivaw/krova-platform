@@ -56,7 +56,7 @@ async def create_subaccount(name: str) -> Subaccount:
 
     if res.status_code not in (200, 201):
         logger.warning("plivo subaccount create failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not create a Plivo subaccount")
+        raise PlivoError(f"Could not create a Plivo subaccount: {res.text[:300]}")
 
     body = res.json()
     return Subaccount(auth_id=body["auth_id"], auth_token=body["auth_token"])
@@ -109,7 +109,7 @@ async def buy_number(
 
     if res.status_code not in (200, 201, 202):
         logger.warning("plivo number buy failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not buy {number}")
+        raise PlivoError(f"Could not buy {number}: {res.text[:300]}")
 
 
 async def create_application(
@@ -132,7 +132,7 @@ async def create_application(
 
     if res.status_code not in (200, 201):
         logger.warning("plivo application create failed: %s %s", res.status_code, res.text)
-        raise PlivoError("Could not create a Plivo Application")
+        raise PlivoError(f"Could not create a Plivo Application: {res.text[:300]}")
 
     return res.json()["app_id"]
 
@@ -150,7 +150,7 @@ async def link_number(subaccount: Subaccount, number: str, app_id: str) -> None:
 
     if res.status_code != 200:
         logger.warning("plivo number link failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not link {number} to its Application")
+        raise PlivoError(f"Could not link {number} to its Application: {res.text[:300]}")
 
 
 async def get_number(subaccount: Subaccount, number: str) -> dict:
@@ -167,7 +167,7 @@ async def get_number(subaccount: Subaccount, number: str) -> dict:
 
     if res.status_code != 200:
         logger.warning("plivo number get failed: %s %s", res.status_code, res.text)
-        raise PlivoError(f"Could not read {number}'s details")
+        raise PlivoError(f"Could not read {number}'s details: {res.text[:300]}")
 
     return res.json()
 
