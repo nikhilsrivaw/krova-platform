@@ -116,6 +116,35 @@ async def create_subaccount(current_user: CurrentUserDep, db: DbDep) -> Subaccou
 
 # ── KYC ──────────────────────────────────────────────────────────────────
 
+class ComplianceStateOut(BaseModel):
+    subaccount_auth_id: str
+    has_end_user: bool
+    uploaded_document_type_ids: list[str]
+
+
+@router.get("/compliance/state", response_model=ComplianceStateOut)
+async def compliance_state(current_user: CurrentUserDep, db: DbDep) -> ComplianceStateOut:
+    """
+    Everything the KYC wizard needs to redraw itself correctly after a page
+    reload, before any application has been submitted (applicationStatus
+    only has something to report once that's true - see this router's own
+    docstring on why this is split into stages).
+
+    Without this, the wizard's own React state - which document types were
+    already uploaded, whether an end-user was already registered - only
+    ever existed in memory for the current tab. Reloading mid-flow made the
+    wizard forget a document was already on file, and retrying it hit
+    Plivo's alias-uniqueness rule with a confusing error instead of just
+    showing the step as already done.
+    """
+    row = await _require_provisioning(current_user.business, db)
+    return ComplianceStateOut(
+        subaccount_auth_id=row.subaccount_auth_id,
+        has_end_user=row.end_user_id is not None,
+        uploaded_document_type_ids=[d["document_type_id"] for d in row.documents],
+    )
+
+
 class RequirementOut(BaseModel):
     requirement_id: str
     document_types: list[dict]
