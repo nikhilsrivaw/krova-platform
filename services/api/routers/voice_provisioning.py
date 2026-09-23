@@ -1002,7 +1002,19 @@ VALID_NUMBER_REQUEST_TYPES = {t.value for t in NumberRequestType}
 
 
 def _is_platform_admin(current_user: CurrentUserDep) -> bool:
-    return bool(settings.platform_admin_email) and current_user.email == settings.platform_admin_email
+    """
+    PLATFORM_ADMIN_EMAIL is a comma-separated list, not a single address -
+    Nikhil hit this directly needing a second admin and having to swap the
+    one email already there. Case-insensitive on both sides: User.email is
+    stored lowercased by service.normalise_email at registration, but
+    nothing guarantees the env var was typed that way too.
+    """
+    admins = {
+        e.strip().lower()
+        for e in settings.platform_admin_email.split(",")
+        if e.strip()
+    }
+    return current_user.email.lower() in admins
 
 
 def _require_platform_admin(current_user: CurrentUserDep) -> None:
