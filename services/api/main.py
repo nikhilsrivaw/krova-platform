@@ -44,6 +44,7 @@ from services.api.routers import (
     onboarding,
     orders,
     products,
+    quotations,
     properties,
     public_api,
     queue,
@@ -162,6 +163,7 @@ app.include_router(post_call_rules.router, prefix=API_PREFIX)
 app.include_router(scheduling.router, prefix=API_PREFIX)
 app.include_router(orders.router, prefix=API_PREFIX)
 app.include_router(products.router, prefix=API_PREFIX)
+app.include_router(quotations.router, prefix=API_PREFIX)
 app.include_router(properties.router, prefix=API_PREFIX)
 app.include_router(cases.router, prefix=API_PREFIX)
 app.include_router(signals.router, prefix=API_PREFIX)

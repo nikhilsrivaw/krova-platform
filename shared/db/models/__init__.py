@@ -72,6 +72,7 @@ from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSo
 from shared.db.models.number_request import NumberRequest, NumberRequestStatus, NumberRequestType
 from shared.db.models.order import AbandonedCheckout, Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.db.models.product import Product, ProductVariant
+from shared.db.models.quotation import OPEN_STATUSES, Quotation, QuotationItem, QuotationStatus
 from shared.db.models.property import ListingType, Property, PropertyStatus
 from shared.db.models.queue import QueueEntry, QueueStatus
 from shared.db.models.shift import Shift, ShiftSession
@@ -165,6 +166,10 @@ __all__ = [
     "OrderStatus",
     "Product",
     "ProductVariant",
+    "Quotation",
+    "QuotationItem",
+    "QuotationStatus",
+    "OPEN_STATUSES",
     "OutboundWebhook",
     "Property",
     "PropertyStatus",

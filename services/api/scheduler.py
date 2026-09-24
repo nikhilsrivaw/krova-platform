@@ -420,6 +420,27 @@ async def check_deadline_calls() -> None:
         logger.exception("deadline call sweep failed")
 
 
+async def check_quotation_followups() -> None:
+    """
+    Nudge staff about quotes going quiet, and expire ones past their own
+    validity date. Type 1 (B2B) - see shared/care/quotation_followup.py.
+    """
+    from shared.care import quotation_followup
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            expired = await quotation_followup.expire_stale_quotations(db)
+            raised = await quotation_followup.check_quotation_followups(db)
+            await db.commit()
+            if expired or raised:
+                logger.info(
+                    "quotations: %s expired, %s follow-up(s) raised", expired, raised
+                )
+    except Exception:
+        logger.exception("quotation follow-up sweep failed")
+
+
 async def check_overdue_commitments() -> None:
     """
     Scan every business's overdue commitments for the kinds its own
@@ -697,6 +718,15 @@ def build() -> AsyncIOScheduler:
         id="check_cod_call_failsafe",
         replace_existing=True,
         misfire_grace_time=1800,
+    )
+
+
+    scheduler.add_job(
+        check_quotation_followups,
+        IntervalTrigger(hours=6),
+        id="check_quotation_followups",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     scheduler.add_job(
