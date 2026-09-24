@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
 from shared.ai import commitments as extractor
+from shared.ai import quotation_extract as quotation_extractor
 from shared.ai import signals as signal_extractor
 from shared.ai.client import AIError
 from shared.billing import usage
@@ -34,6 +35,9 @@ from shared.db.models import (
     Insight,
     Job,
     Message,
+    Quotation,
+    QuotationItem,
+    QuotationStatus,
     UsageEventType,
 )
 from shared.db.session import AsyncSessionLocal
@@ -206,6 +210,96 @@ async def _extract_signals(
     return stored
 
 
+async def _extract_quotation(
+    message: Message, conversation: list[dict], business_context: str, db: AsyncSession
+) -> None:
+    """
+    Pull a price quotation out of the thread, if the business gave one.
+
+    Written as `draft`, never `sent`. The extractor has not been tuned
+    against real Indian B2B chat yet (see its own module docstring), so the
+    design goal is that being wrong is cheap: a draft is a suggestion
+    someone confirms, and a bad one costs a dismissal rather than a
+    follow-up sent to a real buyer on a number nobody checked.
+
+    Deduped on source_quote, the same approach _existing_quotes takes for
+    commitments - re-analysing a thread after each new message would
+    otherwise recreate the same quotation every time.
+    """
+    try:
+        extraction = await quotation_extractor.extract(
+            messages=conversation, business_context=business_context
+        )
+    except AIError:
+        # Never fail the whole analysis job over the quotation pass - the
+        # commitments above are already written by the time this runs.
+        logger.warning("quotation extraction failed for message=%s", message.id)
+        return
+
+    channel = message.channel.value if hasattr(message.channel, "value") else message.channel
+    usage.record(
+        business_id=message.business_id,
+        event_type=UsageEventType.ai_commitment_extraction,
+        channel=channel,
+        quantity=1,
+        unit="call",
+        krova_cost_paise=extraction.cost_paise,
+        source_type="message",
+        source_id=message.id,
+        db=db,
+    )
+
+    found = extraction.quotation
+    if found is None:
+        return
+
+    if found.source_quote:
+        existing = (
+            await db.execute(
+                select(Quotation.id).where(
+                    Quotation.customer_id == message.customer_id,
+                    Quotation.source_quote == found.source_quote,
+                ).limit(1)
+            )
+        ).scalars().first()
+        if existing is not None:
+            return
+
+    quotation = Quotation(
+        business_id=message.business_id,
+        customer_id=message.customer_id,
+        status=QuotationStatus.draft,
+        total_paise=found.total_paise,
+        reference=found.reference,
+        # What the offer said about its own validity, kept as the business
+        # wrote it. Not parsed into valid_until: "valid 15 days" from when
+        # is ambiguous, and a wrong expiry date would silently expire a
+        # live quote.
+        notes=found.validity_note,
+        source_message_ids=[uuid.UUID(i) for i in found.source_message_ids],
+        source_quote=found.source_quote,
+    )
+    db.add(quotation)
+    await db.flush()
+
+    for position, item in enumerate(found.items):
+        db.add(
+            QuotationItem(
+                quotation_id=quotation.id,
+                business_id=message.business_id,
+                description=item.description,
+                quantity=item.quantity,
+                unit_price_paise=item.unit_price_paise,
+                position=position,
+            )
+        )
+
+    logger.info(
+        "drafted quotation from conversation business=%s customer=%s confidence=%.2f",
+        message.business_id, message.customer_id, found.confidence,
+    )
+
+
 async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
     """
     Read the conversation this message belongs to and record any promises.
@@ -254,6 +348,9 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
 
     if business and verticals.has_capability(business, "product_feedback"):
         await _extract_signals(message, conversation, context, db)
+
+    if business and verticals.has_capability(business, "quotations"):
+        await _extract_quotation(message, conversation, context, db)
 
     already = await _existing_quotes(message.customer_id, db)
     stored = 0
