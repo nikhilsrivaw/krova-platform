@@ -399,6 +399,81 @@ async def _process_whatsapp(raw_body: bytes) -> None:
                             connection, media_info["reference_id"], db,
                         )
 
+            # Coexistence echoes: messages the business sent from their own
+            # phone. Stored as outbound so the thread is complete and so
+            # commitment extraction sees what a rep actually promised - the
+            # single most valuable thing said in a B2B conversation, and the
+            # thing that would otherwise only ever exist on their handset.
+            for echo in parsed.echoes:
+                connection = await ingest.find_connection(
+                    Channel.whatsapp, echo.phone_number_id, db
+                )
+                if connection is None:
+                    logger.warning(
+                        "message echo for unknown number %s (waba=%s) - dropped",
+                        echo.phone_number_id, echo.waba_id,
+                    )
+                    continue
+
+                await ingest.ingest(
+                    business_id=connection.business_id,
+                    channel=Channel.whatsapp,
+                    direction=Direction.outbound,
+                    identity_kind=IdentityKind.phone,
+                    # The counterparty is who it was sent *to* - the customer.
+                    identity_value=echo.to_phone,
+                    external_id=echo.external_id,
+                    text=echo.text,
+                    occurred_at=echo.occurred_at,
+                    media=echo.media,
+                    raw=echo.raw,
+                    connection_id=connection.id,
+                    db=db,
+                )
+
+            # Coexistence onboarding backfill: up to six months of the
+            # business's existing 1:1 threads, arriving in chunks shortly
+            # after they connect.
+            #
+            # Deliberately ingested with enqueue_analysis=False. These
+            # messages are history, not events: queuing them would fire
+            # thousands of extraction jobs at once, and - worse - every
+            # inbound one would queue a reply draft, so the agent would
+            # start answering conversations that ended months ago. Stored
+            # for context and for the customer timeline; not replayed as
+            # though it just happened.
+            for item in parsed.history:
+                connection = await ingest.find_connection(
+                    Channel.whatsapp, item.phone_number_id, db
+                )
+                if connection is None:
+                    logger.warning(
+                        "history message for unknown number %s (waba=%s) - dropped",
+                        item.phone_number_id, item.waba_id,
+                    )
+                    continue
+
+                await ingest.ingest(
+                    business_id=connection.business_id,
+                    channel=Channel.whatsapp,
+                    direction=Direction.outbound if item.is_outbound else Direction.inbound,
+                    identity_kind=IdentityKind.phone,
+                    identity_value=item.customer_phone,
+                    external_id=item.external_id,
+                    text=item.text,
+                    occurred_at=item.occurred_at,
+                    media=item.media,
+                    raw=item.raw,
+                    connection_id=connection.id,
+                    enqueue_analysis=False,
+                    db=db,
+                )
+
+            if parsed.history:
+                logger.info(
+                    "coexistence history backfilled %s message(s)", len(parsed.history)
+                )
+
             for update in parsed.statuses:
                 await _apply_status(update, db)
 

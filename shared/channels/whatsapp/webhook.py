@@ -142,15 +142,81 @@ def parse_native_order(order_data: dict) -> NativeOrder:
 
 
 @dataclass(slots=True)
+class EchoMessage:
+    """
+    One message the business itself sent from the WhatsApp Business app on
+    their own phone, mirrored to us by Meta's Coexistence feature.
+
+    This is what makes a sales team's real conversations visible without
+    asking anyone to change how they work: the rep quotes a dealer from
+    their phone exactly as they always have, and the message still lands
+    here. Arrives under its own webhook field (`smb_message_echoes`), not
+    under `messages`, and carries `to` - the customer - where an inbound
+    message carries `from`.
+
+    Stored as an outbound message, so commitment extraction runs over it
+    (a promise a rep made is exactly the thing worth catching) while reply
+    drafting does not - a human has already answered.
+    """
+
+    waba_id: str
+    phone_number_id: str
+    display_phone_number: str | None
+    external_id: str              # wamid - idempotency key, per Meta's own guidance
+    to_phone: str                 # the customer this was sent to
+    message_type: str
+    text: str | None
+    occurred_at: datetime
+    media: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class HistoryMessage:
+    """
+    One message from the chat history Meta backfills at Coexistence
+    onboarding - up to six months of the business's existing 1:1 threads.
+
+    This is the part that turns a new connection into instant institutional
+    memory: the dealer relationships that previously existed only on a
+    rep's handset arrive as real, queryable conversation. Group chats are
+    excluded by Meta and never appear here.
+
+    Direction is derived by comparing the message's `from` against the
+    business's own display number, because a history thread carries both
+    sides - unlike `messages` (always inbound) or `message_echoes` (always
+    outbound).
+    """
+
+    waba_id: str
+    phone_number_id: str
+    display_phone_number: str | None
+    external_id: str
+    customer_phone: str           # the thread's counterparty
+    is_outbound: bool             # the business sent it
+    message_type: str
+    text: str | None
+    occurred_at: datetime
+    media: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ParsedWebhook:
     messages: list[InboundMessage] = field(default_factory=list)
     statuses: list[StatusUpdate] = field(default_factory=list)
+    # Messages the business sent from their own phone (Coexistence).
+    echoes: list[EchoMessage] = field(default_factory=list)
+    # Backfilled history from Coexistence onboarding.
+    history: list[HistoryMessage] = field(default_factory=list)
     # Fields we don't handle yet: account_update, quality updates, template
     # status changes. Kept so nothing arrives unnoticed.
     other: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.messages or self.statuses or self.other)
+        return bool(
+            self.messages or self.statuses or self.echoes or self.history or self.other
+        )
 
 
 def _timestamp(value: Any) -> datetime:
@@ -327,6 +393,84 @@ def parse(payload: dict) -> ParsedWebhook:
                     )
                 except Exception:
                     logger.exception("could not parse a WhatsApp message, skipping it")
+
+            # Coexistence: what the business sent from their own phone.
+            # Same message shape as an inbound one, so _extract_text applies
+            # unchanged - only the direction and the counterparty differ.
+            for echo in value.get("message_echoes") or []:
+                try:
+                    text, media = _extract_text(echo)
+                    recipient = str(echo.get("to", ""))
+                    if not recipient:
+                        # Without a recipient there is no customer to attribute
+                        # this to, and a message attributed to nobody is worse
+                        # than one we skipped.
+                        logger.warning("message echo with no 'to', skipping")
+                        continue
+                    result.echoes.append(
+                        EchoMessage(
+                            waba_id=waba_id,
+                            phone_number_id=phone_number_id,
+                            display_phone_number=display_phone,
+                            external_id=str(echo.get("id", "")),
+                            to_phone=recipient,
+                            message_type=str(echo.get("type", "unknown")),
+                            text=text,
+                            occurred_at=_timestamp(echo.get("timestamp")),
+                            media=media,
+                            raw=echo,
+                        )
+                    )
+                except Exception:
+                    logger.exception("could not parse a WhatsApp message echo, skipping it")
+
+            # Coexistence onboarding backfill. Structure is threads-of-
+            # messages rather than a flat list, and each message carries both
+            # `from` and `to`, so direction is derived rather than implied by
+            # which key it arrived under.
+            #
+            # The inner shape (threads[].messages[] with from/to) is
+            # documented; the outer Cloud-API wrapper is inferred from how
+            # every other field on this webhook is shaped. Anything that does
+            # not match is logged loudly rather than silently dropped, so a
+            # real mismatch surfaces the first time it happens.
+            for chunk in value.get("history") or []:
+                if not isinstance(chunk, dict):
+                    logger.warning("history chunk was not an object, skipping")
+                    continue
+                for thread in chunk.get("threads") or []:
+                    counterparty = str(thread.get("id", ""))
+                    if not counterparty:
+                        logger.warning("history thread with no id, skipping")
+                        continue
+                    for message in thread.get("messages") or []:
+                        try:
+                            text, media = _extract_text(message)
+                            sender = str(message.get("from", ""))
+                            # The business's own number identifies its side of
+                            # the thread. Without a display number to compare
+                            # against, fall back to "not the counterparty".
+                            if display_phone:
+                                is_outbound = sender == str(display_phone)
+                            else:
+                                is_outbound = sender != counterparty
+                            result.history.append(
+                                HistoryMessage(
+                                    waba_id=waba_id,
+                                    phone_number_id=phone_number_id,
+                                    display_phone_number=display_phone,
+                                    external_id=str(message.get("id", "")),
+                                    customer_phone=counterparty,
+                                    is_outbound=is_outbound,
+                                    message_type=str(message.get("type", "unknown")),
+                                    text=text,
+                                    occurred_at=_timestamp(message.get("timestamp")),
+                                    media=media,
+                                    raw=message,
+                                )
+                            )
+                        except Exception:
+                            logger.exception("could not parse a history message, skipping it")
 
             for status in value.get("statuses") or []:
                 try:
