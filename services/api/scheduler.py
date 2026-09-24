@@ -761,20 +761,37 @@ def build() -> AsyncIOScheduler:
         misfire_grace_time=1800,
     )
 
-    # Every second: as tight as this stand-in for a realtime webhook can
-    # go (see backfill.py's own docstring for why it exists at all). Each
-    # tick costs 1 + up-to-CONVERSATION_LIMIT Graph API calls per connected
-    # Instagram account (one list_conversations, one list_messages per
-    # conversation) - fine at today's handful of connections and
-    # conversations, but this must widen, or move to a per-connection
-    # stagger, or shrink CONVERSATION_LIMIT, well before either count grows
-    # large enough to risk Meta's rate limits.
+    # Every 15 minutes, not every second - and the difference matters.
+    #
+    # Each tick costs 1 + up-to-CONVERSATION_LIMIT Graph API calls per
+    # connected Instagram account (one list_conversations, one
+    # list_messages per conversation). See backfill.py's own docstring for
+    # why this poll exists at all.
+    #
+    # The 1s interval existed for a specific reason that no longer holds:
+    # while Instagram messaging permissions were pending App Review, Meta
+    # silently stopped delivering the inbound webhook, so this poll was the
+    # only way DMs arrived at all. Putting the app in Live mode fixed the
+    # push, and the webhook has been the real path since - this poll went on
+    # running every second for nothing.
+    #
+    # Confirmed in production 2026-09-24: it was burning the app-level Graph
+    # quota hard enough that Meta returned "Application request limit
+    # reached" on essentially every call. That is worse than wasted effort,
+    # because the app-level limit is shared - a background poll exhausting it
+    # can start failing the sends a customer is actually waiting on. Exactly
+    # what this block's previous comment warned would happen.
+    #
+    # Kept rather than deleted: Meta does occasionally drop a webhook even
+    # when everything is configured correctly, and a cheap periodic
+    # gap-filler is worth having. It just does not need to run 86,400 times
+    # a day to do that.
     scheduler.add_job(
         sync_instagram,
-        IntervalTrigger(seconds=1),
+        IntervalTrigger(minutes=15),
         id="sync_instagram",
         replace_existing=True,
-        misfire_grace_time=10,
+        misfire_grace_time=300,
     )
 
     # Morning run, after the nightly analysis/profile passes so the day's
