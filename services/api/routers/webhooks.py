@@ -42,6 +42,8 @@ from shared.db.models import (
     IdentityKind,
     Order,
     OrderStatus,
+    Product,
+    ProductVariant,
     StoreConnection,
     StripeConnection,
 )
@@ -1000,6 +1002,153 @@ async def _process_shopify_checkout(raw_body: bytes, business_id: uuid.UUID) -> 
         except Exception:
             await db.rollback()
             logger.exception("failed to process shopify checkout webhook")
+
+
+@router.post("/shopify/products")
+async def receive_shopify_product_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_shopify_hmac_sha256: str | None = Header(default=None),
+    x_shopify_shop_domain: str | None = Header(default=None),
+) -> Response:
+    """
+    products/create and products/update, into the local catalogue.
+
+    Webhook-only by necessity, not preference: StoreConnection stores a
+    webhook secret and no access token, so this platform cannot call
+    Shopify's Admin API to pull a catalogue - it can only receive what
+    Shopify pushes. Same lookup-then-verify order as the orders receiver
+    above, for the same reason.
+    """
+    if not x_shopify_shop_domain:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+    raw_body = await request.body()
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(StoreConnection).where(
+                StoreConnection.platform == "shopify",
+                StoreConnection.store_identifier == x_shopify_shop_domain,
+                StoreConnection.active == True,  # noqa: E712
+            )
+        )
+        connection = result.scalars().first()
+        if connection is None:
+            logger.warning("shopify product webhook for unconnected store %s", x_shopify_shop_domain)
+            return Response(status_code=status.HTTP_200_OK)
+
+        try:
+            shopify_signature.verify(
+                raw_body, x_shopify_hmac_sha256, decrypt(connection.webhook_secret)
+            )
+        except shopify_signature.InvalidSignature:
+            return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+        business_id = connection.business_id
+
+    background_tasks.add_task(_process_shopify_product, raw_body, business_id)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+async def _process_shopify_product(raw_body: bytes, business_id: uuid.UUID) -> None:
+    """
+    Upsert one product and its variants.
+
+    Variants are upserted rather than replaced wholesale: a variant row
+    that disappears from a later payload is marked unavailable, never
+    deleted, because an order line item may still point at it and
+    "this SKU used to exist" is a real answer to a customer asking for it.
+    """
+    import json
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.warning("shopify product webhook body was not valid JSON")
+        return
+
+    parsed = shopify_webhook.parse_product(payload)
+    if parsed is None:
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            product = (
+                await db.execute(
+                    select(Product).where(
+                        Product.business_id == business_id,
+                        Product.source_platform == "shopify",
+                        Product.external_id == parsed.external_id,
+                    )
+                )
+            ).scalars().first()
+
+            if product is None:
+                product = Product(
+                    business_id=business_id,
+                    source_platform="shopify",
+                    external_id=parsed.external_id,
+                )
+                db.add(product)
+
+            product.title = parsed.title
+            product.product_type = parsed.product_type
+            product.vendor = parsed.vendor
+            product.description = parsed.description
+            product.status = parsed.status
+            product.image_url = parsed.image_url
+            product.raw_payload = parsed.raw
+            await db.flush()
+
+            existing = {
+                v.external_id: v
+                for v in (
+                    await db.execute(
+                        select(ProductVariant).where(
+                            ProductVariant.business_id == business_id,
+                            ProductVariant.source_platform == "shopify",
+                            ProductVariant.product_id == product.id,
+                        )
+                    )
+                ).scalars().all()
+            }
+
+            now = datetime.now(timezone.utc)
+            seen: set[str] = set()
+            for incoming in parsed.variants:
+                seen.add(incoming.external_id)
+                variant = existing.get(incoming.external_id)
+                if variant is None:
+                    variant = ProductVariant(
+                        product_id=product.id,
+                        business_id=business_id,
+                        source_platform="shopify",
+                        external_id=incoming.external_id,
+                    )
+                    db.add(variant)
+                variant.sku = incoming.sku
+                variant.title = incoming.title
+                variant.options = incoming.options
+                variant.price_paise = incoming.price_paise
+                variant.inventory_quantity = incoming.inventory_quantity
+                variant.available = incoming.available
+                variant.synced_at = now
+                variant.raw_payload = incoming.raw
+
+            for external_id, variant in existing.items():
+                if external_id not in seen:
+                    variant.available = False
+                    variant.synced_at = now
+
+            await db.commit()
+            logger.info(
+                "shopify product %s business=%s variants=%s",
+                parsed.external_id, business_id, len(parsed.variants),
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("failed to process shopify product webhook")
 
 
 async def _fire_purchase_conversion(

@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.care import response_metrics
 from shared.db.models import (
     BusinessMember,
     Commitment,
@@ -88,6 +89,31 @@ class AgentPerformance(BaseModel):
     edit_rate: float | None
     note: str
     top_gaps: list[dict]
+
+
+class ResponseSpeedBucket(BaseModel):
+    label: str
+    asks: int
+    converted: int
+    conversion_rate: float | None
+
+
+class ResponseSpeedChannel(BaseModel):
+    channel: str
+    answered: int
+    median_seconds: int | None
+
+
+class ResponseSpeed(BaseModel):
+    asks: int
+    answered: int
+    unanswered: int
+    answer_rate: float | None
+    median_seconds: int | None
+    p90_seconds: int | None
+    buckets: list[ResponseSpeedBucket]
+    by_channel: list[ResponseSpeedChannel]
+    note: str
 
 
 class TrustSample(BaseModel):
@@ -327,6 +353,57 @@ async def channel_activity(
         ),
         key=lambda c: c.inbound + c.outbound,
         reverse=True,
+    )
+
+
+@router.get("/response-speed", response_model=ResponseSpeed)
+async def response_speed(
+    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+) -> ResponseSpeed:
+    """
+    How fast this business replies, and what it costs them when they don't.
+
+    The one number here no single-purpose tool can produce: conversion rate
+    per response-speed band. A messaging tool knows the reply times but not
+    whether anyone bought; a store platform knows the orders but has never
+    seen the conversation. Both live here, on one customer.
+
+    See shared/care/response_metrics.py for the two modelling decisions this
+    rests on - what counts as one "ask", and how an order is attributed back
+    to it. Neither is hidden: the note returned below states the second one
+    in the owner's own words, because a conversion figure whose attribution
+    rule is invisible is a figure that gets over-trusted.
+    """
+    metrics = await response_metrics.response_metrics(
+        current_user.business, db, days=days
+    )
+    return ResponseSpeed(
+        asks=metrics.asks,
+        answered=metrics.answered,
+        unanswered=metrics.unanswered,
+        answer_rate=metrics.answer_rate,
+        median_seconds=metrics.median_seconds,
+        p90_seconds=metrics.p90_seconds,
+        buckets=[
+            ResponseSpeedBucket(
+                label=b.label,
+                asks=b.asks,
+                converted=b.converted,
+                conversion_rate=b.conversion_rate,
+            )
+            for b in metrics.buckets
+        ],
+        by_channel=[
+            ResponseSpeedChannel(
+                channel=c.channel, answered=c.answered, median_seconds=c.median_seconds
+            )
+            for c in metrics.by_channel
+        ],
+        note=(
+            "An order counts against a conversation if the same customer "
+            "ordered within 7 days of it. That is an approximation, not "
+            "proof the reply caused the sale."
+        ),
     )
 
 

@@ -110,13 +110,29 @@ def _status(payload: dict) -> str:
 
 
 def _items(payload: dict) -> list[dict]:
+    """
+    Line items, kept lean but with the identifiers that make a line item
+    joinable to the product catalogue.
+
+    sku and variant_id are what turn "this order came back" into "this
+    *variant* comes back 3x more than your average" - without them every
+    per-SKU question has to guess from a display title, which changes
+    whenever a merchant edits a product name. Stored as strings because
+    Shopify's numeric ids exceed what some JSON consumers handle safely,
+    and nothing here does arithmetic on them.
+    """
     out = []
     for item in payload.get("line_items") or []:
+        variant_id = item.get("variant_id")
+        product_id = item.get("product_id")
         out.append(
             {
                 "title": item.get("title") or item.get("name"),
                 "quantity": item.get("quantity"),
                 "price_paise": _to_paise(item.get("price")),
+                "sku": item.get("sku") or None,
+                "variant_id": str(variant_id) if variant_id is not None else None,
+                "product_id": str(product_id) if product_id is not None else None,
             }
         )
     return out
@@ -180,6 +196,112 @@ def parse_order(payload: dict) -> ParsedOrder | None:
         customer_email=payload.get("email") or customer.get("email"),
         customer_phone=payload.get("phone") or customer.get("phone") or shipping.get("phone"),
         shipping_pincode=shipping.get("zip"),
+        raw=payload,
+    )
+
+
+@dataclass(slots=True)
+class ParsedVariant:
+    external_id: str
+    sku: str | None
+    title: str | None
+    options: dict
+    price_paise: int | None
+    inventory_quantity: int | None
+    available: bool | None
+    raw: dict
+
+
+@dataclass(slots=True)
+class ParsedProduct:
+    external_id: str
+    title: str
+    product_type: str | None
+    vendor: str | None
+    description: str | None
+    status: str
+    image_url: str | None
+    variants: list[ParsedVariant]
+    raw: dict
+
+
+def _variant_options(payload: dict, variant: dict) -> dict:
+    """
+    Map Shopify's positional option values onto their real names.
+
+    Shopify stores option *names* on the product ("Colour", "Size") and
+    the chosen *values* on each variant as option1/option2/option3. Kept
+    as a name->value dict because the axes differ per business and fixed
+    columns could never hold them all - see ProductVariant.options.
+    """
+    names = [
+        (o.get("name") or "").strip()
+        for o in (payload.get("options") or [])
+        if isinstance(o, dict)
+    ]
+    options: dict[str, str] = {}
+    for index, key in enumerate(("option1", "option2", "option3")):
+        value = variant.get(key)
+        if not value:
+            continue
+        name = names[index] if index < len(names) and names[index] else key
+        options[name] = str(value)
+    return options
+
+
+def parse_product(payload: dict) -> ParsedProduct | None:
+    """
+    One Shopify product plus its variants, or None if the payload carries
+    no usable identity.
+
+    Inventory is passed through exactly as given, including None - a
+    product whose store does not track inventory must not be reported as
+    out of stock. See ProductVariant.inventory_quantity.
+    """
+    external_id = payload.get("id")
+    title = payload.get("title")
+    if external_id is None or not title:
+        return None
+
+    images = payload.get("images") or []
+    image_url = None
+    if isinstance(payload.get("image"), dict):
+        image_url = payload["image"].get("src")
+    elif images and isinstance(images[0], dict):
+        image_url = images[0].get("src")
+
+    variants = []
+    for variant in payload.get("variants") or []:
+        variant_id = variant.get("id")
+        if variant_id is None:
+            continue
+        inventory = variant.get("inventory_quantity")
+        policy = variant.get("inventory_management")
+        variants.append(
+            ParsedVariant(
+                external_id=str(variant_id),
+                sku=variant.get("sku") or None,
+                title=variant.get("title") or None,
+                options=_variant_options(payload, variant),
+                price_paise=_to_paise(variant.get("price")),
+                inventory_quantity=inventory if isinstance(inventory, int) else None,
+                # Shopify only tracks stock when inventory_management is set;
+                # with it unset, quantity is meaningless and availability is
+                # unknown rather than false.
+                available=(inventory > 0) if (policy and isinstance(inventory, int)) else None,
+                raw=variant,
+            )
+        )
+
+    return ParsedProduct(
+        external_id=str(external_id),
+        title=title,
+        product_type=payload.get("product_type") or None,
+        vendor=payload.get("vendor") or None,
+        description=payload.get("body_html") or None,
+        status=(payload.get("status") or "active").lower(),
+        image_url=image_url,
+        variants=variants,
         raw=payload,
     )
 
