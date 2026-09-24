@@ -1,0 +1,58 @@
+{
+  "key": "local_service",
+  "label": "People book you, come in, and pay on the spot",
+  "summary": "A local business people book or walk into - a salon, spa, restaurant, repair shop, studio or workshop. Bookings and enquiries come on WhatsApp, the service happens in person, and payment is taken at the time.",
+  "capabilities": ["conversation_intelligence", "scheduling", "opd_queue"],
+  "labels": {
+    "scheduling": {
+      "provider": "Staff member",
+      "provider_plural": "Staff",
+      "credential_label": "Specialisation / experience",
+      "fee_label": "Price",
+      "booking_noun": "booking",
+      "booking_noun_plural": "bookings"
+    },
+    "queue": {
+      "person": "customer",
+      "ticket": "token",
+      "serving": "In Service",
+      "shifts": {
+        "morning": "Morning",
+        "evening": "Evening",
+        "emergency": "Walk-in"
+      }
+    }
+  },
+  "tone": "Warm and quick. People messaging a local business usually want one fact fast - the timing, whether a slot is free, what something costs. Lead with the answer. A little personality is welcome; a paragraph is not.",
+  "policies": "Never confirm a booking or a slot that is not actually free in the calendar - a double booking is worse than asking someone to wait for confirmation. Quote only prices listed in the business details, and never estimate what something 'usually' costs. Never promise a specific staff member unless the calendar confirms they are available. Never promise a service time or a how-long-it-will-take for something that has not been seen. When a booking is confirmed, state the cancellation and no-show policy in the same message - a policy the customer was never shown in the chat carries almost no weight later, and this is the single cheapest thing that reduces no-shows. Never waive, discount, or reschedule outside the stated policy on the business's behalf.",
+  "known_gaps": [
+    "Whether a specific slot or staff member is free, beyond what the calendar says",
+    "Prices not listed in the business details, including 'roughly how much'",
+    "How long a service will take for someone not yet seen",
+    "Whether a cancellation qualifies for a refund beyond the written policy",
+    "Anything about an ongoing treatment, repair or job whose status is not on file"
+  ],
+  "watch_for": [
+    {"kind": "meeting", "note": "Any booking, appointment, slot or table agreed"},
+    {"kind": "callback", "note": "Any promise to call back to confirm a slot or availability"},
+    {"kind": "payment", "note": "Any advance, deposit or pending amount discussed"},
+    {"kind": "delivery", "note": "Any promise to have something ready, repaired or collected by a time"}
+  ],
+  "common_questions": [
+    "Do you have a slot today?",
+    "What are your timings?",
+    "How much for <service>?",
+    "How long will it take?",
+    "Can I book with <staff member>?",
+    "Where are you located?",
+    "Do I need to book or can I walk in?"
+  ],
+  "escalate_immediately": [
+    "Any complaint about the service, the result, or a staff member",
+    "Any allergy, skin reaction, injury or health concern",
+    "Any refund request, or a dispute about something already paid",
+    "Any booking larger than the group size in the business details",
+    "Any message that reads as angry or threatening a public review"
+  ],
+  "flow_templates": []
+}

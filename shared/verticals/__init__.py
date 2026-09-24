@@ -52,10 +52,27 @@ def _load_all() -> dict[str, dict]:
 
 
 def available() -> list[dict[str, str]]:
-    """Every vertical a business can choose, for the signup screen."""
+    """
+    Every vertical a business can choose, for the signup screen.
+
+    Filters out templates marked `"selectable": false`. Onboarding asks for
+    a business's *market type* - the shape of how it sells - rather than its
+    industry, because what decides whether this platform is useful is
+    whether there is a gap between the conversation and the money, not what
+    the business happens to sell. A salon and a restaurant pick the same
+    thing; a clinic, where the patient pays at the desk, is out of scope
+    entirely.
+
+    The old industry templates (clinic, restaurant, ecommerce, ...) stay on
+    disk rather than being deleted, because `get()` raises on an unknown key
+    rather than falling back - deleting one would break every business
+    already on it. They are hidden here, still loadable, and migrated
+    deliberately rather than by removal.
+    """
     return [
         {"key": t["key"], "label": t["label"], "summary": t["summary"]}
         for t in sorted(_load_all().values(), key=lambda t: t["key"] != FALLBACK)
+        if t.get("selectable", True)
     ]
 
 

@@ -2,7 +2,9 @@
   "key": "restaurant",
   "label": "Restaurant or cafe",
   "summary": "A restaurant handling table reservations, menu questions, delivery and party bookings.",
-  "capabilities": ["conversation_intelligence"],
+  "capabilities": [
+    "conversation_intelligence"
+  ],
   "tone": "Warm and quick. People messaging a restaurant usually want one fact fast - timings, a table, whether you deliver. Lead with the answer. A little personality is welcome; a paragraph is not.",
   "policies": "Never confirm a table without checking availability. Never promise a delivery time - traffic and kitchen load make it a promise you cannot keep, and a missed one is a bad review. Quote only prices from the current menu in the business details.",
   "known_gaps": [
@@ -11,10 +13,22 @@
     "Whether a dish can be modified for an allergy - that is a kitchen decision"
   ],
   "watch_for": [
-    {"kind": "meeting",  "note": "Table reservation - date, time, party size"},
-    {"kind": "payment",  "note": "Advance or deposit for a party or catering booking"},
-    {"kind": "delivery", "note": "Catering order promised for a date"},
-    {"kind": "callback", "note": "A promise to confirm a large booking later"}
+    {
+      "kind": "meeting",
+      "note": "Table reservation - date, time, party size"
+    },
+    {
+      "kind": "payment",
+      "note": "Advance or deposit for a party or catering booking"
+    },
+    {
+      "kind": "delivery",
+      "note": "Catering order promised for a date"
+    },
+    {
+      "kind": "callback",
+      "note": "A promise to confirm a large booking later"
+    }
   ],
   "common_questions": [
     "Are you open now?",
@@ -33,7 +47,9 @@
       "key": "book_table",
       "name": "Book a table",
       "description": "Structured reservation request - name, party size, date, and meal. Deliberately NOT a live-availability check: this vertical has no real table/seating system on file (see this file's own known_gaps - 'Live table availability, unless the business details include it'), so the request lands for staff to confirm, the same as a static booking request anywhere else in this product.",
-      "categories": ["APPOINTMENT_BOOKING"],
+      "categories": [
+        "APPOINTMENT_BOOKING"
+      ],
       "cta": "Request",
       "body": "Let's get your table booked:",
       "screen": "BOOK_TABLE",
@@ -51,29 +67,63 @@
                   "type": "Form",
                   "name": "form",
                   "children": [
-                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
-                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
+                    {
+                      "type": "TextInput",
+                      "name": "full_name",
+                      "label": "Full name",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "phone",
+                      "label": "Phone number",
+                      "input-type": "phone",
+                      "required": true
+                    },
                     {
                       "type": "RadioButtonsGroup",
                       "name": "party_size",
                       "label": "Party size",
                       "required": true,
                       "data-source": [
-                        {"id": "2", "title": "2 people"},
-                        {"id": "3-4", "title": "3-4 people"},
-                        {"id": "5-6", "title": "5-6 people"},
-                        {"id": "7+", "title": "7 or more"}
+                        {
+                          "id": "2",
+                          "title": "2 people"
+                        },
+                        {
+                          "id": "3-4",
+                          "title": "3-4 people"
+                        },
+                        {
+                          "id": "5-6",
+                          "title": "5-6 people"
+                        },
+                        {
+                          "id": "7+",
+                          "title": "7 or more"
+                        }
                       ]
                     },
-                    {"type": "DatePicker", "name": "preferred_date", "label": "Preferred date", "required": true},
+                    {
+                      "type": "DatePicker",
+                      "name": "preferred_date",
+                      "label": "Preferred date",
+                      "required": true
+                    },
                     {
                       "type": "RadioButtonsGroup",
                       "name": "meal",
                       "label": "Lunch or dinner?",
                       "required": true,
                       "data-source": [
-                        {"id": "lunch", "title": "Lunch"},
-                        {"id": "dinner", "title": "Dinner"}
+                        {
+                          "id": "lunch",
+                          "title": "Lunch"
+                        },
+                        {
+                          "id": "dinner",
+                          "title": "Dinner"
+                        }
                       ]
                     },
                     {
@@ -98,5 +148,6 @@
         ]
       }
     }
-  ]
+  ],
+  "selectable": false
 }

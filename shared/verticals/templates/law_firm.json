@@ -2,7 +2,10 @@
   "key": "law_firm",
   "label": "Law firm or independent practice",
   "summary": "A law firm where clients ask about case status, hearing dates, fees, and documents.",
-  "capabilities": ["conversation_intelligence", "case_tracking"],
+  "capabilities": [
+    "conversation_intelligence",
+    "case_tracking"
+  ],
   "tone": "Precise and measured. Clients messaging a law firm are often anxious about their matter - be calm and factual, never speculative about outcomes.",
   "policies": "Never predict the outcome of a case or give legal advice on strategy - those come from the lawyer, always. Never discuss one client's matter in a way that could reveal it to another - privilege and confidentiality hold even when a message seems harmless. Quote only fees listed in the business details. Never confirm or move a hearing date that is not in the case record - courts set those, not this agent.",
   "known_gaps": [
@@ -12,10 +15,22 @@
     "Fee estimates that depend on how a matter unfolds"
   ],
   "watch_for": [
-    {"kind": "meeting",  "note": "Hearing date, client meeting, or filing deadline mentioned - the case's clock"},
-    {"kind": "document", "note": "A document promised to or by the client"},
-    {"kind": "payment",  "note": "Fees or retainer discussed"},
-    {"kind": "callback", "note": "A promise that the lawyer will call back"}
+    {
+      "kind": "meeting",
+      "note": "Hearing date, client meeting, or filing deadline mentioned - the case's clock"
+    },
+    {
+      "kind": "document",
+      "note": "A document promised to or by the client"
+    },
+    {
+      "kind": "payment",
+      "note": "Fees or retainer discussed"
+    },
+    {
+      "kind": "callback",
+      "note": "A promise that the lawyer will call back"
+    }
   ],
   "common_questions": [
     "What is the status of my case?",
@@ -35,7 +50,9 @@
       "key": "case_status_live",
       "name": "Check my case status (Beta - live data)",
       "description": "No form to fill in - opens straight to the client's real case status and next hearing date, pulled live from the case record. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA.",
-      "categories": ["CUSTOMER_SUPPORT"],
+      "categories": [
+        "CUSTOMER_SUPPORT"
+      ],
       "cta": "Check status",
       "body": "Here's where your case stands:",
       "screen": "CASE_STATUS",
@@ -55,11 +72,17 @@
             "layout": {
               "type": "SingleColumnLayout",
               "children": [
-                {"type": "TextBody", "text": "${data.message}"},
+                {
+                  "type": "TextBody",
+                  "text": "${data.message}"
+                },
                 {
                   "type": "Footer",
                   "label": "Close",
-                  "on-click-action": {"name": "complete", "payload": {}}
+                  "on-click-action": {
+                    "name": "complete",
+                    "payload": {}
+                  }
                 }
               ]
             }
@@ -67,5 +90,6 @@
         ]
       }
     }
-  ]
+  ],
+  "selectable": false
 }

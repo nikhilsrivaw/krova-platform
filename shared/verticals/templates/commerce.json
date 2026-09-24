@@ -1,7 +1,7 @@
 {
-  "key": "ecommerce",
-  "label": "Online store",
-  "summary": "A store selling online, where customers ask where their order is, whether an item is in stock, and how to return something.",
+  "key": "commerce",
+  "label": "You sell products - online, in DMs, or from a catalogue",
+  "summary": "A business selling products to consumers, wherever the order actually comes from - a website, an Instagram or WhatsApp DM, or a shared catalogue. People ask where their order is, whether something is in stock, and how to return it.",
   "capabilities": [
     "conversation_intelligence",
     "order_sync",
@@ -192,6 +192,5 @@
         ]
       }
     }
-  ],
-  "selectable": false
+  ]
 }

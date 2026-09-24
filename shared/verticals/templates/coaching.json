@@ -2,7 +2,10 @@
   "key": "coaching",
   "label": "Coaching or tuition centre",
   "summary": "An exam-prep or skills coaching institute where students and parents ask about batches and fees, book a demo class, and need reminding about fee instalments.",
-  "capabilities": ["conversation_intelligence", "scheduling"],
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling"
+  ],
   "labels": {
     "scheduling": {
       "provider": "Faculty",
@@ -22,10 +25,22 @@
     "Comparing this institute's results against a competitor's"
   ],
   "watch_for": [
-    {"kind": "meeting",  "note": "A demo class booked, moved, or cancelled"},
-    {"kind": "payment",  "note": "A fee instalment discussed or agreed, or an outstanding balance"},
-    {"kind": "callback", "note": "A promise that a counsellor or faculty member will call back with more details"},
-    {"kind": "document", "note": "Study material, a fee receipt, or a syllabus promised to a student"}
+    {
+      "kind": "meeting",
+      "note": "A demo class booked, moved, or cancelled"
+    },
+    {
+      "kind": "payment",
+      "note": "A fee instalment discussed or agreed, or an outstanding balance"
+    },
+    {
+      "kind": "callback",
+      "note": "A promise that a counsellor or faculty member will call back with more details"
+    },
+    {
+      "kind": "document",
+      "note": "Study material, a fee receipt, or a syllabus promised to a student"
+    }
   ],
   "common_questions": [
     "What are the fees for this course?",
@@ -46,7 +61,9 @@
       "key": "book_demo_class",
       "name": "Book a demo class",
       "description": "Structured demo-class request - name, subject/course, and preferred date - lands for staff to confirm and assign a Faculty member.",
-      "categories": ["APPOINTMENT_BOOKING"],
+      "categories": [
+        "APPOINTMENT_BOOKING"
+      ],
       "cta": "Request",
       "body": "Let's get your demo class booked:",
       "screen": "BOOK_DEMO",
@@ -64,10 +81,31 @@
                   "type": "Form",
                   "name": "form",
                   "children": [
-                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
-                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
-                    {"type": "TextInput", "name": "course", "label": "Which subject / course?", "required": true},
-                    {"type": "DatePicker", "name": "preferred_date", "label": "Preferred date", "required": true},
+                    {
+                      "type": "TextInput",
+                      "name": "full_name",
+                      "label": "Full name",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "phone",
+                      "label": "Phone number",
+                      "input-type": "phone",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "course",
+                      "label": "Which subject / course?",
+                      "required": true
+                    },
+                    {
+                      "type": "DatePicker",
+                      "name": "preferred_date",
+                      "label": "Preferred date",
+                      "required": true
+                    },
                     {
                       "type": "Footer",
                       "label": "Request demo class",
@@ -93,7 +131,9 @@
       "key": "book_demo_class_live",
       "name": "Book a demo class (Beta - live availability)",
       "description": "Same as 'Book a demo class', but the second screen shows only real open Faculty slots - computed live, never a blind date picker. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA.",
-      "categories": ["APPOINTMENT_BOOKING"],
+      "categories": [
+        "APPOINTMENT_BOOKING"
+      ],
       "cta": "Schedule",
       "body": "Let's get your demo class booked:",
       "screen": "BOOK_DEMO_LIVE",
@@ -111,9 +151,25 @@
                   "type": "Form",
                   "name": "form",
                   "children": [
-                    {"type": "TextInput", "name": "full_name", "label": "Full name", "required": true},
-                    {"type": "TextInput", "name": "phone", "label": "Phone number", "input-type": "phone", "required": true},
-                    {"type": "TextInput", "name": "course", "label": "Which subject / course?", "required": true},
+                    {
+                      "type": "TextInput",
+                      "name": "full_name",
+                      "label": "Full name",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "phone",
+                      "label": "Phone number",
+                      "input-type": "phone",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "course",
+                      "label": "Which subject / course?",
+                      "required": true
+                    },
                     {
                       "type": "Footer",
                       "label": "See open slots",
@@ -140,14 +196,38 @@
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "properties": {"id": {"type": "string"}, "title": {"type": "string"}}
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  }
                 },
-                "__example__": [{"id": "2026-01-01T10:00:00+05:30", "title": "Thu 1 Jan, 10:00 AM"}]
+                "__example__": [
+                  {
+                    "id": "2026-01-01T10:00:00+05:30",
+                    "title": "Thu 1 Jan, 10:00 AM"
+                  }
+                ]
               },
-              "full_name": {"type": "string", "__example__": "Jane Doe"},
-              "phone": {"type": "string", "__example__": "+919876543210"},
-              "course": {"type": "string", "__example__": "Class 10 Mathematics"},
-              "error_message": {"type": "string", "__example__": ""}
+              "full_name": {
+                "type": "string",
+                "__example__": "Jane Doe"
+              },
+              "phone": {
+                "type": "string",
+                "__example__": "+919876543210"
+              },
+              "course": {
+                "type": "string",
+                "__example__": "Class 10 Mathematics"
+              },
+              "error_message": {
+                "type": "string",
+                "__example__": ""
+              }
             },
             "layout": {
               "type": "SingleColumnLayout",
@@ -189,5 +269,6 @@
         ]
       }
     }
-  ]
+  ],
+  "selectable": false
 }
