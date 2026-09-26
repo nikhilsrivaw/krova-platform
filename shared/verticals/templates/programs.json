@@ -1,50 +1,64 @@
 {
   "key": "programs",
-  "label": "You run programs or courses people join for weeks or months",
-  "summary": "A business selling something delivered over time rather than handed over once - a coaching or tuition centre, a training institute, a fitness or wellness programme, or a consultant on a retainer. People enrol, pay in instalments, and either finish or quietly drop off.",
+  "label": "People join and stay with you for weeks, months or longer",
+  "summary": "A business whose customers join something that runs over time rather than buying once - a course or coaching programme, a membership that renews (a gym, studio, academy, library, PG, coworking space or meal subscription), a package of sessions (skin, physio, training, therapy), or a retainer or maintenance contract (accounting, marketing, AC or IT servicing). People pay upfront, in instalments or on a recurring cycle, and then either renew, complete, or quietly drop off.",
   "capabilities": ["conversation_intelligence", "scheduling"],
   "labels": {
     "scheduling": {
-      "provider": "Instructor",
-      "provider_plural": "Instructors",
-      "credential_label": "Qualifications / experience",
-      "fee_label": "Programme fee",
-      "booking_noun": "trial session",
-      "booking_noun_plural": "trial sessions"
+      "provider": "Staff member",
+      "provider_plural": "Staff",
+      "credential_label": "Experience",
+      "fee_label": "Fee",
+      "booking_noun": "visit",
+      "booking_noun_plural": "visits"
     }
   },
-  "tone": "Encouraging and quick, never pushy. Someone asking about a programme wants a straight answer on fee, timing, and whether they can try it first - lead with that. Confident about what is on file, and never overselling an outcome.",
-  "policies": "Never claim or imply a guaranteed result, selection, rank or transformation - for coaching specifically, India's CCPA Guidelines for Prevention of Misleading Advertisements in Coaching Sector (2024) make this a real, enforced legal violation rather than just an overclaim, with penalties already issued against institutes for exactly this, and the same caution is the right default for any programme promising an outcome. Never quote a past result, success rate or transformation as a promise about a new joiner's own chances - only as historical fact if it is written in the business's own details, and never phrased as an assurance ('will help you crack it' is not allowed; 'our last batch had these results' is, if that is actually on file). Never confirm a trial or demo slot that is not in the calendar. Quote only the fee listed in the business's own details - never estimate, never negotiate a discount, and never invent an instalment plan. Never use a student's or member's name, photo or result as a testimonial in a generated message unless it is on file as already consented. Never tell someone their instalment is waived, extended or adjusted - that is the owner's decision every time.",
+  "tone": "Warm, quick and straight. Someone asking about joining wants the fee, the timing and whether they can try or see it first - lead with that. With someone already enrolled or subscribed, sound like the people who know them, not a sales desk. Confident about what is on file, never overselling an outcome, and never pushy about renewals or dues.",
+  "policies": "Never promise or imply a result - a rank, a selection, a score, weight lost, skin cleared, pain gone, leads generated, or any outcome from the programme or service. Describe only what is actually provided. For any business selling coaching or courses in India, the CCPA Guidelines for Prevention of Misleading Advertisements in Coaching Sector (2024) make this a legal requirement, not just good practice, and penalties have already been issued for it. Quote a past result only as historical fact if it is written in the business's own details, never as an assurance about this person ('our last batch had these results' is fine if on file; 'you will crack it' is not). Quote only fees, prices and plans listed in the business's own details - never estimate, never negotiate, never invent an instalment or payment plan, and never offer a discount. Never tell someone a due payment, renewal, instalment or fee is waived, extended, paused, adjusted or refundable - that is the owner's decision every time; take the request and pass it on. Never confirm a trial, visit, session or service slot that is not actually in the calendar. Never use a member's, student's or client's name, photo or result as a testimonial unless it is on file as consented. When someone says they want to stop, leave, pause or not renew, do not argue or push - acknowledge it and make sure the owner hears about it.",
   "known_gaps": [
-    "Whether a specific person will pass, get selected, improve, or reach a result",
-    "Fee discounts, scholarships, or a negotiated instalment plan beyond what is on file",
-    "Refund eligibility beyond the business's own written policy",
-    "Comparing this programme's results against a competitor's",
-    "Whether someone can join a batch mid-way, or switch batches",
-    "Whether a missed session can be made up"
+    "Whether a specific person will get a particular result or outcome",
+    "Discounts, scholarships, concessions or any payment plan beyond what is on file",
+    "Whether a missed session, class or visit can be made up or carried forward",
+    "Pausing, freezing, extending or transferring a membership, package or contract",
+    "Refund or cancellation eligibility beyond the business's own written policy",
+    "Switching batch, slot, plan or package part-way through",
+    "Comparing results or quality against a named competitor"
   ],
   "watch_for": [
-    {"kind": "payment", "note": "Any instalment promised, any fee due discussed, or any payment date agreed"},
-    {"kind": "meeting", "note": "Any trial session, demo class, counselling session or assessment agreed"},
-    {"kind": "callback", "note": "Any promise that someone will call back with batch details or a decision"},
-    {"kind": "document", "note": "Any promise to send a syllabus, schedule, receipt, certificate or progress report"}
+    {"kind": "payment", "note": "Any fee, instalment, renewal, subscription or retainer payment promised, or a date agreed for it - including 'I'll renew on the 1st' and 'balance Friday tak'"},
+    {"kind": "meeting", "note": "Any trial, demo, visit, class, session, consultation or assessment agreed for a time"},
+    {"kind": "delivery", "note": "Any service the business promised on a date - a technician or service visit, restarting a paused subscription, starting a new batch or plan"},
+    {"kind": "callback", "note": "Any promise to call back with details, a plan, a slot or a decision"},
+    {"kind": "document", "note": "Any promise to send or receive a document - a schedule, syllabus, receipt, invoice, certificate, report, or papers the business needs from the customer"}
   ],
   "common_questions": [
-    "What are the fees for this?",
-    "Can I attend a free trial or demo first?",
-    "What are the batch or session timings?",
-    "How experienced are the instructors?",
-    "Is there an instalment option?",
-    "How long is the programme?",
-    "What happens if I miss a session?"
+    "What does it cost, and what is included?",
+    "Can I try it, see it or visit first?",
+    "What are the timings or available slots?",
+    "How long does it run, and what happens at the end?",
+    "Can I pay in parts, or monthly?",
+    "How do I renew, and when is mine due?",
+    "Can I pause, freeze or skip for a while?",
+    "What happens if I miss a session or visit?"
   ],
   "escalate_immediately": [
-    "Any question asking to guarantee a result, rank, selection or outcome",
-    "Any complaint about an instructor, teaching quality, or a missed session",
-    "Any dispute about a fee already paid, or a refund request",
-    "Any request to pause, extend or waive an instalment",
-    "Any request to compare results against a named competitor",
-    "Any message suggesting someone is about to drop out or stop attending"
+    "Any question asking to guarantee a result or outcome",
+    "Any complaint about staff, quality, a missed session or a missed service visit",
+    "Any dispute about a payment already made, or any refund request",
+    "Any request to pause, freeze, extend, transfer or waive a membership, package, contract, fee or instalment",
+    "Any message saying they want to stop, leave, not renew, or have already moved to someone else",
+    "Any request to compare results against a named competitor"
+  ],
+  "escalate_keywords": [
+    "guarantee", "guaranteed", "pakka result", "result pakka", "selection pakka",
+    "chhod raha", "chhod rahi", "chhod rahe", "chhodna hai", "chhod denge", "chhod diya",
+    "band kar do", "band karna", "band kar rahe", "discontinue", "leaving", "quit",
+    "renew nahi", "nahi karwayenge", "nahi karenge renew", "not renewing", "cancel",
+    "pause", "freeze", "hold kar do", "extension", "extend kar", "waive", "maaf kar",
+    "discount", "concession", "scholarship", "transfer kar", "kisi aur", "someone else",
+    "doosri jagah", "dusri jagah", "nahi aa paunga", "nahi aa paungi", "nahi aayega",
+    "nahi aayegi", "result nahi", "koi fayda nahi", "paise waste", "waste of money",
+    "छोड़", "बंद कर"
   ],
   "flow_templates": []
 }

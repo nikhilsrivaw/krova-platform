@@ -56,6 +56,10 @@
     "Any dispute about brokerage or commission",
     "Any question casting doubt on a project's legitimacy or RERA status"
   ],
+  "escalate_keywords": [
+    "possession", "registry", "token amount", "booking amount", "encroachment",
+    "dispute", "builder delay", "legal issue", "title clear"
+  ],
   "flow_templates": [
     {
       "key": "schedule_viewing",

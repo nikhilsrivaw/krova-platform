@@ -54,6 +54,12 @@
     "Any payment dispute or chargeback mention",
     "A customer disputing a COD order they say they never placed - a real fraud signal, not routine cancellation"
   ],
+  "escalate_keywords": [
+    "damaged", "broken", "toota", "tuta hua", "toota hua", "wrong item",
+    "wrong product", "galat product", "galat item", "galat saman", "missing item",
+    "not received", "nahi mila", "fake", "duplicate product", "replacement",
+    "return karna", "return chahiye", "wapas karna hai", "wapas lena"
+  ],
   "flow_templates": [
     {
       "key": "track_order",

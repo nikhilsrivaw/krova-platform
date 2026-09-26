@@ -79,6 +79,12 @@
     "Any request to change or interpret a prescription",
     "Any complaint about treatment received"
   ],
+  "escalate_keywords": [
+    "bleeding", "khoon", "chest pain", "seene mein dard", "saans nahi",
+    "saans lene mein", "behosh", "unconscious", "emergency", "accident", "heart attack",
+    "stroke", "fits", "prescription", "dose badha", "dose kam", "side effect",
+    "allergy", "allergic", "खून", "सीने में दर्द", "बेहोश"
+  ],
   "flow_templates": [
     {
       "key": "book_followup",

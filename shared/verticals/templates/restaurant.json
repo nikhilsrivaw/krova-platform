@@ -42,6 +42,10 @@
     "Any complaint about food or service",
     "Any party booking above the size in the business details"
   ],
+  "escalate_keywords": [
+    "food poisoning", "allergy", "allergic", "vomit", "ulti", "keeda", "insect",
+    "hair in", "baal nikla", "baal tha", "stale", "basi", "undercooked", "kachha tha"
+  ],
   "flow_templates": [
     {
       "key": "book_table",

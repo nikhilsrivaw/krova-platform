@@ -54,5 +54,10 @@
     "Any booking larger than the group size in the business details",
     "Any message that reads as angry or threatening a public review"
   ],
+  "escalate_keywords": [
+    "allergy", "allergic", "reaction", "burn", "jal gaya", "jal gayi", "rash",
+    "infection", "injury", "chot", "damage", "toot gaya", "tut gaya", "kharab kar diya",
+    "bigad gaya"
+  ],
   "flow_templates": []
 }

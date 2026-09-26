@@ -16,25 +16,33 @@ draft back:
      - a minimum confidence floor and a list of words/phrases they never
      want sent unsupervised. Theirs to set, theirs to loosen. Checked
      against the reply about to be sent.
-  2. The vertical template's escalate_immediately list. This is NOT
+  2. The always-escalate floor: UNIVERSAL_ESCALATE_KEYWORDS below, plus
+     the vertical template's own `escalate_keywords`. This is NOT
      business-configurable and can't be disabled from the auto-send rules
-     UI - a clinic's "severe pain, bleeding, or an emergency" escalates
-     regardless of how much a business otherwise trusts the agent, exactly
-     as clinic.json's own comment already promises elsewhere in the
-     prompt. Checked against both the customer's inbound message (which is
-     what should have triggered escalation in the first place) and the
-     reply itself.
+     UI - a clinic's "bleeding" or anyone's "refund" escalates regardless
+     of how much a business otherwise trusts the agent. Checked against
+     both the customer's inbound message (what should have triggered
+     escalation in the first place) and the reply itself.
 
-Deliberately coarse: this is a substring match against short phrases, not
-semantic understanding of either message - it will miss a paraphrase of
-"severe pain" that never uses those words. That's a known, accepted
-tradeoff for this first version (see docs/conditional-autonomy.md's own
-"deterministic check granularity" question) - it still catches the exact
-cases the template authors already wrote down, at zero latency and zero
-extra model cost, and a missed catch here still leaves the draft exactly
-as safe as ordinary `draft` mode - it just doesn't get the speed benefit.
-An LLM-based semantic fallback for the cases this misses is real future
-work, not something to fake with a bigger keyword list.
+Why keywords and not the template's `escalate_immediately` list: that list
+is written as descriptive sentences for the model to read ("Any dispute
+about a fee already paid, or a refund request"). Until 2026-09-25 this
+gate substring-matched those sentences, which no customer ever types - so
+the floor never fired for any business on any template. Tested: "Mujhe
+refund chahiye, fees wapas karo" passed straight through. The sentences
+stay where they work (the agent's prompt, shared/ai/context.py); this gate
+now reads short literal phrases in English, Hinglish and Hindi, which is
+what customers actually write.
+
+Deliberately coarse: substring match, not understanding. It will miss a
+paraphrase nobody listed. And unlike what an earlier version of this
+docstring said, a miss here is NOT as safe as draft mode - in conditional
+mode a draft that clears this gate is sent unsupervised. That is why the
+lists lean towards over-matching: a false positive only holds a draft for
+a human (exactly draft mode), while a false negative sends it. An LLM
+classifier for what the phrases miss is the planned next layer
+(docs/conditional-autonomy.md), not something to fake with an ever-longer
+list.
 """
 
 from __future__ import annotations
@@ -51,12 +59,52 @@ class GateResult:
 DEFAULT_MIN_CONFIDENCE = 0.85
 
 
-def _contains_any(text: str, phrases: list[str]) -> str | None:
-    lowered = text.lower()
+# Checked for every business, whatever its template - money disputes,
+# legal threats and fraud accusations never go out unsupervised in any
+# industry. Template-specific phrases live in each template's own
+# `escalate_keywords` (shared/verticals/templates/*.json).
+#
+# Written as customers write: English, romanised Hindi (several common
+# spellings) and Devanagari. Multi-word where a single word would fire on
+# ordinary chat. Matching is on lowercased text with whitespace collapsed,
+# so "Paise  WAPAS" still matches.
+UNIVERSAL_ESCALATE_KEYWORDS: tuple[str, ...] = (
+    # money back
+    "refund", "money back", "paise wapas", "paisa wapas", "paise vapas", "paisa vapas",
+    "fees wapas", "fee wapas", "fees vapas", "amount wapas", "return my money",
+    "chargeback", "रिफंड", "पैसे वापस", "पैसा वापस",
+    # legal / authority
+    "consumer court", "consumer forum", "legal notice", "legal action", "lawyer", "advocate",
+    "police", "fir darj", "fir file", "file an fir", "file fir", "court case", "court mein",
+    "court me ", "court jaunga", "court jayenge", "take you to court", "वकील", "पुलिस",
+    # fraud accusations. Not "cheat" alone - a gym's "cheat day".
+    "fraud", "scam", "cheated", "cheating", "dhokha", "dhoka", "thagi", "loot liya",
+    "धोखा", "ठगी",
+    # formal complaint
+    "complaint", "shikayat", "shikaayat", "शिकायत",
+)
+
+
+def _normalise(text: str) -> str:
+    return " ".join(text.lower().split()) + " "
+
+
+def _contains_any(text: str, phrases) -> str | None:
+    """
+    The first phrase found in `text`, or None.
+
+    A trailing space is appended to the normalised text so a phrase written
+    with its own trailing space ("fir ") matches at the very end of a
+    message too - how a short word is kept from firing inside a longer one
+    ("fir " must not match "firm").
+    """
+    lowered = _normalise(text)
     for phrase in phrases:
-        needle = phrase.strip().lower()
-        if needle and needle in lowered:
-            return phrase
+        needle = " ".join(phrase.lower().split())
+        if phrase.endswith(" "):
+            needle += " "
+        if needle.strip() and needle in lowered:
+            return phrase.strip()
     return None
 
 
@@ -66,7 +114,7 @@ def check(
     inbound_text: str,
     confidence: float,
     auto_send_rules: dict,
-    escalate_immediately: list[str],
+    escalate_keywords: list[str],
 ) -> GateResult:
     """
     Pure and synchronous on purpose - no DB, no model call, nothing that
@@ -90,9 +138,8 @@ def check(
     # Hard floor - not something a business's own rule can loosen. Checked
     # against what the customer actually said (what should have triggered
     # escalation) as well as the reply itself.
-    hit = _contains_any(inbound_text, escalate_immediately) or _contains_any(
-        reply_body, escalate_immediately
-    )
+    floor = (*UNIVERSAL_ESCALATE_KEYWORDS, *escalate_keywords)
+    hit = _contains_any(inbound_text, floor) or _contains_any(reply_body, floor)
     if hit:
         return GateResult(allowed=False, reason=f"touches an always-escalate topic: {hit!r}")
 

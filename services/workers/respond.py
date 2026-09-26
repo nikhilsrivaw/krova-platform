@@ -365,17 +365,20 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         and business is not None
     ):
         try:
-            escalate_immediately = verticals.get(business.vertical).get("escalate_immediately", [])
+            # The template's short literal phrases, not its
+            # escalate_immediately sentences - see auto_send_gate.py's
+            # docstring for why matching the sentences never fired.
+            escalate_keywords = verticals.get(business.vertical).get("escalate_keywords", [])
         except verticals.UnknownVertical:
             # Same fail-closed instinct as everywhere else here - can't
             # confirm the safety floor, so don't auto-send.
-            escalate_immediately = None
-        gate = None if escalate_immediately is None else auto_send_gate.check(
+            escalate_keywords = None
+        gate = None if escalate_keywords is None else auto_send_gate.check(
             reply_body=proposal.message or "",
             inbound_text=message.content or "",
             confidence=proposal.confidence,
             auto_send_rules=(business.settings or {}).get("auto_send_rules", {}),
-            escalate_immediately=escalate_immediately,
+            escalate_keywords=escalate_keywords,
         )
         if gate is not None and gate.allowed:
             try:

@@ -36,5 +36,11 @@
     "Any mention of a competitor's price or a threat to move the order elsewhere",
     "Any request to change agreed terms after an order is placed"
   ],
+  "escalate_keywords": [
+    "discount", "rate kam", "kam karo", "best rate", "credit", "udhaar", "udhar",
+    "short supply", "short quantity", "kam maal", "damaged", "defective",
+    "quality issue", "rejected", "invoice galat", "wrong invoice", "order cancel",
+    "cancel order"
+  ],
   "flow_templates": []
 }

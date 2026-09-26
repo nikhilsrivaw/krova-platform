@@ -141,16 +141,19 @@ async def _existing_signal_titles(customer_id: uuid.UUID, db: AsyncSession) -> s
 
 
 async def _extract_signals(
-    message: Message, conversation: list[dict], business_context: str, db: AsyncSession
+    message: Message, conversation: list[dict], business_context: str, db: AsyncSession,
+    *, include_product: bool,
 ) -> int:
     """
-    Product feedback signals - bugs, feature requests, complaints, churn
-    risk, praise - stored as Insight rows. Only called for a business whose
-    vertical declares the product_feedback capability, gated by the caller.
+    Conversation signals stored as Insight rows. `include_product` picks the
+    extractor's mode: the full product-feedback set for a business with the
+    product_feedback capability, the business-neutral four for everyone
+    else (see shared/ai/signals.py). The caller decides which.
     """
     try:
         extraction = await signal_extractor.extract(
-            messages=conversation, business_context=business_context
+            messages=conversation, business_context=business_context,
+            include_product=include_product,
         )
     except AIError:
         raise
@@ -206,7 +209,7 @@ async def _extract_signals(
         )
 
     if stored:
-        logger.info("stored %s product feedback signal(s) for message=%s", stored, message.id)
+        logger.info("stored %s signal(s) for message=%s", stored, message.id)
     return stored
 
 
@@ -346,8 +349,17 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         db=db,
     )
 
-    if business and verticals.has_capability(business, "product_feedback"):
-        await _extract_signals(message, conversation, context, db)
+    # Signals for every business now, not only product_feedback ones -
+    # see shared/ai/signals.py's module docstring. A business without that
+    # capability gets the business-neutral mode (complaint, churn_risk,
+    # praise, competitor_mention), and only on the customer's own messages:
+    # the signal is always something the customer said, and skipping the
+    # business's outbound messages keeps this to one extra model call per
+    # inbound message rather than per message.
+    if business:
+        product = verticals.has_capability(business, "product_feedback")
+        if product or message.direction == Direction.inbound:
+            await _extract_signals(message, conversation, context, db, include_product=product)
 
     if business and verticals.has_capability(business, "quotations"):
         await _extract_quotation(message, conversation, context, db)

@@ -45,6 +45,10 @@
     "Any complaint about how the matter is being handled",
     "Any deadline or hearing date the agent cannot verify against the case record"
   ],
+  "escalate_keywords": [
+    "arrest", "bail", "hearing", "summons", "notice", "deadline", "limitation", "f.i.r",
+    "fir number", "fir copy", "custody", "warrant"
+  ],
   "flow_templates": [
     {
       "key": "case_status_live",

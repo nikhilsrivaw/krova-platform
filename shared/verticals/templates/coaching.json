@@ -56,6 +56,12 @@
     "Any dispute about a fee already paid or a refund request",
     "Any request to compare results against a named competitor"
   ],
+  "escalate_keywords": [
+    "guarantee", "guaranteed", "pakka selection", "selection hoga", "rank",
+    "result guarantee", "chhod", "band kar", "discontinue", "leaving", "pause",
+    "extension", "waive", "maaf", "discount", "concession", "scholarship",
+    "nahi aa paunga", "nahi aayega", "nahi aayegi", "quit"
+  ],
   "flow_templates": [
     {
       "key": "book_demo_class",

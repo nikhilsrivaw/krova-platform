@@ -49,5 +49,9 @@
     "Any security/compliance questionnaire or certification request (SOC 2, GDPR, ISO 27001, a vendor security review) - a wrong or invented answer here has cost real companies six- and seven-figure enterprise deals, and this is exactly the kind of factual claim never to guess at",
     "Any bug affecting billing or payments"
   ],
+  "escalate_keywords": [
+    "data loss", "data leak", "hacked", "breach", "security issue", "outage",
+    "cancel subscription", "cancel my account", "delete my account", "charged twice"
+  ],
   "selectable": false
 }
