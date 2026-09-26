@@ -420,7 +420,21 @@ async def disconnect_stripe(current_user: CurrentUserDep, db: DbDep) -> None:
 
 # ── Outbound webhooks ────────────────────────────────────────────────────
 
-_VALID_EVENTS = {e.value for e in WebhookEventType}
+# Every event type except the daily time-based automation triggers
+# (shared/care/date_triggers.py). Those exist only to drive a business's own
+# automation rules - the sweep never dispatches them as webhooks, and doing
+# so would mean one outbound delivery per open commitment or per quiet
+# customer every single day. Left in, a business could subscribe a
+# Zapier hook to one, save cleanly, and never receive anything: the same
+# silent trap escalation_rate/account_health are kept out of Automations to
+# avoid, in the other direction.
+_AUTOMATION_ONLY_EVENTS = {
+    WebhookEventType.commitment_due_soon.value,
+    WebhookEventType.commitment_overdue.value,
+    WebhookEventType.quotation_aging.value,
+    WebhookEventType.customer_inactive.value,
+}
+_VALID_EVENTS = {e.value for e in WebhookEventType} - _AUTOMATION_ONLY_EVENTS
 
 
 _VALID_FORMATS = {"raw", "slack", "teams"}

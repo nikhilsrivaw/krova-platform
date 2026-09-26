@@ -615,8 +615,20 @@ async def _verify_and_close_payment(connection, reference_id: str, db) -> None:
         )
         return
 
-    commitment.status = CommitmentStatus.met
-    commitment.resolved_at = datetime.now(timezone.utc)
+    # The request was sent for what was outstanding at the time
+    # (ledger.py::request_payment), so a captured payment is that amount.
+    # Recorded as a receipt rather than flipping the status directly, so a
+    # WhatsApp payment and a manually recorded one leave the same trail.
+    from shared.care.commitment_payments import record_payment
+
+    outstanding = commitment.outstanding_paise
+    if outstanding:
+        record_payment(commitment, amount_paise=outstanding, source="whatsapp_pay")
+    if commitment.status == CommitmentStatus.open:
+        # No stated amount (or already fully received): the verified
+        # payment still settles it, exactly as it always did.
+        commitment.status = CommitmentStatus.met
+        commitment.resolved_at = datetime.now(timezone.utc)
     logger.info(
         "commitment %s marked met from a Meta-verified WhatsApp payment (business=%s)",
         commitment.id, connection.business_id,

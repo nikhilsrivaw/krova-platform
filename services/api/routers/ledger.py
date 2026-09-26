@@ -46,6 +46,7 @@ from shared.db.models import (
     TagStatus,
 )
 from shared.care import ledger_queries
+from shared.care.commitment_payments import PaymentError, record_payment
 from shared.identity import importer
 from shared.reports import tally_export
 from shared.utils.logging import get_logger
@@ -62,6 +63,11 @@ class CommitmentOut(BaseModel):
     description: str
     amount_paise: int | None
     amount_display: str | None
+    # Received so far and still owed - see shared/care/
+    # commitment_payments.py. amount_paise stays what was promised.
+    amount_received_paise: int = 0
+    outstanding_paise: int | None = None
+    outstanding_display: str | None = None
     currency: str
     due_at: str | None
     due_at_explicit: bool
@@ -119,6 +125,9 @@ def _to_out(c: Commitment, customer_name: str | None, now: datetime) -> Commitme
         description=c.description,
         amount_paise=c.amount_paise,
         amount_display=_rupees(c.amount_paise),
+        amount_received_paise=c.amount_received_paise or 0,
+        outstanding_paise=c.outstanding_paise,
+        outstanding_display=_rupees(c.outstanding_paise),
         currency=c.currency,
         due_at=c.due_at.isoformat() if c.due_at else None,
         due_at_explicit=c.due_at_explicit,
@@ -288,6 +297,34 @@ async def resolve_commitment(
                    datetime.now(timezone.utc))
 
 
+class PaymentBody(BaseModel):
+    amount_paise: int = Field(gt=0)
+
+
+@router.post("/commitments/{commitment_id}/payments", response_model=CommitmentOut)
+async def record_commitment_payment(
+    commitment_id: uuid.UUID, body: PaymentBody, current_user: CurrentUserDep, db: DbDep
+) -> CommitmentOut:
+    """
+    Record money received against an open commitment - all of it or part.
+    Closes the commitment as met once the promised amount has arrived. See
+    shared/care/commitment_payments.py.
+    """
+    commitment = await _owned(commitment_id, current_user.business, db)
+    try:
+        closed = record_payment(
+            commitment, amount_paise=body.amount_paise, source="manual",
+            recorded_by_user_id=current_user.id,
+        )
+    except PaymentError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if closed:
+        commitment.confirmed_by_user_id = current_user.id
+    customer = await db.get(Customer, commitment.customer_id)
+    return _to_out(commitment, customer.display_name if customer else None,
+                   datetime.now(timezone.utc))
+
+
 class RequestPaymentBody(BaseModel):
     # Which approved order-details template to send - explicit, not
     # auto-detected, the same "you choose" discipline campaigns already
@@ -319,9 +356,11 @@ async def request_payment(
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"This commitment is already {commitment.status.value}"
         )
-    if not commitment.amount_paise:
+    if not commitment.outstanding_paise:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "This commitment has no amount to request"
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Nothing left to request on this commitment"
+            if commitment.amount_paise else "This commitment has no amount to request",
         )
 
     connection = (
@@ -369,7 +408,9 @@ async def request_payment(
             # so a payment can be matched to exactly one promise.
             reference_id=str(commitment.id),
             payment_configuration=payment_configuration_id,
-            amount_paise=commitment.amount_paise,
+            # What is still owed - after a part-payment, asking for the
+            # full original amount would ask for money already received.
+            amount_paise=commitment.outstanding_paise,
             description=commitment.description or "Payment due",
         )
     except WhatsAppError as exc:
@@ -422,6 +463,25 @@ async def list_customers(
     ).all():
         tags_by_customer.setdefault(customer_id, []).append(label)
 
+    # Who pays for whom, both directions, for everyone on this page - named
+    # so the CRM can show "Paid by Mrs Sharma" / "Pays for Aarav, Diya"
+    # without a lookup per row.
+    payer_ids = {c.paid_by_customer_id for c in customers if c.paid_by_customer_id}
+    payer_names = dict(
+        (
+            await db.execute(select(Customer.id, Customer.display_name).where(Customer.id.in_(payer_ids)))
+        ).all()
+    ) if payer_ids else {}
+    pays_for: dict[uuid.UUID, list[dict]] = {}
+    for pid, name, payer_id in (
+        await db.execute(
+            select(Customer.id, Customer.display_name, Customer.paid_by_customer_id).where(
+                Customer.paid_by_customer_id.in_(ids)
+            )
+        )
+    ).all():
+        pays_for.setdefault(payer_id, []).append({"id": str(pid), "name": name})
+
     out = []
     for c in customers:
         identities = await db.execute(
@@ -451,6 +511,9 @@ async def list_customers(
                 "open_commitments": int(open_count.scalar_one()),
                 "is_private": c.is_private,
                 "stage": c.stage,
+                "paid_by_customer_id": str(c.paid_by_customer_id) if c.paid_by_customer_id else None,
+                "paid_by_name": payer_names.get(c.paid_by_customer_id),
+                "pays_for": pays_for.get(c.id, []),
                 "deal_value_paise": c.deal_value_paise,
                 "tags": tags_by_customer.get(c.id, []),
                 "health_score": intel.health_score if intel else None,

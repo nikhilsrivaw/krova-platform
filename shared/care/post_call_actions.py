@@ -34,10 +34,17 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.db.models import AutomationStep, AutomationStepRun, Business, Customer, PostCallActionRule
+from shared.db.models import (
+    AutomationRunLog,
+    AutomationStep,
+    AutomationStepRun,
+    Business,
+    Customer,
+    PostCallActionRule,
+)
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -85,6 +92,42 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "intent_leakage.detected": ("severity", "title", "body"),
     "rto_risk.detected": ("severity", "title", "body"),
     "claim.status_changed": ("severity", "title", "body"),
+    # The time-based triggers (shared/care/date_triggers.py). These are
+    # the ones a condition is genuinely *required* on to be useful - every
+    # other trigger here is already specific ("a complaint was detected"),
+    # while "a commitment is due" fires for every open commitment every
+    # day. days_until / days_overdue / days_open with the numeric
+    # operators that already exist is how a business sets its own timing
+    # instead of inheriting ours. `kind` and `direction` are the
+    # Commitment enums' own string values (payment/delivery/callback/...,
+    # we_owe/they_owe), so "chase only money customers owe me" is
+    # two conditions on two steps, not a feature we have to build.
+    # amount_outstanding_paise is what is still owed after any part-
+    # payment, so "chase only if more than ₹500 is left" is a condition.
+    "commitment.due_soon": (
+        "days_until", "kind", "direction", "amount_paise", "amount_outstanding_paise", "description",
+    ),
+    "commitment.overdue": (
+        "days_overdue", "kind", "direction", "amount_paise", "amount_outstanding_paise", "description",
+    ),
+    "quotation.aging": ("days_open", "status", "amount_paise", "reference"),
+    # days_since_customer_message counts only what the CUSTOMER sent -
+    # Customer.last_contact_at is not used because it also moves when the
+    # business messages them, so a reminder nobody answered would make a
+    # silent customer look active. days_since_last_visit is None for a
+    # customer with no past booking, and a numeric condition on None
+    # fails closed (OPERATORS), so "no visit in 14 days" never fires for
+    # someone who never booked at all. has_upcoming_visit lets a rule skip
+    # anyone who already has a booking coming. stage is the business's
+    # own pipeline word, so "only members, not leads" is a condition.
+    # None is a real value here - a customer with no stage yet, or one
+    # whose stage was cleared - so "to_stage equals Joined" and
+    # "from_stage equals Lead" both behave as a business would expect.
+    "customer.stage_changed": ("from_stage", "to_stage"),
+    "customer.inactive": (
+        "days_since_customer_message", "days_since_any_message",
+        "days_since_last_visit", "has_upcoming_visit", "stage",
+    ),
     # escalation_rate.detected / account_health.detected deliberately
     # absent - business-level Insight kinds with no customer_id, so they
     # never reach apply_rules at all (see shared/care/signal_dispatch.py).
@@ -110,20 +153,31 @@ OPERATORS = {
 }
 
 
-def _condition_holds(condition: dict | None, context: dict) -> bool:
-    """
-    Whether a step's condition is satisfied by this trigger's real context.
+# A ceiling, not a discovered limit - enough for "days_until equals 3 and
+# kind equals payment and direction equals they_owe and amount over X"
+# with room to spare. Past this a rule is usually two rules pretending to
+# be one. The API validates against it (post_call_rules.py).
+MAX_CONDITIONS_PER_STEP = 5
 
-    None (no condition set - every step today) always holds, preserving
-    exactly today's unconditional behaviour. A condition naming a field
-    that isn't actually in `context`, or an operator this codebase doesn't
-    know, fails closed (the step is skipped, logged) rather than running
-    unconditionally on data that was never really checked - the same
-    "never silently do more than was actually verified" instinct as this
-    codebase's own escalate-rather-than-guess rule for the AI agent.
+
+def normalize_conditions(condition: dict | list | None) -> list[dict]:
+    """
+    Every stored shape of a step's condition, as a plain list.
+
+    None/empty -> [] (always runs). A bare {"field", ...} dict -> [dict] -
+    the only shape that existed before a step could hold more than one,
+    and still what an AutomationStepRun queued before this change carries
+    in its snapshot. A list -> itself. So old rules, old queued chains and
+    new rules all run through the one evaluator below with no migration.
     """
     if not condition:
-        return True
+        return []
+    if isinstance(condition, dict):
+        return [condition]
+    return [c for c in condition if isinstance(c, dict)]
+
+
+def _evaluate_one(condition: dict, context: dict) -> tuple[bool, str | None]:
     field = condition.get("field")
     operator = condition.get("operator")
     value = condition.get("value")
@@ -132,18 +186,52 @@ def _condition_holds(condition: dict | None, context: dict) -> bool:
             "condition field %r not available in this trigger's context %r - skipping step",
             field, sorted(context.keys()),
         )
-        return False
+        return False, (
+            f"{field!r} was not available on this trigger "
+            f"(it carries: {', '.join(sorted(context.keys())) or 'nothing'})"
+        )
     op_fn = OPERATORS.get(operator or "")
     if op_fn is None:
         logger.warning("unknown condition operator %r - skipping step", operator)
-        return False
+        return False, f"unknown operator {operator!r}"
     try:
-        return bool(op_fn(context[field], value))
+        held = bool(op_fn(context[field], value))
     except TypeError:
         logger.warning(
             "condition %r could not be evaluated against %r - skipping step", condition, context.get(field),
         )
-        return False
+        return False, f"{field} could not be compared to {value!r} (actual: {context.get(field)!r})"
+    if held:
+        return True, None
+    return False, f"{field} {operator} {value!r} - actual value was {context[field]!r}"
+
+
+def _evaluate_condition(condition: dict | list | None, context: dict) -> tuple[bool, str | None]:
+    """
+    Whether a step's conditions ALL hold against this trigger's real
+    context, and - when they don't - a plain sentence saying which one
+    failed and why, in the business's own terms.
+
+    No conditions always holds, preserving the original unconditional
+    behaviour. A condition naming a field that isn't actually in
+    `context`, or an operator this codebase doesn't know, fails closed
+    (the step is skipped, logged) rather than running on data that was
+    never really checked - the same "never silently do more than was
+    verified" instinct as the agent's own escalate-rather-than-guess rule.
+
+    Stops at the first failure and names it. With several conditions the
+    owner needs to know *which* one blocked the step, not merely that one
+    did - "2 of 3 conditions failed" answers nothing. The reason string
+    feeds AutomationRunLog.detail and the builder's own test panel.
+    """
+    conditions = normalize_conditions(condition)
+    for i, one in enumerate(conditions):
+        held, reason = _evaluate_one(one, context)
+        if not held:
+            if len(conditions) > 1:
+                reason = f"condition {i + 1} of {len(conditions)}: {reason}"
+            return False, reason
+    return True, None
 
 
 def _snapshot_step(step: AutomationStep) -> dict:
@@ -151,6 +239,7 @@ def _snapshot_step(step: AutomationStep) -> dict:
     AutomationStepRun.remaining_steps' own docstring for why a resumed
     chain never re-reads the live AutomationStep rows."""
     return {
+        "position": step.position,
         "action_type": step.action_type,
         "action_config": step.action_config or {},
         "condition": step.condition,
@@ -161,6 +250,7 @@ def _snapshot_step(step: AutomationStep) -> dict:
 async def apply_rules(
     db: AsyncSession, *, business_id: uuid.UUID, trigger_type: str, customer_id: uuid.UUID | None,
     call_id: uuid.UUID | None = None, channel: str | None = None, context: dict | None = None,
+    log_skips: bool = True,
 ) -> int:
     """
     Run every active rule matching this trigger for this business. Returns
@@ -183,6 +273,16 @@ async def apply_rules(
     one yet for this trigger_type; every step's condition then simply
     fails closed (see _condition_holds), same as a step whose condition
     names a field genuinely missing from what was passed.
+
+    `log_skips=False` stops a step whose condition didn't hold from being
+    written to AutomationRunLog. Only the daily time-based sweep
+    (date_triggers.py) passes it: it fires every rule for every open
+    commitment and every quiet customer, every day, and for all but one of
+    those days the condition is *supposed* to fail. Logging each of those
+    as "skipped" would bury the handful of real runs under thousands of
+    non-events, which defeats the whole point of the log. For an event
+    trigger a skip is real information ("a complaint came in, and your
+    condition didn't match it"), so it stays logged there.
 
     Runs each rule's steps in position order via _run_chain - a rule can
     hold more than one step, each independently gated by its own
@@ -238,6 +338,7 @@ async def apply_rules(
             db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
             call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
             rule_id=rule.id, steps=steps, start_index=0, log_ref=str(rule.id),
+            log_skips=log_skips,
         )
 
     return ran
@@ -247,6 +348,7 @@ async def _run_chain(
     db: AsyncSession, *, business: Business, customer: Customer, business_id: uuid.UUID, customer_id: uuid.UUID,
     call_id: uuid.UUID | None, channel: str | None, trigger_type: str, context: dict,
     rule_id: uuid.UUID, steps: list[dict], start_index: int, log_ref: str,
+    log_skips: bool = True,
 ) -> int:
     """
     Runs a rule's steps starting at steps[start_index], in position order,
@@ -262,7 +364,20 @@ async def _run_chain(
     ran = 0
     for i in range(start_index, len(steps)):
         step = steps[i]
-        if not _condition_holds(step["condition"], context):
+        # A step snapshotted before AutomationStep.position was carried
+        # through (an AutomationStepRun queued by an older build) falls
+        # back to its index in the chain - close enough to line the log
+        # row up with the builder, and never a reason to drop the log.
+        position = step.get("position", i)
+        held, reason = _evaluate_condition(step["condition"], context)
+        if not held:
+            if not log_skips:
+                continue
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="skipped", detail=f"condition not met: {reason}", context=context,
+            )
             continue
 
         if step["delay_seconds"]:
@@ -276,20 +391,96 @@ async def _run_chain(
                 remaining_steps=steps[i:],
                 due_at=datetime.now(timezone.utc) + timedelta(seconds=step["delay_seconds"]),
             ))
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="queued", detail=_describe_delay(step["delay_seconds"]), context=context,
+            )
             return ran
 
         try:
-            if await _run_step_action(
+            did = await _run_step_action(
                 db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
                 call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
                 action_type=step["action_type"], action_config=step["action_config"],
                 log_ref=f"{log_ref}[{i}]",
-            ):
-                ran += 1
-        except Exception:
+            )
+        except NoRecipient as exc:
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="no_action", detail=str(exc), context=context,
+            )
+            continue
+        except Exception as exc:
             logger.exception("automation rule=%s step[%s] failed to apply", rule_id, i)
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="failed", detail=str(exc) or exc.__class__.__name__, context=context,
+            )
+            continue
+
+        if did:
+            ran += 1
+        _log_run(
+            db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+            trigger_type=trigger_type, position=position, action_type=step["action_type"],
+            status="ran" if did else "no_action",
+            detail=None if did else _NO_ACTION_DETAIL.get(step["action_type"], _NO_ACTION_DEFAULT),
+            context=context,
+        )
 
     return ran
+
+
+# Why a step that ran but did nothing - _run_step_action returning False -
+# is a real, expected outcome rather than a failure, per action type. The
+# owner reading the history needs the actual reason ("this customer has no
+# phone number on file"), not "no action", which just restates the status.
+_NO_ACTION_DEFAULT = "nothing to do - the prerequisites for this action were not met"
+_NO_ACTION_DETAIL = {
+    "whatsapp_followup": "no WhatsApp number on this customer, or WhatsApp is not connected",
+    "instagram_followup": "this customer has no Instagram identity, or Instagram is not connected",
+    "instagram_comment_reply": "this trigger carried no Instagram comment to reply to",
+    "place_call": "no phone number on this customer, or voice is not provisioned",
+    "send_sms": "no phone number on this customer, or SMS is not configured",
+    "send_email": "no email address on this customer, or no email sender is connected",
+    "send_flow": "the flow is missing, not published, or the customer has no WhatsApp number",
+    "add_tag": "this customer already carries that tag",
+}
+
+
+def _describe_delay(seconds: int) -> str:
+    """"waiting 2 hours" - the delay in the units the builder shows it in."""
+    if seconds % 86400 == 0:
+        n = seconds // 86400
+        return f"waiting {n} day{'s' if n != 1 else ''}"
+    if seconds % 3600 == 0:
+        n = seconds // 3600
+        return f"waiting {n} hour{'s' if n != 1 else ''}"
+    n = max(1, seconds // 60)
+    return f"waiting {n} minute{'s' if n != 1 else ''}"
+
+
+def _log_run(
+    db: AsyncSession, *, rule_id: uuid.UUID, business_id: uuid.UUID, customer_id: uuid.UUID | None,
+    trigger_type: str, position: int, action_type: str, status: str, detail: str | None, context: dict,
+) -> None:
+    """
+    Record one step outcome. Added to the session, never committed here -
+    the caller's own transaction owns it, same as every other write in
+    this module.
+
+    Deliberately not wrapped in a try/except: a failure to write the log
+    should surface, not be swallowed into the silence this table exists to
+    end.
+    """
+    db.add(AutomationRunLog(
+        rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+        trigger_type=trigger_type, step_position=position, action_type=action_type,
+        status=status, detail=detail, context=context or {},
+    ))
 
 
 async def run_due_steps(db: AsyncSession) -> int:
@@ -334,16 +525,37 @@ async def run_due_steps(db: AsyncSession) -> int:
         # already passed once, before it was queued (see _run_chain), so
         # it runs unconditionally here rather than being re-checked.
         first = steps[0]
+        first_position = first.get("position", 0)
         try:
-            if await _run_step_action(
+            did = await _run_step_action(
                 db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
                 call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type, context=run.context or {},
                 action_type=first["action_type"], action_config=first["action_config"],
                 log_ref=f"{run.rule_id}[resume]",
-            ):
-                ran += 1
-        except Exception:
+            )
+        except NoRecipient as exc:
+            _log_run(
+                db, rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                trigger_type=run.trigger_type, position=first_position, action_type=first["action_type"],
+                status="no_action", detail=str(exc), context=run.context or {},
+            )
+        except Exception as exc:
             logger.exception("automation_step_run=%s failed to apply", run.id)
+            _log_run(
+                db, rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                trigger_type=run.trigger_type, position=first_position, action_type=first["action_type"],
+                status="failed", detail=str(exc) or exc.__class__.__name__, context=run.context or {},
+            )
+        else:
+            if did:
+                ran += 1
+            _log_run(
+                db, rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                trigger_type=run.trigger_type, position=first_position, action_type=first["action_type"],
+                status="ran" if did else "no_action",
+                detail=None if did else _NO_ACTION_DETAIL.get(first["action_type"], _NO_ACTION_DEFAULT),
+                context=run.context or {},
+            )
 
         # Resume the rest of the chain (if any) - each of these still gets
         # its own condition/delay check, same as a fresh trigger would.
@@ -356,6 +568,29 @@ async def run_due_steps(db: AsyncSession) -> int:
     return ran
 
 
+# How long a business can look back at what its automations did. Long
+# enough to cover "it didn't fire last month either" and short enough that
+# a busy account's log never becomes the biggest table in the database.
+# Not a discovered number - the same order as every other retention window
+# a tool like this ships with, and the one knob to turn if it proves wrong.
+RUN_LOG_RETENTION_DAYS = 60
+
+
+async def prune_run_logs(db: AsyncSession) -> int:
+    """
+    Delete AutomationRunLog rows past the retention window. Returns how
+    many went.
+
+    This is the cost control that lets the log be written unconditionally
+    rather than behind a per-business setting - see AutomationRunLog's own
+    docstring for why a log you have to switch on is worthless.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RUN_LOG_RETENTION_DAYS)
+    result = await db.execute(delete(AutomationRunLog).where(AutomationRunLog.created_at < cutoff))
+    await db.commit()
+    return result.rowcount or 0
+
+
 async def _run_step_action(
     db: AsyncSession, *, business: Business, customer: Customer, business_id: uuid.UUID, customer_id: uuid.UUID,
     call_id: uuid.UUID | None, channel: str | None, trigger_type: str, context: dict, action_type: str,
@@ -365,7 +600,28 @@ async def _run_step_action(
     Runs one already-resolved action. Shared by apply_rules (immediate
     steps) and run_due_steps (delayed steps) - the actual side effect is
     identical either way, only when it happens differs.
+
+    `action_config["send_to"] == "payer"` redirects a messaging step to
+    whoever pays for this customer (Customer.paid_by_customer_id) - "fees
+    due → WhatsApp the parent". The payer's own name, phone and channels
+    are used; the original customer's name is available to the message as
+    {{participant_name}}. With no payer linked the step does nothing and
+    says so (NoRecipient), rather than quietly messaging the customer: a
+    fee reminder meant for a parent must never land on the child instead.
     """
+    if (action_config or {}).get("send_to") == "payer":
+        if action_type not in PAYER_ACTIONS:
+            raise NoRecipient(f"{action_type} can't be sent to a payer")
+        payer = (
+            await db.get(Customer, customer.paid_by_customer_id)
+            if customer.paid_by_customer_id else None
+        )
+        if payer is None or payer.business_id != business_id:
+            raise NoRecipient("no payer is linked to this customer")
+        if payer.is_private:
+            raise NoRecipient("the linked payer is marked private")
+        context = {**context, "participant_name": customer.display_name or ""}
+        customer, customer_id = payer, payer.id
     if action_type == "whatsapp_followup":
         from shared.scheduling import notify
 
@@ -429,6 +685,17 @@ async def _run_step_action(
 
     logger.warning("automation_step=%s has unrecognised action_type=%s", log_ref, action_type)
     return False
+
+
+# The actions that reach a person on a channel, and so can be pointed at
+# the payer. add_tag and create_escalation_task are about the customer
+# themselves, and an Instagram comment reply belongs to whoever commented.
+PAYER_ACTIONS = frozenset({"whatsapp_followup", "send_sms", "send_email", "place_call", "send_flow"})
+
+
+class NoRecipient(Exception):
+    """A step that has nobody to send to - logged as no_action with this
+    message as the reason, not as a failure."""
 
 
 def _resolve_tokens(text: str, context: dict) -> str:
@@ -881,3 +1148,12 @@ async def _send_flow(
         db=db,
     )
     return True
+# Public aliases for the two helpers the rule builder's own test endpoint
+# needs (services/api/routers/post_call_rules.py::test_rule). Both stay
+# private-by-convention inside this module's execution path; the preview
+# reuses the exact same functions rather than a second, drifting copy of
+# "would this condition hold" and "what would the message say", which is
+# the only way a preview can be trusted to match what actually runs.
+evaluate_condition = _evaluate_condition
+resolve_tokens = _resolve_tokens
+describe_delay = _describe_delay

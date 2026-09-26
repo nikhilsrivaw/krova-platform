@@ -72,6 +72,23 @@ MAX_PROPERTIES_IN_CONTEXT = 5
 RECENT_TURNS = 20
 
 
+
+def _amount_text(c) -> str | None:
+    """
+    A commitment's amount as the agent should state it: what is still
+    owed, with what already arrived alongside, so a half-paid instalment is
+    never quoted back to a customer as the full amount.
+    """
+    if not c.amount_paise:
+        return None
+    received = c.amount_received_paise or 0
+    if not received:
+        return f"₹{c.amount_paise / 100:,.0f}"
+    return (
+        f"₹{c.outstanding_paise / 100:,.0f} still due "
+        f"(₹{received / 100:,.0f} of ₹{c.amount_paise / 100:,.0f} received)"
+    )
+
 @dataclass(slots=True)
 class AgentContext:
     business_name: str
@@ -136,6 +153,11 @@ class AgentContext:
     knowledge: list[dict] = field(default_factory=list)
     recent: list[dict] = field(default_factory=list)
     open_commitments: list[dict] = field(default_factory=list)
+    # Who pays for this customer, and who they pay for - with what is still
+    # owed on each person they pay for, so a parent asking "Aarav ki kitni
+    # fees baaki hai?" gets a real answer. See Customer.paid_by_customer_id.
+    paid_by: str | None = None
+    pays_for: list[dict] = field(default_factory=list)
     # Every message id the agent was shown, so a draft can cite its sources
     # the same way a commitment does.
     context_message_ids: list[uuid.UUID] = field(default_factory=list)
@@ -243,6 +265,14 @@ class AgentContext:
                 "rather than promising one."
             )
 
+        if self.paid_by:
+            lines.append(f"\nPayments for this person are made by: {self.paid_by}")
+        if self.pays_for:
+            lines.append("\nThis person pays for:")
+            for p in self.pays_for:
+                owed = "; ".join(p["owed"]) if p["owed"] else "nothing outstanding on record"
+                lines.append(f"- {p['name'] or 'someone'} ({owed})")
+
         if self.open_commitments:
             lines.append("\nOutstanding between you:")
             for c in self.open_commitments:
@@ -336,6 +366,45 @@ async def build(
         )
         .order_by(Commitment.due_at.asc().nullslast())
     )
+
+    # Who pays for this customer, and whom they pay for. Only open,
+    # this-business commitments are read for the people they pay for, and
+    # at most a handful of people - a parent of three, a company sending a
+    # few staff - so this stays one small query, not a report.
+    paid_by_name: str | None = None
+    pays_for: list[dict] = []
+    if customer is not None:
+        if customer.paid_by_customer_id:
+            payer = await db.get(Customer, customer.paid_by_customer_id)
+            if payer is not None and payer.business_id == business_id:
+                paid_by_name = payer.display_name or "another contact on file"
+        dependants = (
+            await db.execute(
+                select(Customer).where(
+                    Customer.business_id == business_id,
+                    Customer.paid_by_customer_id == customer.id,
+                    Customer.is_private.is_(False),
+                ).limit(10)
+            )
+        ).scalars().all()
+        if dependants:
+            owed_rows = (
+                await db.execute(
+                    select(Commitment).where(
+                        Commitment.customer_id.in_([d.id for d in dependants]),
+                        Commitment.status == CommitmentStatus.open,
+                    ).order_by(Commitment.due_at.asc().nullslast())
+                )
+            ).scalars().all()
+            for d in dependants:
+                owed = []
+                for c in owed_rows:
+                    if c.customer_id != d.id:
+                        continue
+                    amount = _amount_text(c)
+                    due = f", due {c.due_at.strftime('%d %b')}" if c.due_at else ""
+                    owed.append(f"{c.description}{' - ' + amount if amount else ''}{due}")
+                pays_for.append({"name": d.display_name, "owed": owed})
 
     gaps = []
     if dna and isinstance(dna.known_gaps, dict):
@@ -516,11 +585,13 @@ async def build(
                     c.direction.value if hasattr(c.direction, "value") else c.direction
                 ),
                 "description": c.description,
-                "amount": f"₹{c.amount_paise / 100:,.0f}" if c.amount_paise else None,
+                "amount": _amount_text(c),
                 "due": c.due_at.strftime("%d %b") if c.due_at else None,
             }
             for c in commitments.scalars().all()
         ],
+        paid_by=paid_by_name,
+        pays_for=pays_for,
         context_message_ids=[m.id for m in messages],
     )
 

@@ -125,7 +125,11 @@ async def resolve(
         )
         min_paise = params.get("min_amount_paise")
         if min_paise:
-            matching = matching.where(Commitment.amount_paise >= int(min_paise))
+            # Still owed, not originally promised - a customer who has
+            # paid most of it shouldn't land in a "owes over ₹10,000" chase.
+            from shared.care.commitment_payments import OUTSTANDING
+
+            matching = matching.where(OUTSTANDING >= int(min_paise))
         conditions.append(Customer.id.in_(matching))
 
     rows = await db.execute(
@@ -201,7 +205,7 @@ async def resolve(
             continue
 
         theirs = by_customer.get(customer.id, [])
-        owed = sum(c.amount_paise or 0 for c in theirs)
+        owed = sum(c.outstanding_paise or 0 for c in theirs)
         total += owed
         soonest = next((c for c in theirs if c.due_at), theirs[0] if theirs else None)
 

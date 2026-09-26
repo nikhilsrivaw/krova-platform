@@ -21,6 +21,7 @@ from shared.ai.client import AIError
 from shared.billing import usage
 from shared.crm import tagging
 from shared.db import queue
+from shared.ai.context import _amount_text
 from shared.db.models import (
     Business,
     BusinessDNA,
@@ -89,7 +90,7 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
         {
             "direction": c.direction.value if hasattr(c.direction, "value") else c.direction,
             "description": c.description,
-            "amount": f"₹{c.amount_paise / 100:,.0f}" if c.amount_paise else None,
+            "amount": _amount_text(c),
             "due": c.due_at.strftime("%d %b %Y") if c.due_at else None,
             "status": c.status.value if hasattr(c.status, "value") else c.status,
         }
@@ -126,7 +127,7 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
 
     open_count = sum(1 for c in commitments if c["status"] == "open")
     outstanding = sum(
-        c.amount_paise or 0
+        c.outstanding_paise or 0
         for c in (await db.execute(
             select(Commitment).where(
                 Commitment.customer_id == customer_id,

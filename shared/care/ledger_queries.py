@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.care.commitment_payments import OUTSTANDING
 from shared.db.models import Commitment, CommitmentDirection, CommitmentStatus, Customer
 
 
@@ -55,7 +56,9 @@ async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
 
     async def _total(direction: CommitmentDirection) -> int:
         result = await db.execute(
-            select(func.coalesce(func.sum(Commitment.amount_paise), 0)).where(
+            # What is still owed, not what was promised - a half-paid
+            # instalment counts for the half that hasn't arrived.
+            select(func.coalesce(func.sum(OUTSTANDING), 0)).where(
                 *open_only, Commitment.direction == direction
             )
         )
@@ -64,7 +67,7 @@ async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
     overdue = await db.execute(
         select(
             func.count(Commitment.id),
-            func.coalesce(func.sum(Commitment.amount_paise), 0),
+            func.coalesce(func.sum(OUTSTANDING), 0),
         ).where(*open_only, Commitment.due_at < now)
     )
     overdue_count, overdue_paise = overdue.one()
@@ -73,7 +76,7 @@ async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
         result = await db.execute(
             select(
                 func.count(Commitment.id),
-                func.coalesce(func.sum(Commitment.amount_paise), 0),
+                func.coalesce(func.sum(OUTSTANDING), 0),
             ).where(*open_only, Commitment.due_at < now, Commitment.direction == direction)
         )
         count, paise = result.one()
@@ -141,7 +144,9 @@ async def top_open_commitments(
         OpenCommitmentRow(
             direction=c.direction,
             description=c.description,
-            amount_paise=c.amount_paise,
+            # Outstanding, not promised - this is what gets read out as
+            # "X owes you" on the owner's voice line.
+            amount_paise=c.outstanding_paise,
             due_at=c.due_at,
             customer_name=name,
         )

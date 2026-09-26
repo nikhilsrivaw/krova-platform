@@ -260,6 +260,53 @@ class WebhookEventType(str, enum.Enum):
     # shared/care/intent_leakage.py's two sweeps - same reasoning.
     intent_leakage_detected = "intent_leakage.detected"
     rto_risk_detected = "rto_risk.detected"
+    # services/api/routers/insurance_claims.py, via signal_dispatch.py's
+    # own SIGNAL_KIND_TRIGGERS map - it has dispatched this string since
+    # that feature shipped, and post_call_actions.CONDITION_FIELDS has
+    # always had an entry for it, but the value was never declared here.
+    # A missing member meant two real consequences, both fixed by adding
+    # it: Settings' outbound-webhook picker (which enumerates this enum)
+    # could not subscribe to it at all, and the /automations page offered
+    # it as a trigger while the API's own allowlist rejected the save.
+    claim_status_changed = "claim.status_changed"
+    # The time-based triggers - the only ones here that are not "something
+    # just happened" but "a date is approaching or has passed". Fired by
+    # shared/care/date_triggers.py, a single daily sweep, rather than by
+    # any webhook or message arriving.
+    #
+    # Why these exist at all: every "remind before X" need in this codebase
+    # got solved by hardcoding a separate sweep with our own timing baked
+    # in - commitment_deadline_calls.py (24h, voice only),
+    # quotation_followup.py (3/7/14/21 days), cod_confirmation.py (4h).
+    # Those are pre-defined rules we chose for the business. With a
+    # days_until/days_overdue condition field the business sets its own
+    # number instead, using the operators that already exist. The old
+    # sweeps stay - they are opt-in and already relied on - but nothing
+    # new of that shape should be written now that this exists.
+    #
+    # Fired once per day per object, never more, because the sweep itself
+    # runs once a day (see date_triggers.py) - so a rule reading
+    # "days_until equals 3" fires exactly once, and one reading
+    # "less_than_or_equal 3" fires on each of days 3, 2, 1 and 0, which is
+    # the business's own choice rather than a dedupe bug.
+    commitment_due_soon = "commitment.due_soon"
+    commitment_overdue = "commitment.overdue"
+    quotation_aging = "quotation.aging"
+    # "This customer has gone quiet" - fired daily by the same sweep for
+    # every customer who has ever messaged, carrying how many days since
+    # they last wrote, since either side last wrote, and since their last
+    # visit. The one trigger that catches a member drifting away, a package
+    # client after their last session, and a retainer client going silent
+    # with the same mechanism - see date_triggers.py.
+    customer_inactive = "customer.inactive"
+    # A person moved a customer from one pipeline stage to another
+    # (services/api/routers/crm.py::set_stage - the only place a stage is
+    # ever written). The stage names are the business's own
+    # (Business.settings["pipeline_stages"]), so "moved to Joined -> send a
+    # welcome" and "moved to Lost -> ask why" are rules each business
+    # writes in its own words. Fires only on a real change, never when the
+    # same stage is saved again.
+    customer_stage_changed = "customer.stage_changed"
     # Business-level Insight kinds (escalation_alerts.py, health_monitor.py) -
     # neither ever has a customer_id, so post_call_actions.apply_rules can
     # never meaningfully act on them (every action type needs a customer).
@@ -427,13 +474,21 @@ class AutomationStep(UUIDMixin, TimestampMixin, Base):
     # behaviour that exists until a later phase actually schedules a
     # delayed step.
     delay_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # {"field": "commitment.amount_paise", "operator": "greater_than", "value": 50000}
-    # None (the default, and every step's value today) means "always run" -
-    # no gate. `field` is meant to come from a small, fixed allowlist per
-    # trigger_type (validated at the API layer, same as trigger_type/
-    # action_type themselves) once a later phase actually evaluates this -
-    # never an open query language over arbitrary columns.
-    condition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # A list of {"field", "operator", "value"} comparisons that must ALL
+    # hold for the step to run - e.g. days_until equals 3 AND kind equals
+    # payment. None means "always run".
+    #
+    # Older rows hold a single bare {"field", ...} dict from before a step
+    # could carry more than one; shared/care/post_call_actions.py::
+    # normalize_conditions reads both shapes, so nothing was migrated and
+    # nothing has to be. New saves always write a list.
+    #
+    # AND only, deliberately. "A or B" is two rules with the same action,
+    # and mixing the two ("A and (B or C)") is exactly where a
+    # non-technical builder stops being readable. `field` comes from a
+    # small fixed allowlist per trigger_type (post_call_actions.
+    # CONDITION_FIELDS), never an open query over arbitrary columns.
+    condition: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
     action_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
@@ -501,4 +556,71 @@ class AutomationStepRun(UUIDMixin, TimestampMixin, Base):
 
     __table_args__ = (
         Index("idx_automation_step_runs_due", "due_at", "executed_at"),
+    )
+
+
+class AutomationRunLog(UUIDMixin, TimestampMixin, Base):
+    """
+    What a rule actually did, every time it fired - the answer to the one
+    question a business cannot ask today.
+
+    AutomationStepRun (above) only ever exists for a *delayed* step, so a
+    rule whose steps all run immediately - the common case - has left no
+    trace anywhere but the application log. A business builds a rule, sees
+    nothing happen, and has no way to tell "it never fired" from "it fired
+    and the condition didn't match" from "it fired and the WhatsApp send
+    failed". Silence reads as broken, so this table exists purely so the
+    owner can see the difference.
+
+    One row per *step outcome*, not per rule firing - a rule whose step 0
+    sent and whose step 1 was skipped on its condition produces two rows,
+    because "it ran" and "it ran but did nothing" are the two answers most
+    often confused. `status` is one of:
+
+      ran      - the action was actually carried out
+      no_action - the step ran but had nothing to do (no phone number on
+                  the customer, no connected channel); _run_step_action
+                  returned False, which is a real outcome, not a failure
+      skipped  - the step's condition did not hold; `detail` says which
+                 field and what the value actually was, because "why
+                 didn't my condition match" is the question this whole
+                 table is here to answer
+      queued   - the step has a delay and was queued for later (an
+                 AutomationStepRun row now exists); it gets its own `ran`/
+                 `no_action` row when it actually resumes
+      failed   - the action raised; `detail` carries the exception text
+
+    Written unconditionally, never behind a business setting - a log a
+    business has to switch on is a log that isn't there the one time it's
+    needed. Pruned on a schedule instead (see shared/care/post_call_actions.py
+    ::prune_run_logs), which is the cost control.
+
+    `context` is the trigger's own data, snapshotted the same way
+    AutomationStepRun does it, so a skipped-condition row can still show
+    what the value actually was weeks later.
+    """
+
+    __tablename__ = "automation_run_logs"
+
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("post_call_action_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    business_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    trigger_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The step's real position within its rule (AutomationStep.position),
+    # not an index into whatever slice was being run - so a resumed chain's
+    # rows line up with the step list the business sees in the builder.
+    step_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Human-readable, shown verbatim in the UI - "condition not met:
+    # sentiment equals 'angry' (actual: 'neutral')", or an exception's
+    # own message. Never a code the frontend has to translate.
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("idx_automation_run_logs_rule", "rule_id", "created_at"),
+        Index("idx_automation_run_logs_business", "business_id", "created_at"),
     )

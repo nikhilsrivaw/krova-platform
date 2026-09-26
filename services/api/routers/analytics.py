@@ -198,7 +198,7 @@ async def receivables(current_user: CurrentUserDep, db: DbDep) -> Receivables:
     by_customer: dict = {}
 
     for c in rows:
-        amount = c.amount_paise or 0
+        amount = c.outstanding_paise or 0
         due = c.due_at
         if due and due.tzinfo is None:
             due = due.replace(tzinfo=timezone.utc)

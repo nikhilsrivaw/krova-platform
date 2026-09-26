@@ -266,6 +266,22 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     # Customers CRM page). Defaults false - opt-out by default, the only
     # posture that doesn't have to guess.
     marketing_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Who pays for this customer, when that is someone else - a parent for a
+    # student, a company for an employee on a course, a family member for a
+    # PG tenant, an accounts team for a buyer. Another Customer of the same
+    # business, set by hand from the CRM, never inferred from a chat.
+    #
+    # Deliberately one link, not a relationship graph: the question every
+    # business in this shape actually has is "who do I remind about the
+    # money", and one nullable pointer answers it. Automations can send a
+    # step to the payer instead of the customer (post_call_actions.
+    # _run_step_action, `send_to: "payer"`), and the agent is told who pays
+    # for whom (shared/ai/context.py). SET NULL on delete: removing the
+    # payer must never remove the person they paid for.
+    paid_by_customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     marketing_opt_in_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

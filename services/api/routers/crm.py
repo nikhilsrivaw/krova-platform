@@ -24,7 +24,11 @@ from shared.db.models import (
     CustomerTag,
     TagStatus,
     User,
+    WebhookEventType,
 )
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/crm", tags=["crm"])
 
@@ -281,8 +285,89 @@ async def set_stage(
     customer_id: uuid.UUID, body: StageIn, current_user: CurrentUserDep, db: DbDep
 ) -> dict:
     customer = await _owned_customer(customer_id, current_user.business, db)
-    customer.stage = body.stage.strip() if body.stage else None
+    previous = customer.stage
+    # Blank or whitespace-only clears the stage. It used to save "", which
+    # is neither a stage nor "no stage" - and would now also fire a
+    # stage-changed event for a customer moved to a stage called nothing.
+    customer.stage = (body.stage or "").strip() or None
+    if customer.stage != previous:
+        await _stage_changed(
+            db, business_id=current_user.business, customer_id=customer_id,
+            from_stage=previous, to_stage=customer.stage,
+        )
     return {"customer_id": str(customer_id), "stage": customer.stage}
+
+
+async def _stage_changed(
+    db: DbDep, *, business_id: uuid.UUID, customer_id: uuid.UUID,
+    from_stage: str | None, to_stage: str | None,
+) -> None:
+    """
+    Tell the business's own webhooks and automation rules that a stage
+    changed. Same shape and same failure posture as
+    shared/care/signal_dispatch.py: every failure is caught and logged,
+    because a broken rule or a dead webhook must never stop a person from
+    moving a customer along their own pipeline.
+    """
+    from shared.care import post_call_actions
+    from shared.integrations import webhooks
+
+    event_type = WebhookEventType.customer_stage_changed.value
+    try:
+        await webhooks.dispatch_event(
+            db, business_id=business_id, event_type=event_type,
+            payload={
+                "customer_id": str(customer_id),
+                "from_stage": from_stage,
+                "to_stage": to_stage,
+            },
+        )
+    except Exception:
+        logger.exception("stage-changed webhook failed business=%s customer=%s", business_id, customer_id)
+
+    try:
+        await post_call_actions.apply_rules(
+            db, business_id=business_id, trigger_type=event_type, customer_id=customer_id,
+            # A stage is set by a person in the dashboard, not on a channel.
+            channel=None,
+            context={"from_stage": from_stage, "to_stage": to_stage},
+        )
+    except Exception:
+        logger.exception("stage-changed automations failed business=%s customer=%s", business_id, customer_id)
+
+
+class PayerIn(BaseModel):
+    # None clears it.
+    paid_by_customer_id: uuid.UUID | None = None
+
+
+@router.patch("/customers/{customer_id}/payer", response_model=dict)
+async def set_payer(
+    customer_id: uuid.UUID, body: PayerIn, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    Link (or unlink) who pays for this customer - see
+    Customer.paid_by_customer_id. The payer must be another customer of
+    the same business, and the link can't loop: someone can't pay for
+    their own payer.
+    """
+    customer = await _owned_customer(customer_id, current_user.business, db)
+    payer = None
+    if body.paid_by_customer_id is not None:
+        if body.paid_by_customer_id == customer_id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "A customer can't pay for themselves")
+        payer = await _owned_customer(body.paid_by_customer_id, current_user.business, db)
+        if payer.paid_by_customer_id == customer_id:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "That person is already paid for by this customer - the link would loop",
+            )
+    customer.paid_by_customer_id = payer.id if payer else None
+    return {
+        "customer_id": str(customer_id),
+        "paid_by_customer_id": str(payer.id) if payer else None,
+        "paid_by_name": payer.display_name if payer else None,
+    }
 
 
 class DealValueIn(BaseModel):

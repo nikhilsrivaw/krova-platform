@@ -126,6 +126,16 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Money actually received against this promise, which can be part of
+    # it - see shared/care/commitment_payments.py. amount_paise above stays
+    # what was promised and is never edited by a receipt; what is still
+    # owed is outstanding_paise. payment_log keeps every receipt
+    # ({amount_paise, at, source, recorded_by_user_id}) so a running total
+    # is never the only record of who said the money arrived.
+    amount_received_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payment_log: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
     confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -179,6 +189,16 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         Index("idx_commitments_external_ref", "business_id", "external_ref"),
     )
 
+
+
+    @property
+    def outstanding_paise(self) -> int | None:
+        """What is still owed: promised minus received, never below zero.
+        None when no amount was ever stated - there is nothing to subtract
+        from. The SQL form is commitment_payments.OUTSTANDING."""
+        if self.amount_paise is None:
+            return None
+        return max(self.amount_paise - (self.amount_received_paise or 0), 0)
 
 class BusinessDNA(TimestampMixin, Base):
     """

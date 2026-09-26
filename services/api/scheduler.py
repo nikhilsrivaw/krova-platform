@@ -316,6 +316,48 @@ async def run_due_automation_steps() -> None:
         logger.exception("delayed automation step sweep failed")
 
 
+async def fire_date_triggers() -> None:
+    """
+    Fire the time-based automation triggers (commitment.due_soon,
+    commitment.overdue, quotation.aging) so a business's own rules can act
+    on a date instead of an event. See shared/care/date_triggers.py.
+
+    Once a day, and that cadence is load-bearing: the sweep has no
+    per-object "already fired" marker, so running it a second time in the
+    same day would fire every rule a second time. Anything that wants this
+    more often is asking for a different feature.
+    """
+    from shared.care import date_triggers
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            ran = await date_triggers.fire_date_triggers(db)
+            await db.commit()
+            if ran:
+                logger.info("time-based automation triggers ran %s action(s)", ran)
+    except Exception:
+        logger.exception("date trigger sweep failed")
+
+
+async def prune_automation_run_logs() -> None:
+    """
+    Drop automation execution history past its retention window - the cost
+    control that lets the log be written unconditionally. See
+    shared/care/post_call_actions.py::prune_run_logs.
+    """
+    from shared.care import post_call_actions
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            removed = await post_call_actions.prune_run_logs(db)
+            if removed:
+                logger.info("pruned %s automation run log row(s)", removed)
+    except Exception:
+        logger.exception("automation run log prune failed")
+
+
 async def send_repeat_purchase_nudges() -> None:
     """D2C, order_sync capability. See shared/scheduling/recall.py."""
     from shared.db.session import AsyncSessionLocal
@@ -735,6 +777,26 @@ def build() -> AsyncIOScheduler:
         id="check_deadline_calls",
         replace_existing=True,
         misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        fire_date_triggers,
+        # 8am IST - early enough that a "remind them today" rule sends
+        # during working hours, late enough not to be a 3am WhatsApp. The
+        # once-a-day part is a correctness requirement, not a preference:
+        # see the function's own docstring.
+        CronTrigger(hour=8, minute=0, timezone=IST),
+        id="fire_date_triggers",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    scheduler.add_job(
+        prune_automation_run_logs,
+        CronTrigger(hour=4, minute=15, timezone=IST),
+        id="prune_automation_run_logs",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     scheduler.add_job(

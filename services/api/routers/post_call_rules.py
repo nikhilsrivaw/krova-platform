@@ -28,14 +28,31 @@ should cancel what it had queued.
 """
 
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.care.post_call_actions import CONDITION_FIELDS, OPERATORS
-from shared.db.models import AutomationStep, Channel, PostCallActionRule, WebhookEventType
+from shared.care.post_call_actions import (
+    CONDITION_FIELDS,
+    MAX_CONDITIONS_PER_STEP,
+    OPERATORS,
+    RUN_LOG_RETENTION_DAYS,
+    describe_delay,
+    PAYER_ACTIONS,
+    evaluate_condition,
+    normalize_conditions,
+    resolve_tokens,
+)
+from shared.db.models import (
+    AutomationRunLog,
+    AutomationStep,
+    Channel,
+    PostCallActionRule,
+    WebhookEventType,
+)
 
 router = APIRouter(prefix="/post-call-rules", tags=["post-call-rules"])
 
@@ -73,6 +90,20 @@ _VALID_TRIGGERS = {
     WebhookEventType.overdue_refund_detected.value,
     WebhookEventType.intent_leakage_detected.value,
     WebhookEventType.rto_risk_detected.value,
+    # Fires from shared/care/signal_dispatch.py like the kinds above, and
+    # has always had its own CONDITION_FIELDS entry - it was simply never
+    # added here, so the /automations page offered it and saving one
+    # returned 422. Adding it is the fix; nothing else changes.
+    WebhookEventType.claim_status_changed.value,
+    # The time-based triggers - fired daily by shared/care/date_triggers.py
+    # rather than by anything arriving. These are the ones that let a
+    # business set its own timing ("3 days before a payment is due")
+    # instead of inheriting the numbers baked into our own sweeps.
+    WebhookEventType.commitment_due_soon.value,
+    WebhookEventType.commitment_overdue.value,
+    WebhookEventType.quotation_aging.value,
+    WebhookEventType.customer_inactive.value,
+    WebhookEventType.customer_stage_changed.value,
     # escalation_rate_detected / account_health_detected deliberately
     # excluded - business-level signals with no customer_id, so a rule on
     # either could never actually fire (see shared/care/signal_dispatch.py).
@@ -108,6 +139,12 @@ class ConditionIn(BaseModel):
 class StepOut(BaseModel):
     action_type: str
     action_config: dict
+    # Every condition on the step, all of which must hold. Always a list,
+    # whatever shape the row was stored in (see normalize_conditions).
+    conditions: list[ConditionOut] = []
+    # The first of `conditions`, kept only so a client written before a
+    # step could hold more than one still reads something sensible. It is
+    # not the whole truth for a multi-condition step - read `conditions`.
     condition: ConditionOut | None = None
     # None = runs immediately, today's original behaviour for a step with
     # no delay set. See shared/db/models/integrations.py::AutomationStepRun
@@ -118,9 +155,15 @@ class StepOut(BaseModel):
 class StepIn(BaseModel):
     action_type: str
     action_config: dict = {}
-    # None (omitted, the default) = the step always runs - see
-    # shared/care/post_call_actions.py::CONDITION_FIELDS for the real,
-    # per-trigger_type allowlist `field` is checked against.
+    # All must hold for the step to run (AND). Empty/omitted = always
+    # runs. See shared/care/post_call_actions.py::CONDITION_FIELDS for the
+    # per-trigger_type allowlist each `field` is checked against.
+    conditions: list[ConditionIn] | None = None
+    # The single-condition shape from before `conditions` existed - still
+    # accepted so an older client keeps working. Ignored whenever
+    # `conditions` is present: StepOut returns both fields, so a client
+    # that echoes a step back unchanged (pause/resume does exactly that)
+    # would otherwise save its first condition twice.
     condition: ConditionIn | None = None
     # None (omitted, the default) = runs immediately.
     delay_seconds: int | None = None
@@ -143,15 +186,35 @@ def _to_out(rule: PostCallActionRule, steps: list[AutomationStep]) -> PostCallRu
         is_active=rule.is_active,
         channel=rule.channel,
         steps=[
-            StepOut(
-                action_type=s.action_type,
-                action_config=s.action_config or {},
-                condition=ConditionOut(**s.condition) if s.condition else None,
-                delay_seconds=s.delay_seconds,
-            )
+            _step_out(s)
             for s in steps
         ],
     )
+
+
+def _step_out(step: AutomationStep) -> StepOut:
+    conditions = [ConditionOut(**c) for c in normalize_conditions(step.condition)]
+    return StepOut(
+        action_type=step.action_type,
+        action_config=step.action_config or {},
+        conditions=conditions,
+        condition=conditions[0] if conditions else None,
+        delay_seconds=step.delay_seconds,
+    )
+
+
+def _step_conditions(step: StepIn) -> list[ConditionIn]:
+    """The step's conditions - `conditions` when sent, else the legacy
+    single `condition`. Never both: see StepIn.condition for why."""
+    if step.conditions is not None:
+        return list(step.conditions)
+    return [step.condition] if step.condition is not None else []
+
+
+def _stored_conditions(step: StepIn) -> list[dict] | None:
+    """What goes in AutomationStep.condition: always a list, or None."""
+    combined = _step_conditions(step)
+    return [c.model_dump() for c in combined] or None
 
 
 async def _steps_by_rule(rule_ids: list[uuid.UUID], db: DbDep) -> dict[uuid.UUID, list[AutomationStep]]:
@@ -211,17 +274,26 @@ def _validate(body: PostCallRuleIn) -> None:
 
 def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
     prefix = f"steps[{index}]"
-    if step.condition is not None:
-        allowed_fields = CONDITION_FIELDS.get(trigger_type, ())
-        if step.condition.field not in allowed_fields:
+    conditions = _step_conditions(step)
+    if len(conditions) > MAX_CONDITIONS_PER_STEP:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix} may have at most {MAX_CONDITIONS_PER_STEP} conditions",
+        )
+    allowed_fields = CONDITION_FIELDS.get(trigger_type, ())
+    for c_index, condition in enumerate(conditions):
+        if condition.field not in allowed_fields:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"{prefix}.condition.field for {trigger_type} must be one of {sorted(allowed_fields)}",
+                detail=(
+                    f"{prefix}.conditions[{c_index}].field for {trigger_type} "
+                    f"must be one of {sorted(allowed_fields)}"
+                ),
             )
-        if step.condition.operator not in OPERATORS:
+        if condition.operator not in OPERATORS:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"{prefix}.condition.operator must be one of {sorted(OPERATORS)}",
+                detail=f"{prefix}.conditions[{c_index}].operator must be one of {sorted(OPERATORS)}",
             )
     if step.delay_seconds is not None and not (0 < step.delay_seconds <= _MAX_DELAY_SECONDS):
         raise HTTPException(
@@ -232,6 +304,17 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_type must be one of {sorted(_VALID_ACTIONS)}",
+        )
+    send_to = (step.action_config or {}).get("send_to")
+    if send_to not in (None, "customer", "payer"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix}.action_config.send_to must be customer or payer",
+        )
+    if send_to == "payer" and step.action_type not in PAYER_ACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix}: {step.action_type} can't be sent to a payer - only {sorted(PAYER_ACTIONS)}",
         )
     if step.action_type == "whatsapp_followup" and not (step.action_config or {}).get("message"):
         raise HTTPException(
@@ -300,7 +383,7 @@ async def create_rule(body: PostCallRuleIn, current_user: CurrentUserDep, db: Db
     steps = [
         AutomationStep(
             rule_id=rule.id, position=i,
-            condition=step.condition.model_dump() if step.condition else None,
+            condition=_stored_conditions(step),
             delay_seconds=step.delay_seconds,
             action_type=step.action_type, action_config=step.action_config,
         )
@@ -340,7 +423,7 @@ async def update_rule(
 
     final_steps: list[AutomationStep] = []
     for i, step_in in enumerate(body.steps):
-        condition = step_in.condition.model_dump() if step_in.condition else None
+        condition = _stored_conditions(step_in)
         if i < len(existing):
             # Position i keeps its existing row (and id) - an
             # AutomationStepRun already queued against it stays valid;
@@ -375,3 +458,214 @@ async def delete_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDe
     rule = await _owned_rule(rule_id, current_user, db)
     await db.delete(rule)
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Execution history - "did my rule actually do anything?"
+#
+# The single most damaging gap in this builder before now: a rule with no
+# delayed step left no trace anywhere a business could see, so silence was
+# indistinguishable from broken. See AutomationRunLog's own docstring.
+# ---------------------------------------------------------------------------
+
+# A page, not a full history - the panel this feeds shows recent activity,
+# and a business that wants to audit further back is a signal to build real
+# pagination rather than a reason to ship an unbounded query.
+_MAX_RUN_ROWS = 200
+
+
+class RunLogOut(BaseModel):
+    id: str
+    rule_id: str
+    rule_name: str | None = None
+    trigger_type: str
+    step_position: int
+    action_type: str
+    # ran / no_action / skipped / queued / failed - see AutomationRunLog.
+    status: str
+    # Already a plain sentence when the backend wrote it; the UI shows it
+    # verbatim rather than translating a code.
+    detail: str | None = None
+    customer_id: str | None = None
+    occurred_at: datetime
+
+
+class RunHistoryOut(BaseModel):
+    # How long history is kept, so the panel can say so rather than leaving
+    # an empty list ambiguous between "never ran" and "aged out".
+    retention_days: int
+    runs: list[RunLogOut]
+
+
+@router.get("/runs", response_model=RunHistoryOut)
+async def list_runs(
+    current_user: CurrentUserDep,
+    db: DbDep,
+    rule_id: uuid.UUID | None = None,
+    limit: int = Query(default=50, ge=1, le=_MAX_RUN_ROWS),
+) -> RunHistoryOut:
+    """
+    What this business's automations actually did, newest first. Optionally
+    narrowed to one rule.
+
+    A log row whose rule was since deleted does not appear here - the FK
+    cascades it away. That is deliberate: history attributed to a rule
+    nobody can open is not something a business can act on.
+    """
+    stmt = select(AutomationRunLog).where(AutomationRunLog.business_id == current_user.business)
+    if rule_id is not None:
+        # Ownership is already covered by the business_id filter above - a
+        # rule_id from another business simply matches nothing.
+        stmt = stmt.where(AutomationRunLog.rule_id == rule_id)
+    rows = (
+        await db.execute(stmt.order_by(desc(AutomationRunLog.created_at)).limit(limit))
+    ).scalars().all()
+
+    names: dict[uuid.UUID, str | None] = {}
+    if rows:
+        rule_rows = (
+            await db.execute(
+                select(PostCallActionRule.id, PostCallActionRule.name).where(
+                    PostCallActionRule.id.in_({r.rule_id for r in rows})
+                )
+            )
+        ).all()
+        names = {rid: name for rid, name in rule_rows}
+
+    return RunHistoryOut(
+        retention_days=RUN_LOG_RETENTION_DAYS,
+        runs=[
+            RunLogOut(
+                id=str(r.id),
+                rule_id=str(r.rule_id),
+                rule_name=names.get(r.rule_id),
+                trigger_type=r.trigger_type,
+                step_position=r.step_position,
+                action_type=r.action_type,
+                status=r.status,
+                detail=r.detail,
+                customer_id=str(r.customer_id) if r.customer_id else None,
+                occurred_at=r.created_at,
+            )
+            for r in rows
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test before live
+#
+# A rule saved here goes live against real customers immediately, and there
+# was no way to try one first. This evaluates a rule against a context the
+# business supplies and reports what each step would do - reusing
+# post_call_actions' own condition evaluator and token resolver, never a
+# second copy, so the preview cannot drift from what actually runs.
+#
+# Deliberately sends nothing, and has no "run it for real on one customer"
+# mode: for a tool whose actions message real people, a dry run that can
+# accidentally not be dry is worse than no dry run at all.
+# ---------------------------------------------------------------------------
+
+
+class RuleTestIn(BaseModel):
+    trigger_type: str
+    channel: str | None = None
+    steps: list[StepIn] = Field(min_length=1)
+    # Keyed to CONDITION_FIELDS[trigger_type] - the same shape the real
+    # dispatch site passes. Values the business types in, or that the UI
+    # pre-fills from a recent real run of the same trigger.
+    context: dict = {}
+
+
+class StepTestOut(BaseModel):
+    position: int
+    action_type: str
+    # would_run / would_skip / would_wait
+    verdict: str
+    detail: str | None = None
+    # The text as it would actually be sent, with {{tokens}} resolved
+    # against the supplied context - the other half of "why did my rule do
+    # that", and the part a business can check at a glance.
+    preview: str | None = None
+
+
+class RuleTestOut(BaseModel):
+    # What this trigger really carries, so the UI can build the input form
+    # from the same allowlist the validator uses.
+    available_fields: list[str]
+    # Fields a condition needs that the supplied context does not have.
+    # Named explicitly because a condition on a field the trigger never
+    # carries fails closed at runtime, and is the single most confusing
+    # way for a rule to quietly do nothing.
+    missing_fields: list[str]
+    steps: list[StepTestOut]
+
+
+# Where each action's human-readable text lives in its action_config, for
+# the preview. An action absent here has no text worth previewing (add_tag
+# carries a tag name, not a message anyone reads).
+_PREVIEW_FIELD = {
+    "whatsapp_followup": "message",
+    "instagram_followup": "message",
+    "instagram_comment_reply": "message",
+    "send_sms": "message",
+    "send_email": "body",
+    "send_flow": "body",
+    "create_escalation_task": "reason",
+    "place_call": "reason",
+}
+
+
+@router.post("/test", response_model=RuleTestOut)
+async def test_rule(body: RuleTestIn, current_user: CurrentUserDep) -> RuleTestOut:
+    """
+    What this rule would do, given this trigger data. Nothing is sent,
+    nothing is written, and the rule need not exist yet - a business can
+    check one before ever saving it.
+    """
+    _validate(
+        PostCallRuleIn(trigger_type=body.trigger_type, channel=body.channel, steps=body.steps)
+    )
+
+    available = list(CONDITION_FIELDS.get(body.trigger_type, ()))
+    missing = sorted(
+        {
+            condition.field
+            for step in body.steps
+            for condition in _step_conditions(step)
+            if condition.field not in body.context
+        }
+    )
+
+    results: list[StepTestOut] = []
+    for i, step in enumerate(body.steps):
+        held, reason = evaluate_condition(_stored_conditions(step), body.context)
+        if not held:
+            results.append(StepTestOut(
+                position=i, action_type=step.action_type,
+                verdict="would_skip", detail="condition not met: " + str(reason),
+            ))
+            continue
+
+        preview_field = _PREVIEW_FIELD.get(step.action_type)
+        raw = (step.action_config or {}).get(preview_field) if preview_field else None
+        preview = resolve_tokens(raw, body.context) if isinstance(raw, str) else None
+
+        if step.delay_seconds:
+            results.append(StepTestOut(
+                position=i, action_type=step.action_type, verdict="would_wait",
+                # Same wording as the real execution log writes, so a
+                # preview and the history it later produces read alike.
+                detail=(
+                    describe_delay(step.delay_seconds)
+                    + ", then run - every step after this one waits with it"
+                ),
+                preview=preview,
+            ))
+            continue
+
+        results.append(StepTestOut(
+            position=i, action_type=step.action_type, verdict="would_run", preview=preview,
+        ))
+
+    return RuleTestOut(available_fields=available, missing_fields=missing, steps=results)
