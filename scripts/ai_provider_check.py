@@ -50,6 +50,6 @@ async def main():
         cs = [(x.direction, x.kind, x.amount_paise, str(x.due_at)[:10], round(x.confidence, 2)) for x in c.commitments]
         ss = [(x.kind, x.severity) for x in s.signals]
         print(f"{name:<28} expected: {expected}\n   commitments={cs} rejected={c.rejected}\n   signals={ss}")
-    print(f"\nsarvam total cost: Rs {captured['cost'] / 100:.2f}, output tokens {captured['out']}")
+    print(f"\n{REF} total cost: Rs {captured['cost'] / 100:.2f}, output tokens {captured['out']}")
 
 asyncio.run(main())
