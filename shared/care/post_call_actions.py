@@ -124,6 +124,11 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     # whose stage was cleared - so "to_stage equals Joined" and
     # "from_stage equals Lead" both behave as a business would expect.
     "customer.stage_changed": ("from_stage", "to_stage"),
+    # label is the business's own name for the date ("Renewal"); days_until
+    # is negative once the date has passed (-1 = yesterday), so "the day
+    # after the AMC expired" is `days_until equals -1`. {{date}} renders
+    # the date itself in a message ("30 Oct").
+    "customer.date_approaching": ("label", "days_until", "date", "note"),
     "customer.inactive": (
         "days_since_customer_message", "days_since_any_message",
         "days_since_last_visit", "has_upcoming_visit", "stage",

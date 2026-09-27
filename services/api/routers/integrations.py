@@ -433,6 +433,7 @@ _AUTOMATION_ONLY_EVENTS = {
     WebhookEventType.commitment_overdue.value,
     WebhookEventType.quotation_aging.value,
     WebhookEventType.customer_inactive.value,
+    WebhookEventType.customer_date_approaching.value,
 }
 _VALID_EVENTS = {e.value for e in WebhookEventType} - _AUTOMATION_ONLY_EVENTS
 

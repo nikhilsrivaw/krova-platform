@@ -22,9 +22,9 @@ guess reappearing every night the rule that produced it fires again.
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date as date_type, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -108,3 +108,41 @@ class CustomerNote(UUIDMixin, TimestampMixin, Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (Index("idx_customer_notes_customer", "customer_id"),)
+
+
+class CustomerDate(UUIDMixin, TimestampMixin, Base):
+    """
+    A date the business knows about a customer that the conversation may
+    never mention - a membership renewing, a package ending, an AMC
+    expiring, a course finishing, a birthday.
+
+    Deliberately generic: `label` is the business's own word, never an enum
+    of ours. A gym writes "Renewal", an AC service company "AMC expiry", a
+    coaching institute "Batch ends". What happens as the date approaches is
+    decided by the business's own automation rules through the
+    customer.date_approaching trigger (shared/care/date_triggers.py) -
+    KROVA sends nothing on its own.
+
+    This is not a membership or subscription system. It holds no plan, no
+    price and no billing cycle - just the date and what the business calls
+    it. The money side stays where it already is: a promise to pay on the
+    Commitment Ledger, read from the conversation. Set by a person, never
+    inferred.
+    """
+
+    __tablename__ = "customer_dates"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(60), nullable=False)
+    date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_customer_dates_business_date", "business_id", "date"),
+        Index("idx_customer_dates_customer", "customer_id"),
+    )

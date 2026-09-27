@@ -307,6 +307,14 @@ class WebhookEventType(str, enum.Enum):
     # writes in its own words. Fires only on a real change, never when the
     # same stage is saved again.
     customer_stage_changed = "customer.stage_changed"
+    # A date the business set on a customer (shared/db/models/crm.py::
+    # CustomerDate - "Renewal", "AMC expiry", "Package ends"...) is
+    # approaching or has just passed. Fired daily by date_triggers.py,
+    # carrying the business's own label and how many days away it is, so
+    # "5 days before Renewal -> WhatsApp" is a rule the business writes.
+    # The renewal case for memberships, retainers and maintenance
+    # contracts, where the date usually never appears in a chat.
+    customer_date_approaching = "customer.date_approaching"
     # Business-level Insight kinds (escalation_alerts.py, health_monitor.py) -
     # neither ever has a customer_id, so post_call_actions.apply_rules can
     # never meaningfully act on them (every action type needs a customer).

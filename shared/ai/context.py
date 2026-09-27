@@ -34,6 +34,7 @@ from shared.db.models import (
     CaseStatus,
     Commitment,
     CommitmentStatus,
+    CustomerDate,
     Customer,
     CustomerIdentity,
     CustomerIntelligence,
@@ -158,6 +159,9 @@ class AgentContext:
     # fees baaki hai?" gets a real answer. See Customer.paid_by_customer_id.
     paid_by: str | None = None
     pays_for: list[dict] = field(default_factory=list)
+    # Dates the business set on this customer ("Renewal: 30 Oct 2026") -
+    # so "meri membership kab khatam hai?" gets a real answer.
+    key_dates: list[str] = field(default_factory=list)
     # Every message id the agent was shown, so a draft can cite its sources
     # the same way a commitment does.
     context_message_ids: list[uuid.UUID] = field(default_factory=list)
@@ -264,6 +268,10 @@ class AgentContext:
                 else "\nNo shift is open right now. Escalate a token request "
                 "rather than promising one."
             )
+
+        if self.key_dates:
+            lines.append("\nDates on file for this customer (set by the business):")
+            lines.extend(f"- {d}" for d in self.key_dates)
 
         if self.paid_by:
             lines.append(f"\nPayments for this person are made by: {self.paid_by}")
@@ -373,6 +381,14 @@ async def build(
     # few staff - so this stays one small query, not a report.
     paid_by_name: str | None = None
     pays_for: list[dict] = []
+    key_dates: list[str] = []
+    if customer is not None:
+        for d in (
+            await db.execute(
+                select(CustomerDate).where(CustomerDate.customer_id == customer.id).order_by(CustomerDate.date)
+            )
+        ).scalars().all():
+            key_dates.append(f"{d.label}: {d.date.strftime('%d %b %Y')}" + (f" ({d.note})" if d.note else ""))
     if customer is not None:
         if customer.paid_by_customer_id:
             payer = await db.get(Customer, customer.paid_by_customer_id)
@@ -592,6 +608,7 @@ async def build(
         ],
         paid_by=paid_by_name,
         pays_for=pays_for,
+        key_dates=key_dates,
         context_message_ids=[m.id for m in messages],
     )
 

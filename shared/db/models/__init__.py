@@ -21,7 +21,7 @@ from shared.db.models.call_campaign import (
     CallScript,
     CallScriptResponse,
 )
-from shared.db.models.crm import CustomerNote, CustomerTag, TagStatus
+from shared.db.models.crm import CustomerDate, CustomerNote, CustomerTag, TagStatus
 from shared.db.models.channel import (
     Call,
     Channel,
@@ -137,6 +137,7 @@ __all__ = [
     "CustomerIdentity",
     "CustomerIntelligence",
     "CustomerLifecycleEvent",
+    "CustomerDate",
     "CustomerNote",
     "CustomerTag",
     "TagStatus",

@@ -21,6 +21,8 @@ thing a rule actually needs to decide for itself:
     quotation.aging       days_open, status, amount_paise, reference
     customer.inactive     days_since_customer_message, days_since_any_message,
                           days_since_last_visit, has_upcoming_visit, stage
+    customer.date_approaching  label, days_until, date, note — for dates the
+                          business set on a customer (renewal, AMC expiry...)
 
 and the numeric operators the condition engine already has
 (greater_than/less_than/equals/...) do the rest. "Three days before a
@@ -76,6 +78,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.care import post_call_actions
 from shared.db.models import (
     OPEN_STATUSES,
+    CustomerDate,
     Appointment,
     AppointmentStatus,
     Commitment,
@@ -123,6 +126,7 @@ _TIME_TRIGGERS = (
     WebhookEventType.commitment_overdue.value,
     WebhookEventType.quotation_aging.value,
     WebhookEventType.customer_inactive.value,
+    WebhookEventType.customer_date_approaching.value,
 )
 
 
@@ -185,6 +189,9 @@ async def fire_date_triggers(db: AsyncSession) -> int:
     )
     ran += await _fire_inactive(
         db, now=now, businesses=subscribed[WebhookEventType.customer_inactive.value]
+    )
+    ran += await _fire_customer_dates(
+        db, now=now, businesses=subscribed[WebhookEventType.customer_date_approaching.value]
     )
     return ran
 
@@ -463,5 +470,74 @@ async def _fire_inactive(db: AsyncSession, *, now: datetime, businesses: set[uui
             )
         except Exception:
             logger.exception("date trigger customer.inactive failed for customer=%s", customer_id)
+
+    return ran
+
+
+# How far ahead a set date starts firing, and how long after it passes it
+# keeps firing. Wide enough for "30 days before the AMC expires" and "a week
+# after the membership lapsed"; the business's condition picks the day.
+_DATE_AHEAD_DAYS = 60
+_DATE_AFTER_DAYS = 30
+
+# Business time for turning a stored calendar date into "days until". The
+# sweep runs at 8am IST, so a date stored as 30 Oct is "today" on 30 Oct in
+# India, not on 29 Oct because UTC is still behind.
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def date_context(*, today, target, label: str, note: str | None) -> dict:
+    """
+    The customer.date_approaching context for one date - pure, for tests.
+
+    `days_until` counts calendar days in India, so it is exact: 0 on the
+    day, 1 the day before, -1 the day after.
+    """
+    return {
+        "label": label,
+        "days_until": (target - today).days,
+        "date": target.strftime("%d %b").lstrip("0"),
+        "note": note,
+    }
+
+
+async def _fire_customer_dates(db: AsyncSession, *, now: datetime, businesses: set[uuid.UUID]) -> int:
+    """
+    Fire customer.date_approaching once a day for every date a subscribed
+    business has set on a customer, from _DATE_AHEAD_DAYS before it until
+    _DATE_AFTER_DAYS after. Private customers are skipped, as everywhere.
+    """
+    if not businesses:
+        return 0
+
+    today = now.astimezone(_IST).date()
+    rows = (
+        await db.execute(
+            select(CustomerDate, Customer.is_private)
+            .join(Customer, Customer.id == CustomerDate.customer_id)
+            .where(
+                CustomerDate.business_id.in_(businesses),
+                CustomerDate.date >= today - timedelta(days=_DATE_AFTER_DAYS),
+                CustomerDate.date <= today + timedelta(days=_DATE_AHEAD_DAYS),
+            )
+        )
+    ).all()
+
+    ran = 0
+    for key_date, is_private in rows:
+        if is_private:
+            continue
+        try:
+            ran += await post_call_actions.apply_rules(
+                db,
+                business_id=key_date.business_id,
+                trigger_type=WebhookEventType.customer_date_approaching.value,
+                customer_id=key_date.customer_id,
+                channel=None,
+                context=date_context(today=today, target=key_date.date, label=key_date.label, note=key_date.note),
+                log_skips=False,
+            )
+        except Exception:
+            logger.exception("date trigger customer.date_approaching failed for date=%s", key_date.id)
 
     return ran

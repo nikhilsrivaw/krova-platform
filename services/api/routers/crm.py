@@ -9,16 +9,17 @@ nightly profile worker, not from a request handler.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date as date_type, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.db.models import (
     Business,
     Customer,
+    CustomerDate,
     CustomerIntelligence,
     CustomerNote,
     CustomerTag,
@@ -334,6 +335,75 @@ async def _stage_changed(
         )
     except Exception:
         logger.exception("stage-changed automations failed business=%s customer=%s", business_id, customer_id)
+
+
+class CustomerDateIn(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    date: date_type
+    note: str | None = Field(default=None, max_length=500)
+
+
+class CustomerDateOut(BaseModel):
+    id: str
+    label: str
+    date: str
+    note: str | None = None
+
+
+def _date_out(d: CustomerDate) -> CustomerDateOut:
+    return CustomerDateOut(id=str(d.id), label=d.label, date=d.date.isoformat(), note=d.note)
+
+
+@router.get("/customers/{customer_id}/dates", response_model=list[CustomerDateOut])
+async def list_customer_dates(customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> list[CustomerDateOut]:
+    """Key dates the business set on this customer - see CustomerDate."""
+    await _owned_customer(customer_id, current_user.business, db)
+    rows = (
+        await db.execute(
+            select(CustomerDate).where(CustomerDate.customer_id == customer_id).order_by(CustomerDate.date)
+        )
+    ).scalars().all()
+    return [_date_out(d) for d in rows]
+
+
+@router.post("/customers/{customer_id}/dates", response_model=CustomerDateOut, status_code=status.HTTP_201_CREATED)
+async def add_customer_date(
+    customer_id: uuid.UUID, body: CustomerDateIn, current_user: CurrentUserDep, db: DbDep
+) -> CustomerDateOut:
+    await _owned_customer(customer_id, current_user.business, db)
+    row = CustomerDate(
+        business_id=current_user.business, customer_id=customer_id,
+        label=body.label.strip(), date=body.date,
+        note=(body.note or "").strip() or None,
+    )
+    db.add(row)
+    await db.flush()
+    return _date_out(row)
+
+
+@router.delete("/dates/{date_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_customer_date(date_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    row = await db.get(CustomerDate, date_id)
+    if row is None or row.business_id != current_user.business:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Date not found")
+    await db.delete(row)
+
+
+@router.get("/date-labels", response_model=list[str])
+async def list_date_labels(current_user: CurrentUserDep, db: DbDep) -> list[str]:
+    """The labels this business already uses, most common first - so
+    "Renewal" is typed once and then picked, and rules keyed on a label
+    keep matching."""
+    rows = (
+        await db.execute(
+            select(CustomerDate.label, func.count(CustomerDate.id))
+            .where(CustomerDate.business_id == current_user.business)
+            .group_by(CustomerDate.label)
+            .order_by(func.count(CustomerDate.id).desc())
+            .limit(30)
+        )
+    ).all()
+    return [label for label, _ in rows]
 
 
 class PayerIn(BaseModel):

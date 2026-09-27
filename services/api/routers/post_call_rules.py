@@ -104,6 +104,7 @@ _VALID_TRIGGERS = {
     WebhookEventType.quotation_aging.value,
     WebhookEventType.customer_inactive.value,
     WebhookEventType.customer_stage_changed.value,
+    WebhookEventType.customer_date_approaching.value,
     # escalation_rate_detected / account_health_detected deliberately
     # excluded - business-level signals with no customer_id, so a rule on
     # either could never actually fire (see shared/care/signal_dispatch.py).
