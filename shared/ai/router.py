@@ -24,7 +24,9 @@ restart, and the default - empty - costs nothing:
 
     AI_SHADOW_ROUTES={"extract_signals": {"model": "claude-haiku-4-5", "rate": 1.0}}
 
-`rate` is the share of calls also sent to the shadow model (0..1). A
+`model` may name another provider as `provider:model`
+("sarvam:sarvam-105b") - only one listed in AI_APPROVED_PROVIDERS; see
+shared/ai/providers.py for why that list exists. `rate` is the share of calls also sent to the shadow model (0..1). A
 malformed value is logged and ignored - a typo in an env var must never
 break a live reply.
 """
@@ -131,20 +133,29 @@ async def _run_shadow(
 ) -> None:
     # Imported here: client imports this module, and the DB layer has no
     # business being loaded by every AI call that never shadows.
-    from shared.ai import client
+    from shared.ai import client, providers
     from shared.db.models import AiShadowRun
     from shared.db.session import AsyncSessionLocal
 
     try:
-        response = await client._get_client().messages.create(**{**request, "model": route.model})
-        usage = response.usage
-        cost = client._cost_paise(
-            route.model,
-            usage.input_tokens,
-            usage.output_tokens,
-            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-        )
+        provider, model = providers.parse_ref(route.model)
+        if provider == "anthropic":
+            response = await client._get_client().messages.create(**{**request, "model": model})
+            usage = response.usage
+            cost = client._cost_paise(
+                model,
+                usage.input_tokens,
+                usage.output_tokens,
+                cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            )
+            shadow_answer = _answer(response.content)
+        else:
+            # Refuses (and this whole shadow is dropped) unless the provider
+            # is approved - see providers.py.
+            answer = await providers.call(route.model, request)
+            usage, cost = answer.usage, answer.cost_paise
+            shadow_answer = answer.tool_input if answer.tool_input is not None else {"text": answer.text}
         client._log_usage(f"{task}:shadow", route.model, usage, cost)
         async with AsyncSessionLocal() as db:
             db.add(
@@ -153,12 +164,14 @@ async def _run_shadow(
                     primary_model=primary_model,
                     shadow_model=route.model,
                     primary_output=_answer(primary_content),
-                    shadow_output=_answer(response.content),
+                    shadow_output=shadow_answer,
                     input_excerpt=_excerpt(request.get("messages") or []),
                     primary_cost_paise=primary_cost_paise,
                     shadow_cost_paise=cost,
                 )
             )
             await db.commit()
+    except providers.ProviderRefused as exc:
+        logger.warning("shadow refused task=%s model=%s: %s", task, route.model, exc)
     except Exception:  # noqa: BLE001 - a shadow failure must never surface anywhere
         logger.warning("shadow call failed task=%s model=%s", task, route.model, exc_info=True)

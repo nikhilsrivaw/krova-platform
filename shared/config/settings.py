@@ -140,6 +140,14 @@ class Settings(BaseSettings):
     #   {"extract_signals": {"model": "claude-haiku-4-5", "rate": 1.0}}
     # Empty (the default) = no shadow calls at all, no extra spend.
     ai_shadow_routes: str = Field(default="", alias="AI_SHADOW_ROUTES")
+    # Non-Anthropic providers allowed to receive customer conversations,
+    # comma-separated ("sarvam,gemini"). Add one only after its training
+    # opt-out, DPA and sub-processor listing are confirmed - see
+    # shared/ai/providers.py. Empty = Anthropic only.
+    ai_approved_providers: str = Field(default="", alias="AI_APPROVED_PROVIDERS")
+    # Paid-tier Gemini API key, for the gemini provider. Never a free-tier
+    # key: the free tier trains on content.
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
 
     # ── Google / Microsoft (email channels) ──────────────────────────────────
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
