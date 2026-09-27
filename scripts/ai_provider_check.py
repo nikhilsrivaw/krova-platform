@@ -5,7 +5,7 @@ provider - to check it answers KROVA's forced-tool format at all, and how
 its answers compare with the harness's expected ones, before any real
 traffic is shadowed to it.
 
-    docker compose -f docker-compose.prod.yml exec app         python -m scripts.ai_provider_check sarvam:sarvam-105b
+    docker compose -f docker-compose.prod.yml exec app python -m scripts.ai_provider_check sarvam:sarvam-105b
 
 Approves the provider for this one process only; real traffic still needs
 AI_APPROVED_PROVIDERS. Real spend, a few rupees.
@@ -29,7 +29,7 @@ settings.ai_approved_providers = providers.parse_ref(REF)[0]   # this process on
 captured = {}
 
 
-async def via_sarvam(**kw):
+async def via_provider(**kw):
     request = {"model": "x", "max_tokens": kw.get("max_tokens", 2048), "system": kw["system"],
                "messages": kw["messages"], "tools": [kw["tool"]],
                "tool_choice": {"type": "tool", "name": kw["tool"]["name"]}}
@@ -40,7 +40,7 @@ async def via_sarvam(**kw):
     return client.Completion(text=ans.text, tool_input=ans.tool_input, input_tokens=ans.usage.input_tokens,
                              output_tokens=ans.usage.output_tokens, cost_paise=ans.cost_paise, model=REF)
 
-client.complete = via_sarvam
+client.complete = via_provider
 
 
 async def main():
