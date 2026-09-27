@@ -47,9 +47,17 @@ client.complete = via_provider
 
 
 async def main():
+    import time
+
     for group, name, bctx, msgs, expected in CASES:
-        c = await commitments.extract(messages=msgs, business_context=bctx, now=NOW)
-        s = await signals.extract(messages=msgs, business_context=bctx, now=NOW, include_product=False)
+        started = time.monotonic()
+        try:
+            c = await commitments.extract(messages=msgs, business_context=bctx, now=NOW)
+            s = await signals.extract(messages=msgs, business_context=bctx, now=NOW, include_product=False)
+        except Exception as exc:  # noqa: BLE001 - a timeout on one chat is itself a result
+            print(f"{name:<28} FAILED after {time.monotonic() - started:.0f}s: {type(exc).__name__} {exc}")
+            continue
+        print(f"   ({time.monotonic() - started:.1f}s for both calls)")
         cs = [(x.direction, x.kind, x.amount_paise, str(x.due_at)[:10], round(x.confidence, 2)) for x in c.commitments]
         ss = [(x.kind, x.severity) for x in s.signals]
         print(f"{name:<28} expected: {expected}\n   commitments={cs} rejected={c.rejected}\n   signals={ss}")

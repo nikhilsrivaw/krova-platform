@@ -40,15 +40,12 @@ _INR_PER_USD = 88.0
 
 
 @dataclass(frozen=True, slots=True)
-class Provider:
-    base_url: str
-    key_setting: str
-    # Header name -> value template; "{key}" is replaced with the API key.
-    headers: tuple[tuple[str, str], ...]
-    vision: bool
-    # INR per million tokens by model-id prefix: (input, cached input, output).
-    pricing: tuple[tuple[str, tuple[float, float, float]], ...]
-    # Extra body fields every request to this provider carries.
+class ModelSpec:
+    # Path appended to the provider's base URL.
+    path: str
+    # INR per million tokens: (input, cached input, output).
+    pricing: tuple[float, float, float]
+    # Extra body fields every request to this model carries.
     extra_body: tuple[tuple[str, Any], ...] = ()
     # Reasoning models spend output tokens thinking before they answer, and
     # those count against max_tokens. Added on top of the caller's budget so
@@ -57,19 +54,47 @@ class Provider:
     reasoning_headroom: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class Provider:
+    base_url: str
+    key_setting: str
+    # Header name -> value template; "{key}" is replaced with the API key.
+    headers: tuple[tuple[str, str], ...]
+    vision: bool
+    # By model-id prefix; longest match wins.
+    models: tuple[tuple[str, ModelSpec], ...]
+
+
+_SARVAM_HEADERS = (("api-subscription-key", "{key}"), ("Authorization", "Bearer {key}"))
+
 PROVIDERS: dict[str, Provider] = {
-    # docs.sarvam.ai: POST /v1/chat/completions, OpenAI-style tools and
-    # tool_choice, no image input. Prices in INR from its pricing page
-    # (2026-08). Hosted in India. sarvam-105b is a reasoning model -
-    # reasoning tokens bill as output, so effort is kept low.
+    # docs.sarvam.ai - OpenAI-style tools and tool_choice, no image input,
+    # hosted in India. Prices in INR from its pricing page (2026-08).
+    #
+    # sarvam-105b is a reasoning model: tested 2026-09-27 on the Type 2
+    # conversations it spent ~2,500 output tokens thinking per extraction,
+    # took over 60s on some, and dropped amounts and dates - not usable for
+    # extraction. Kept only so it can be re-tested.
+    #
+    # The open-weight models are served on /v2. Gemma 4 31B does not reason
+    # (answers straight away, so only the tool JSON is billed as output);
+    # DeepSeek V4 Flash reasons but its output is the cheapest here.
     "sarvam": Provider(
-        base_url="https://api.sarvam.ai/v1",
+        base_url="https://api.sarvam.ai",
         key_setting="sarvam_api_key",
-        headers=(("api-subscription-key", "{key}"), ("Authorization", "Bearer {key}")),
+        headers=_SARVAM_HEADERS,
         vision=False,
-        pricing=(("sarvam-105b", (29.28, 10.98, 73.2)),),
-        extra_body=(("reasoning_effort", "low"),),
-        reasoning_headroom=6000,
+        models=(
+            ("sarvam-105b", ModelSpec(
+                path="/v1/chat/completions", pricing=(29.28, 10.98, 73.2),
+                extra_body=(("reasoning_effort", "low"),), reasoning_headroom=6000,
+            )),
+            ("gemma-4-31b", ModelSpec(path="/v2/chat/completions", pricing=(36.6, 13.73, 91.5))),
+            ("deepseekv4-flash", ModelSpec(
+                path="/v2/chat/completions", pricing=(19.8, 0.63, 59.4),
+                extra_body=(("reasoning_effort", "low"),), reasoning_headroom=4000,
+            )),
+        ),
     ),
     # Gemini's OpenAI-compatible endpoint (paid tier only - the free tier
     # trains on content). USD list prices converted.
@@ -78,9 +103,15 @@ PROVIDERS: dict[str, Provider] = {
         key_setting="gemini_api_key",
         headers=(("Authorization", "Bearer {key}"),),
         vision=True,
-        pricing=(
-            ("gemini-3.5-flash-lite", (0.30 * _INR_PER_USD, 0.03 * _INR_PER_USD, 2.50 * _INR_PER_USD)),
-            ("gemini-3.8-flash", (0.75 * _INR_PER_USD, 0.075 * _INR_PER_USD, 3.75 * _INR_PER_USD)),
+        models=(
+            ("gemini-3.5-flash-lite", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.30 * _INR_PER_USD, 0.03 * _INR_PER_USD, 2.50 * _INR_PER_USD),
+            )),
+            ("gemini-3.8-flash", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.75 * _INR_PER_USD, 0.075 * _INR_PER_USD, 3.75 * _INR_PER_USD),
+            )),
         ),
     ),
 }
@@ -101,12 +132,14 @@ def approved() -> set[str]:
     return {"anthropic"} | listed
 
 
-def _rates(provider: Provider, model: str) -> tuple[float, float, float]:
-    match = max((p for p, _ in provider.pricing if model.startswith(p)), key=len, default=None)
+def _spec(provider: Provider, model: str) -> ModelSpec:
+    """The model's own settings. An unlisted model is refused - its endpoint,
+    reasoning behaviour and price are all unknown, and a guessed price would
+    under-report spend."""
+    match = max((p for p, _ in provider.models if model.startswith(p)), key=len, default=None)
     if match is None:
-        # Unknown model: charge the dearest known rate so spend is never under-reported.
-        return max((r for _, r in provider.pricing), key=lambda r: r[2])
-    return dict(provider.pricing)[match]
+        raise ProviderRefused(f"model {model!r} is not configured for this provider")
+    return dict(provider.models)[match]
 
 
 def _blocks(content: Any) -> list[dict]:
@@ -114,6 +147,7 @@ def _blocks(content: Any) -> list[dict]:
 
 
 def _translate(request: dict[str, Any], model: str, provider: Provider) -> dict[str, Any]:
+    spec = _spec(provider, model)
     """Anthropic-shaped request -> OpenAI chat-completions body."""
     system = request.get("system") or ""
     if not isinstance(system, str):
@@ -139,7 +173,7 @@ def _translate(request: dict[str, Any], model: str, provider: Provider) -> dict[
             out_messages.append({"role": message["role"], "content": parts})
 
     body: dict[str, Any] = {"model": model, "messages": out_messages,
-                            "max_tokens": request.get("max_tokens", 2048) + provider.reasoning_headroom}
+                            "max_tokens": request.get("max_tokens", 2048) + spec.reasoning_headroom}
     tools = request.get("tools") or []
     if tools:
         body["tools"] = [{"type": "function", "function": {
@@ -148,7 +182,7 @@ def _translate(request: dict[str, Any], model: str, provider: Provider) -> dict[
         choice = request.get("tool_choice") or {}
         if choice.get("type") == "tool":
             body["tool_choice"] = {"type": "function", "function": {"name": choice["name"]}}
-    body.update(dict(provider.extra_body))
+    body.update(dict(spec.extra_body))
     return body
 
 
@@ -161,7 +195,7 @@ class ProviderAnswer:
     finish_reason: str | None = None
 
 
-async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> ProviderAnswer:
+async def call(ref: str, request: dict[str, Any], *, timeout: float = 120.0) -> ProviderAnswer:
     """Send an Anthropic-shaped request to an approved non-Anthropic provider."""
     name, model = parse_ref(ref)
     provider = PROVIDERS.get(name)
@@ -174,9 +208,10 @@ async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> P
         raise ProviderRefused(f"{provider.key_setting} is not set")
 
     body = _translate(request, model, provider)
+    spec = _spec(provider, model)
     headers = {h: v.format(key=key) for h, v in provider.headers}
     async with httpx.AsyncClient(timeout=timeout) as http:
-        response = await http.post(f"{provider.base_url}/chat/completions", json=body, headers=headers)
+        response = await http.post(f"{provider.base_url}{spec.path}", json=body, headers=headers)
     response.raise_for_status()
     data = response.json()
 
@@ -205,7 +240,7 @@ async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> P
     prompt = int(raw.get("prompt_tokens") or 0)
     cached = int((raw.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
     completion = int(raw.get("completion_tokens") or 0)
-    rate_in, rate_cached, rate_out = _rates(provider, model)
+    rate_in, rate_cached, rate_out = spec.pricing
     rupees = ((prompt - cached) * rate_in + cached * rate_cached + completion * rate_out) / 1_000_000
     return ProviderAnswer(
         tool_input=tool_input,
