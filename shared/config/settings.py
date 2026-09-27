@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     claude_deep_model: str = Field(
         default="claude-sonnet-5", alias="CLAUDE_DEEP_MODEL"
     )
+    # Shadow-testing a cheaper model on real traffic, per task - see
+    # shared/ai/router.py. JSON, e.g.
+    #   {"extract_signals": {"model": "claude-haiku-4-5", "rate": 1.0}}
+    # Empty (the default) = no shadow calls at all, no extra spend.
+    ai_shadow_routes: str = Field(default="", alias="AI_SHADOW_ROUTES")
 
     # ── Google / Microsoft (email channels) ──────────────────────────────────
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")

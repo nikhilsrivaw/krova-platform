@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from anthropic import AsyncAnthropic, APIError, APIStatusError
 
+from shared.ai import router
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
 
@@ -192,6 +193,16 @@ async def complete(
         cache_read_input_tokens=cache_read,
     )
     _log_usage(task, model, usage, cost)
+
+    # A candidate model being proven on this task answers the same request
+    # in the background; its answer is stored for comparison, never used.
+    shadow = router.shadow_for(task)
+    if shadow is not None and shadow.model != model:
+        router.start_shadow(
+            route=shadow, task=task, request=kwargs, primary_model=model,
+            primary_content=response.content, primary_cost_paise=cost,
+        )
+
     return Completion(
         text="".join(text_parts),
         tool_input=tool_input,

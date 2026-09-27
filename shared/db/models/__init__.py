@@ -1,7 +1,7 @@
 """Every model, imported here so Alembic and SQLAlchemy see the full metadata."""
 
 from shared.db.base import Base
-from shared.db.models.billing import UsageEvent, UsageEventType
+from shared.db.models.billing import AiShadowRun, UsageEvent, UsageEventType
 from shared.db.models.canned_response import CannedResponse
 from shared.db.models.case import Case, CaseStatus
 from shared.db.models.claim import ClaimStatus, InsuranceClaim
@@ -188,6 +188,7 @@ __all__ = [
     "TemplateStatus",
     "UsageEvent",
     "UsageEventType",
+    "AiShadowRun",
     "User",
     "VoiceProvisioning",
     "VoiceProvisioningStatus",

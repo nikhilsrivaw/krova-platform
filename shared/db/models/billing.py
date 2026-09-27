@@ -113,3 +113,38 @@ class UsageEvent(UUIDMixin, Base):
         Index("idx_usage_events_business_occurred", "business_id", "occurred_at"),
         Index("idx_usage_events_business_type", "business_id", "event_type", "occurred_at"),
     )
+
+
+class AiShadowRun(UUIDMixin, Base):
+    """
+    One real AI call answered twice: by the model that served it, and
+    silently by a cheaper candidate (shared/ai/router.py's shadow mode).
+
+    Only the primary's answer is ever used. This table exists so the two
+    can be compared offline - scripts/ai_shadow_report.py - before any task
+    is moved to the cheaper model, which is how "no loss in how KROVA works"
+    gets proven rather than assumed (docs/new/ai-router-rules.md §5).
+
+    `input_excerpt` is the tail of the request's final text block - the
+    conversation, not the whole knowledge base - enough for a person to
+    judge two replies side by side. It is customer conversation text, the
+    same data the messages table already holds, and it lives only while a
+    shadow test runs: the table is meant to be truncated once a task's
+    decision is made.
+    """
+
+    __tablename__ = "ai_shadow_runs"
+
+    task: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_model: Mapped[str] = mapped_column(String(64), nullable=False)
+    shadow_model: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_output: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    shadow_output: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    input_excerpt: Mapped[str | None] = mapped_column(String, nullable=True)
+    primary_cost_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shadow_cost_paise: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_ai_shadow_runs_task_created", "task", "created_at"),)
