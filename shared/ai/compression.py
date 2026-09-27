@@ -187,6 +187,7 @@ async def compress(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="deep",
+        task="compress_profile",
         tool=SUMMARY_TOOL,
         max_tokens=1024,
     )

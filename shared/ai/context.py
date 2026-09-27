@@ -171,6 +171,17 @@ class AgentContext:
         return self.render_static() + "\n" + self.render_conversation()
 
     def _static_lines(self) -> list[str]:
+        return self._business_lines() + self._live_lines()
+
+    def _business_lines(self) -> list[str]:
+        """
+        Everything that is the same for every customer of this business -
+        who it is, how it speaks, its rules, prices and the whole knowledge
+        base. Nothing time- or customer-dependent may go in here: this block
+        is sent as a prompt-cache prefix (render_business), and a single
+        changed byte - a live slot list, a customer's name - would make
+        every reply re-pay for the full knowledge base.
+        """
         lines: list[str] = [f"You are answering on behalf of {self.business_name}."]
 
         if self.dna_summary:
@@ -196,14 +207,6 @@ class AgentContext:
             lines.append(f"\nWhat they offer:\n{self.offerings}")
         if self.opening_hours:
             lines.append(f"\nOpening hours:\n{self.opening_hours}")
-        if self.availability is not None:
-            lines.append(
-                "\nReal current availability (only source of truth for booking "
-                f"- do not invent times outside this):\n{self.availability}"
-                if self.availability
-                else "\nReal current availability: nothing free in the near term. "
-                "Escalate any booking request rather than guessing."
-            )
 
         for item in self.knowledge:
             # A price list is authoritative and must be quoted exactly; an FAQ
@@ -215,6 +218,25 @@ class AgentContext:
                 else "use as reference"
             )
             lines.append(f"\n{item['title']} ({weight}):\n{item['content']}")
+
+        return lines
+
+    def _live_lines(self) -> list[str]:
+        """
+        The part of the static context that differs per customer or moves
+        by the minute - availability, then everything about this customer.
+        Kept after _business_lines so the business block stays a
+        byte-identical prefix; see render_business.
+        """
+        lines: list[str] = []
+        if self.availability is not None:
+            lines.append(
+                "Real current availability (only source of truth for booking "
+                f"- do not invent times outside this):\n{self.availability}"
+                if self.availability
+                else "Real current availability: nothing free in the near term. "
+                "Escalate any booking request rather than guessing."
+            )
 
         lines.append("\n---\n")
         who = self.customer_name or "This customer"
@@ -306,6 +328,14 @@ class AgentContext:
         """
         return "\n".join(self._static_lines())
 
+    def render_business(self) -> str:
+        """The per-business, cacheable half of render_static - see _business_lines."""
+        return "\n".join(self._business_lines())
+
+    def render_live(self) -> str:
+        """render_static minus render_business: availability and this customer."""
+        return "\n".join(self._live_lines())
+
     def render_conversation(self) -> str:
         """The growing half - see render_static."""
         lines = ["\n---\n\nThe conversation so far:"]
@@ -362,7 +392,7 @@ async def build(
             KnowledgeItem.business_id == business_id,
             KnowledgeItem.active == True,  # noqa: E712
         )
-        .order_by(KnowledgeItem.kind)
+        .order_by(KnowledgeItem.kind, KnowledgeItem.id)
     )
     knowledge_items = list(knowledge.scalars().all())
 
@@ -647,7 +677,7 @@ async def build_anonymous(
             KnowledgeItem.business_id == business_id,
             KnowledgeItem.active == True,  # noqa: E712
         )
-        .order_by(KnowledgeItem.kind)
+        .order_by(KnowledgeItem.kind, KnowledgeItem.id)
     )
     knowledge_items = list(knowledge.scalars().all())
 

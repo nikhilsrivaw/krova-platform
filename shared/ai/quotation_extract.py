@@ -243,6 +243,7 @@ async def extract(
     messages: list[dict],
     business_context: str,
     now: datetime | None = None,
+    cache: bool = False,
 ) -> Extraction:
     """
     Read a conversation and return the quotation in it, if there is one.
@@ -268,7 +269,9 @@ async def extract(
     completion = await client.complete(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
+        cache_system=cache,
         speed="deep",
+        task="extract_quotation",
         tool=EXTRACT_TOOL,
         max_tokens=1024,
     )

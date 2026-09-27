@@ -102,6 +102,7 @@ async def draft(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="carousel_draft",
         tool=DRAFT_TOOL,
         max_tokens=1024,
     )

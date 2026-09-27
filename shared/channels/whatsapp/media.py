@@ -194,6 +194,7 @@ async def describe(media: Media, catalog_products: list[dict] | None = None) -> 
                 }
             ],
             speed="deep",
+            task="image_catalog_match" if catalog_products else "image_describe",
             max_tokens=1024,
         )
     except ai.AIError:

@@ -116,6 +116,7 @@ async def summarize(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="call_summary",
         tool=SUMMARIZE_TOOL,
         max_tokens=300,
     )

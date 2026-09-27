@@ -297,6 +297,7 @@ async def extract(
     messages: list[dict],
     business_context: str,
     now: datetime | None = None,
+    cache: bool = False,
 ) -> Extraction:
     """
     Read a conversation and return the promises in it.
@@ -322,7 +323,9 @@ async def extract(
     completion = await client.complete(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
+        cache_system=cache,
         speed="deep",
+        task="extract_commitments",
         tool=EXTRACT_TOOL,
         max_tokens=2048,
     )

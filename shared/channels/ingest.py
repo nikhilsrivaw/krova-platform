@@ -14,7 +14,7 @@ covering phone calls with no extra code.
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -40,6 +40,12 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 ANALYSE_QUEUE = "analyse_message"
+# Extraction waits this long before it runs, so a customer's burst of short
+# messages ("hi" / "price?" / "for 2" / "tomorrow 5pm") is analysed once, by
+# the last message's job, instead of once per line - see
+# services/workers/analyse.py::_superseded. Replies are NOT delayed; they
+# run on their own queue.
+ANALYSIS_DELAY = timedelta(seconds=60)
 DRAFT_QUEUE = "draft_reply"
 
 
@@ -261,7 +267,8 @@ async def ingest(
         # guarantee rather than a promise, and it is why reading a mixed
         # Instagram inbox is defensible at all.
         await queue.enqueue(
-            ANALYSE_QUEUE, {"message_id": str(message.id)}, db
+            ANALYSE_QUEUE, {"message_id": str(message.id)}, db,
+            run_after=datetime.now(timezone.utc) + ANALYSIS_DELAY,
         )
         # Inbound messages also get a reply drafted. Separate queue, because
         # extraction can take its time and a reply cannot - a customer waiting

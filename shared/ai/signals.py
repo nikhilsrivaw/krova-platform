@@ -285,6 +285,7 @@ async def extract(
     business_context: str,
     now: datetime | None = None,
     include_product: bool = True,
+    cache: bool = False,
 ) -> Extraction:
     """
     Read a conversation and return the signals in it.
@@ -321,7 +322,9 @@ async def extract(
     completion = await client.complete(
         system=SYSTEM if include_product else CONVERSATION_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
+        cache_system=cache,
         speed="deep",
+        task="extract_signals",
         tool=_tool(kinds),
         max_tokens=2048,
     )

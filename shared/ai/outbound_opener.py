@@ -73,6 +73,7 @@ async def draft(agent_context: ctx.AgentContext, *, reason: str) -> Opener:
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="outbound_opener",
         max_tokens=150,
     )
 
@@ -138,6 +139,7 @@ async def draft_stream(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="outbound_opener_stream",
         max_tokens=150,
     )
 

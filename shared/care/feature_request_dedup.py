@@ -77,6 +77,7 @@ async def _match(new_title: str, new_body: str | None, candidates: list[Insight]
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="feature_request_dedup",
         tool=MATCH_TOOL,
         max_tokens=256,
     )

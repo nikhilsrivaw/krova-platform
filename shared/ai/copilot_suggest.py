@@ -62,6 +62,7 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="copilot_suggest",
         max_tokens=150,
     )
 
@@ -103,6 +104,7 @@ async def translate(text: str, *, target_language: str) -> Translation:
         system=TRANSLATE_SYSTEM,
         messages=[{"role": "user", "content": f'Target language code: {target_language}\n\nCaller said:\n"{text}"'}],
         speed="fast",
+        task="copilot_translate",
         max_tokens=150,
     )
     translated = completion.text.strip()

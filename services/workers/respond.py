@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
 from shared.ai import agent as agent_module
-from shared.ai import auto_send_gate
+from shared.ai import auto_send_gate, cache_policy
 from shared.ai import context as agent_context
 from shared.ai.client import AIError
 from shared.auth.encryption import decrypt
@@ -238,7 +238,9 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     context = await agent_context.build(message.business_id, message.customer_id, db)
 
     try:
-        proposal = await agent_module.draft_reply(context)
+        proposal = await agent_module.draft_reply(
+            context, cache=await cache_policy.business_recently_active(message.business_id, db)
+        )
     except AIError:
         # Let the queue retry with backoff rather than losing the reply.
         raise

@@ -64,10 +64,14 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
         # worth compressing and nothing that should be.
         return False
 
+    # The newest MAX_MESSAGES, oldest first. Ordering ascending before the
+    # limit returned a long-standing customer's FIRST 200 messages instead,
+    # so their profile never saw anything recent - compression.py trims to
+    # the last MAX_MESSAGES itself, which is what it always meant.
     rows = await db.execute(
         select(Message)
         .where(Message.customer_id == customer_id)
-        .order_by(Message.occurred_at)
+        .order_by(Message.occurred_at.desc())
         .limit(compression.MAX_MESSAGES)
     )
     messages = [
@@ -78,7 +82,7 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
             "text": m.content,
             "occurred_at": m.occurred_at,
         }
-        for m in rows.scalars().all()
+        for m in reversed(rows.scalars().all())
     ]
 
     commitment_rows = await db.execute(

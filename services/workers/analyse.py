@@ -14,10 +14,11 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
+from shared.ai import cache_policy, extraction_gate
 from shared.ai import commitments as extractor
 from shared.ai import quotation_extract as quotation_extractor
 from shared.ai import signals as signal_extractor
@@ -142,7 +143,7 @@ async def _existing_signal_titles(customer_id: uuid.UUID, db: AsyncSession) -> s
 
 async def _extract_signals(
     message: Message, conversation: list[dict], business_context: str, db: AsyncSession,
-    *, include_product: bool,
+    *, include_product: bool, cache: bool = False,
 ) -> int:
     """
     Conversation signals stored as Insight rows. `include_product` picks the
@@ -153,7 +154,7 @@ async def _extract_signals(
     try:
         extraction = await signal_extractor.extract(
             messages=conversation, business_context=business_context,
-            include_product=include_product,
+            include_product=include_product, cache=cache,
         )
     except AIError:
         raise
@@ -214,7 +215,8 @@ async def _extract_signals(
 
 
 async def _extract_quotation(
-    message: Message, conversation: list[dict], business_context: str, db: AsyncSession
+    message: Message, conversation: list[dict], business_context: str, db: AsyncSession,
+    *, cache: bool = False,
 ) -> None:
     """
     Pull a price quotation out of the thread, if the business gave one.
@@ -231,7 +233,7 @@ async def _extract_quotation(
     """
     try:
         extraction = await quotation_extractor.extract(
-            messages=conversation, business_context=business_context
+            messages=conversation, business_context=business_context, cache=cache
         )
     except AIError:
         # Never fail the whole analysis job over the quotation pass - the
@@ -303,6 +305,72 @@ async def _extract_quotation(
     )
 
 
+async def _superseded(message: Message, db: AsyncSession) -> bool:
+    """
+    Is a newer inbound message from this customer still waiting for its own
+    analysis? Then that run will read this message too (it reads the last
+    CONTEXT_MESSAGES of the thread) and mark it analysed - running here as
+    well would pay for the same conversation twice. Customers type in
+    bursts ("hi" / "price?" / "for 2 people" / "tomorrow 5pm"), and the
+    analysis is enqueued with a short delay (ingest.ANALYSIS_DELAY) exactly
+    so a burst ends up as one run instead of one per line.
+
+    Same idea respond.py already uses for replies. If the newer message's
+    own job fails every retry, both stay unanalysed and the nightly
+    analyse_business sweep picks them up.
+    """
+    result = await db.execute(
+        select(Message.id)
+        .where(
+            Message.business_id == message.business_id,
+            Message.customer_id == message.customer_id,
+            Message.direction == Direction.inbound,
+            Message.occurred_at > message.occurred_at,
+            Message.analysed_at.is_(None),
+        )
+        .limit(1)
+    )
+    return result.scalars().first() is not None
+
+
+async def _window(message: Message, db: AsyncSession) -> list[dict]:
+    """
+    Every message in this thread since the last analysed inbound message, up
+    to and including this one - what is new to the extractors. Outbound
+    messages are included on purpose; see shared/ai/extraction_gate.py.
+    """
+    last = (
+        await db.execute(
+            select(func.max(Message.occurred_at)).where(
+                Message.business_id == message.business_id,
+                Message.customer_id == message.customer_id,
+                Message.direction == Direction.inbound,
+                Message.analysed_at.is_not(None),
+                Message.occurred_at < message.occurred_at,
+            )
+        )
+    ).scalar()
+    query = select(Message).where(
+        Message.business_id == message.business_id,
+        Message.customer_id == message.customer_id,
+        Message.occurred_at <= message.occurred_at,
+    )
+    if last is not None:
+        query = query.where(Message.occurred_at > last)
+    rows = (
+        await db.execute(query.order_by(Message.occurred_at.desc()).limit(CONTEXT_MESSAGES))
+    ).scalars().all()
+    return [
+        {
+            "direction": m.direction.value if hasattr(m.direction, "value") else m.direction,
+            "channel": m.channel.value if hasattr(m.channel, "value") else m.channel,
+            "text": m.content,
+            "media": m.media or {},
+        }
+        for m in reversed(rows)
+    ]
+
+
 async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
     """
     Read the conversation this message belongs to and record any promises.
@@ -320,6 +388,23 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         # stays stored; nothing is derived from it.
         return 0
 
+    if message.analysed_at is not None:
+        # A later run already read this message as part of the thread (see
+        # the bulk mark at the end of this function).
+        return 0
+
+    if message.direction == Direction.inbound and await _superseded(message, db):
+        logger.debug("message %s superseded before analysis", message_id)
+        return 0
+
+    window = await _window(message, db)
+    if extraction_gate.window_is_trivial(window):
+        # Only an "ok" / 👍 / sticker since the last analysis, and nothing
+        # from the business in between - no extractor could find anything.
+        message.analysed_at = datetime.now(timezone.utc)
+        logger.debug("message %s trivial, analysis skipped", message_id)
+        return 0
+
     business = await db.get(Business, message.business_id)
 
     conversation = await _conversation(message.business_id, message.customer_id, db)
@@ -327,10 +412,11 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         return 0
 
     context = await _business_context(message.business_id, db)
+    cache = await cache_policy.business_recently_active(message.business_id, db)
 
     try:
         extraction = await extractor.extract(
-            messages=conversation, business_context=context
+            messages=conversation, business_context=context, cache=cache
         )
     except AIError:
         # Let the job retry with backoff rather than dropping the message.
@@ -359,10 +445,19 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
     if business:
         product = verticals.has_capability(business, "product_feedback")
         if product or message.direction == Direction.inbound:
-            await _extract_signals(message, conversation, context, db, include_product=product)
+            await _extract_signals(
+                message, conversation, context, db, include_product=product, cache=cache
+            )
 
-    if business and verticals.has_capability(business, "quotations"):
-        await _extract_quotation(message, conversation, context, db)
+    # A quotation is the business naming a price - with no new business
+    # message carrying a number, price word or attachment since the last
+    # analysis, there is nothing new for this extractor to find.
+    if (
+        business
+        and verticals.has_capability(business, "quotations")
+        and extraction_gate.window_may_quote(window)
+    ):
+        await _extract_quotation(message, conversation, context, db, cache=cache)
 
     already = await _existing_quotes(message.customer_id, db)
     stored = 0
@@ -418,7 +513,22 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
                         doctor=doctor_obj, starts_at=appointment.starts_at,
                     )
 
-    message.analysed_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    message.analysed_at = now
+    # Every inbound message this run read is now analysed - including ones
+    # _superseded() told to wait for this run.
+    read_ids = [m["id"] for m in conversation if m["id"] != message.id]
+    if read_ids:
+        await db.execute(
+            update(Message)
+            .where(
+                Message.id.in_(read_ids),
+                Message.direction == Direction.inbound,
+                Message.analysed_at.is_(None),
+            )
+            .values(analysed_at=now)
+            .execution_options(synchronize_session=False)
+        )
 
     if stored or extraction.rejected:
         logger.info(

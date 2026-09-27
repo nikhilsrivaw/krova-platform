@@ -402,7 +402,10 @@ async def stream_reply(agent_context: ctx.AgentContext):
     # follow-up question's time-to-first-token actually goes when a
     # business has a real knowledge base loaded. now_line() is a date with
     # no clock time, so it stays inside the stable half without breaking
-    # the byte-for-byte match a cache hit needs.
+    # the byte-for-byte match a cache hit needs. Two breakpoints: the
+    # business block (render_business) is identical across every call and
+    # every customer of this business, so a second call reads it too; the
+    # customer half below it is identical across the turns of this call.
     stream = client.stream_text(
         system=SYSTEM_STREAM,
         messages=[{
@@ -410,7 +413,12 @@ async def stream_reply(agent_context: ctx.AgentContext):
             "content": [
                 {
                     "type": "text",
-                    "text": f"Today is {ctx.now_line()}.\n\n{agent_context.render_static()}",
+                    "text": agent_context.render_business(),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": f"Today is {ctx.now_line()}.\n\n{agent_context.render_live()}",
                     "cache_control": {"type": "ephemeral"},
                 },
                 {
@@ -423,6 +431,7 @@ async def stream_reply(agent_context: ctx.AgentContext):
             ],
         }],
         speed="fast",
+        task="reply_voice",
         max_tokens=300,
     )
 
@@ -576,6 +585,7 @@ async def stream_owner_reply(owner_context: ctx.OwnerContext, recent_turns: list
         system=OWNER_SYSTEM_STREAM,
         messages=messages,
         speed="fast",
+        task="reply_owner_voice",
         max_tokens=200,
     )
 
@@ -669,6 +679,7 @@ async def stream_scripted_reply(scripted_context: ctx.ScriptedContext, recent_tu
         system=SCRIPTED_SYSTEM_STREAM,
         messages=messages,
         speed="fast",
+        task="reply_scripted_voice",
         max_tokens=200,
     )
 
@@ -760,13 +771,21 @@ class Draft:
     share_catalog: bool = False
 
 
-async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) -> Draft:
+async def draft_reply(
+    agent_context: ctx.AgentContext, *, fast: bool = False, cache: bool = False
+) -> Draft:
     """
     Decide what to say to this customer.
 
     `fast` uses the low-latency model. Correct for a live call, where every
     millisecond is audible; wrong for a considered reply, where being right
     matters more than being quick.
+
+    `cache` marks the business block (its details and whole knowledge base,
+    identical for every customer) as a prompt-cache prefix - the caller
+    decides via shared/ai/cache_policy, since a write nobody reads back is
+    dearer than no cache. Either way the model sees the same text in the
+    same order.
     """
     if not agent_context.recent:
         return Draft(
@@ -781,7 +800,8 @@ async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) ->
 
     prompt = (
         f"Today is {ctx.now_line()}.\n\n"
-        f"{agent_context.render()}\n\n"
+        f"{agent_context.render_live()}\n"
+        f"{agent_context.render_conversation()}\n\n"
         "Decide how to handle the customer's most recent message."
     )
     if fast:
@@ -797,10 +817,19 @@ async def draft_reply(agent_context: ctx.AgentContext, *, fast: bool = False) ->
             "should be one short sentence, spoken naturally, not written."
         )
 
+    business_block: dict = {"type": "text", "text": agent_context.render_business()}
+    if cache:
+        business_block["cache_control"] = {"type": "ephemeral"}
+
     completion = await client.complete(
         system=SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{
+            "role": "user",
+            "content": [business_block, {"type": "text", "text": prompt}],
+        }],
+        cache_system=cache,
         speed="fast" if fast else "deep",
+        task="reply_text",
         tool=REPLY_TOOL,
         max_tokens=300 if fast else 1024,
     )

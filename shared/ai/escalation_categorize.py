@@ -62,6 +62,7 @@ async def categorize(reason: str) -> Category:
         system=SYSTEM,
         messages=[{"role": "user", "content": reason}],
         speed="fast",
+        task="escalation_categorize",
         max_tokens=20,
     )
     raw = completion.text.strip().lower()

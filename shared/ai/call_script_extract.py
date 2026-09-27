@@ -102,6 +102,7 @@ async def extract(
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
         speed="fast",
+        task="call_script_extract",
         tool=EXTRACT_TOOL,
         max_tokens=600,
     )
