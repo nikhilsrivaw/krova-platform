@@ -50,6 +50,11 @@ class Provider:
     pricing: tuple[tuple[str, tuple[float, float, float]], ...]
     # Extra body fields every request to this provider carries.
     extra_body: tuple[tuple[str, Any], ...] = ()
+    # Reasoning models spend output tokens thinking before they answer, and
+    # those count against max_tokens. Added on top of the caller's budget so
+    # the thinking cannot use up the room the actual answer needs - the
+    # caller's max_tokens was sized for the answer alone.
+    reasoning_headroom: int = 0
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -64,6 +69,7 @@ PROVIDERS: dict[str, Provider] = {
         vision=False,
         pricing=(("sarvam-105b", (29.28, 10.98, 73.2)),),
         extra_body=(("reasoning_effort", "low"),),
+        reasoning_headroom=6000,
     ),
     # Gemini's OpenAI-compatible endpoint (paid tier only - the free tier
     # trains on content). USD list prices converted.
@@ -133,7 +139,7 @@ def _translate(request: dict[str, Any], model: str, provider: Provider) -> dict[
             out_messages.append({"role": message["role"], "content": parts})
 
     body: dict[str, Any] = {"model": model, "messages": out_messages,
-                            "max_tokens": request.get("max_tokens", 2048)}
+                            "max_tokens": request.get("max_tokens", 2048) + provider.reasoning_headroom}
     tools = request.get("tools") or []
     if tools:
         body["tools"] = [{"type": "function", "function": {
@@ -152,6 +158,7 @@ class ProviderAnswer:
     text: str
     usage: SimpleNamespace  # input_tokens / output_tokens / cache_read_input_tokens / cache_creation_input_tokens
     cost_paise: int
+    finish_reason: str | None = None
 
 
 async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> ProviderAnswer:
@@ -173,7 +180,9 @@ async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> P
     response.raise_for_status()
     data = response.json()
 
-    message = (data.get("choices") or [{}])[0].get("message") or {}
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    finish_reason = choice.get("finish_reason")
     tool_input = None
     for call_ in message.get("tool_calls") or []:
         try:
@@ -183,6 +192,14 @@ async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> P
         if isinstance(parsed, dict):
             tool_input = parsed
             break
+
+    if body.get("tool_choice") and tool_input is None:
+        # A forced tool that never came back reads downstream as "found
+        # nothing" - indistinguishable from a real empty answer. Say so.
+        logger.warning(
+            "provider %s returned no tool call (finish_reason=%s, content=%r)",
+            ref, finish_reason, (message.get("content") or "")[:200],
+        )
 
     raw = data.get("usage") or {}
     prompt = int(raw.get("prompt_tokens") or 0)
@@ -196,4 +213,5 @@ async def call(ref: str, request: dict[str, Any], *, timeout: float = 60.0) -> P
         usage=SimpleNamespace(input_tokens=prompt - cached, output_tokens=completion,
                               cache_read_input_tokens=cached, cache_creation_input_tokens=0),
         cost_paise=round(rupees * 100),
+        finish_reason=finish_reason,
     )

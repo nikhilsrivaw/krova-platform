@@ -37,6 +37,9 @@ async def via_provider(**kw):
     captured.setdefault("cost", 0)
     captured["cost"] += ans.cost_paise
     captured["out"] = captured.get("out", 0) + ans.usage.output_tokens
+    print(f"      [{kw['tool']['name']}] finish={ans.finish_reason} tool_call={'yes' if ans.tool_input is not None else 'NO'} "
+          f"in={ans.usage.input_tokens + ans.usage.cache_read_input_tokens} out={ans.usage.output_tokens} "
+          f"cost={ans.cost_paise}p" + ("" if ans.tool_input is not None else f" text={ans.text[:160]!r}"))
     return client.Completion(text=ans.text, tool_input=ans.tool_input, input_tokens=ans.usage.input_tokens,
                              output_tokens=ans.usage.output_tokens, cost_paise=ans.cost_paise, model=REF)
 
