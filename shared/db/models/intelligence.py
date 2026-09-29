@@ -100,6 +100,16 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         ForeignKey("appointments.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Set for an advance/proforma-payment commitment against a Type 1 quote
+    # (docs/new/type-1-backlog.md #2) - what makes QuotationStatus.won not a
+    # dead end. SET NULL if the quotation itself is later deleted; the
+    # commitment (and whatever was paid) stays on the Ledger regardless,
+    # same reasoning as appointment_id above.
+    quotation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("quotations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     direction: Mapped[CommitmentDirection] = mapped_column(EnumType(CommitmentDirection, 20), nullable=False)
     kind: Mapped[CommitmentKind] = mapped_column(

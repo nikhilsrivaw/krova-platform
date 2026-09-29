@@ -249,6 +249,14 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     # Business.settings["pipeline_stages"].
     stage: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
+    # A business's own pricing/buyer tier ("Dealer A", "Distributor B"), free
+    # text and set by hand, same convention as stage above. Type 1's
+    # price-consistency check (docs/new/type-1-backlog.md #1) needs this to
+    # tell a legitimate per-tier price difference apart from two reps
+    # quoting the same tier differently - without it, every tiered pricing
+    # structure looks like an inconsistency.
+    price_tier: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
     # What this relationship is worth if it closes, set by hand at the stage
     # it is currently in. Deliberately separate from Commitment: a commitment
     # is a promise already made ("I'll pay ₹5,000 Friday"), read from a real

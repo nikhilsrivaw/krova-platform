@@ -19,6 +19,10 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared import verticals
 from shared.db.models import (
     Business,
+    Commitment,
+    CommitmentDirection,
+    CommitmentKind,
+    CommitmentStatus,
     Customer,
     Quotation,
     QuotationItem,
@@ -384,3 +388,53 @@ async def revise_quotation(
     items = await _load_items([revision.id], db)
     customer = await db.get(Customer, revision.customer_id)
     return _to_out(revision, items.get(revision.id, []), customer.display_name if customer else None)
+
+
+class RecordAdvanceIn(BaseModel):
+    amount_paise: int = Field(gt=0)
+    due_at: datetime | None = None
+    description: str | None = None
+
+
+@router.post("/{quotation_id}/record-advance")
+async def record_advance(
+    quotation_id: uuid.UUID, body: RecordAdvanceIn, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    Record the advance/proforma payment a won quote is waiting on - Type 1
+    backlog #2, closing the dead end QuotationStatus.won is today.
+
+    A Commitment, not new machinery - the shape money-owed-against-a-quote
+    already had. Deliberately manual (amount and due date typed by staff,
+    never guessed from the quote total) - the extractor may already have
+    caught "50% advance, balance before dispatch" as its own Commitment if
+    the business said it in the conversation; this exists for every other
+    case, and for linking either kind back to the quote via quotation_id so
+    it stops showing up under GET /ledger/missing-advances.
+    """
+    quotation = await db.get(Quotation, quotation_id)
+    if quotation is None or quotation.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quotation not found")
+    if quotation.status != QuotationStatus.won:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Only a won quotation has an advance to record",
+        )
+
+    commitment = Commitment(
+        business_id=current_user.business,
+        customer_id=quotation.customer_id,
+        quotation_id=quotation.id,
+        direction=CommitmentDirection.they_owe,
+        kind=CommitmentKind.payment,
+        description=body.description or f"Advance for quotation {quotation.reference or quotation.id}",
+        amount_paise=body.amount_paise,
+        due_at=body.due_at,
+        due_at_explicit=body.due_at is not None,
+        status=CommitmentStatus.open,
+        confidence=1.0,
+        source_message_ids=[],
+    )
+    db.add(commitment)
+    await db.commit()
+    return {"commitment_id": str(commitment.id), "quotation_id": str(quotation.id)}

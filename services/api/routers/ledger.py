@@ -98,6 +98,37 @@ class LedgerSummary(BaseModel):
     unconfirmed_count: int
 
 
+class DeliveryPromiseOut(BaseModel):
+    commitment_id: str
+    customer_name: str
+    description: str
+    due_at: datetime | None
+    overdue: bool
+    source_quote: str | None
+
+
+class MissingAdvanceOut(BaseModel):
+    quotation_id: str
+    reference: str | None
+    customer_name: str
+    total_paise: int | None
+    won_at: datetime | None
+
+
+class PriceInconsistencyQuoteOut(BaseModel):
+    quotation_id: str
+    reference: str | None
+    customer_name: str
+    unit_price_paise: int
+
+
+class PriceInconsistencyOut(BaseModel):
+    variant_id: str
+    variant_title: str | None
+    price_tier: str | None
+    quotes: list[PriceInconsistencyQuoteOut]
+
+
 class EvidenceMessage(BaseModel):
     id: str
     channel: str
@@ -169,6 +200,64 @@ async def ledger_summary(current_user: CurrentUserDep, db: DbDep) -> LedgerSumma
         open_count=t.open_count,
         unconfirmed_count=t.unconfirmed_count,
     )
+
+
+@router.get("/delivery-promises", response_model=list[DeliveryPromiseOut])
+async def delivery_promises(current_user: CurrentUserDep, db: DbDep) -> list[DeliveryPromiseOut]:
+    """
+    What this business promised to deliver, and what's already late - Type
+    1 backlog #3. See shared/care/ledger_queries.py::open_delivery_promises.
+    """
+    rows = await ledger_queries.open_delivery_promises(current_user.business, db)
+    return [
+        DeliveryPromiseOut(
+            commitment_id=str(r.commitment_id), customer_name=r.customer_name,
+            description=r.description, due_at=r.due_at, overdue=r.overdue,
+            source_quote=r.source_quote,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/missing-advances", response_model=list[MissingAdvanceOut])
+async def missing_advances(current_user: CurrentUserDep, db: DbDep) -> list[MissingAdvanceOut]:
+    """
+    Won quotes with no advance/proforma payment on the Ledger yet - Type 1
+    backlog #2. See shared/care/ledger_queries.py::quotations_missing_advance.
+    Record one against a quote with quotations.py's record-advance endpoint.
+    """
+    rows = await ledger_queries.quotations_missing_advance(current_user.business, db)
+    return [
+        MissingAdvanceOut(
+            quotation_id=str(r.quotation_id), reference=r.reference,
+            customer_name=r.customer_name, total_paise=r.total_paise, won_at=r.won_at,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/price-inconsistencies", response_model=list[PriceInconsistencyOut])
+async def price_inconsistencies(current_user: CurrentUserDep, db: DbDep) -> list[PriceInconsistencyOut]:
+    """
+    The same product quoted at different prices within the same pricing
+    tier - Type 1 backlog #1. See shared/care/ledger_queries.py::
+    price_inconsistencies for why this is grouped by (variant, price_tier)
+    rather than by variant alone. Set a customer's tier from the CRM page
+    first, or every tiered business sees only noise here.
+    """
+    rows = await ledger_queries.price_inconsistencies(current_user.business, db)
+    return [
+        PriceInconsistencyOut(
+            variant_id=str(r.variant_id), variant_title=r.variant_title, price_tier=r.price_tier,
+            quotes=[
+                PriceInconsistencyQuoteOut(
+                    quotation_id=str(qid), reference=ref, customer_name=name, unit_price_paise=price,
+                )
+                for qid, ref, name, price in r.quotes
+            ],
+        )
+        for r in rows
+    ]
 
 
 @router.get("/commitments", response_model=list[CommitmentOut])

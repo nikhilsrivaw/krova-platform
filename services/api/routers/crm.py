@@ -440,6 +440,26 @@ async def set_payer(
     }
 
 
+class PriceTierIn(BaseModel):
+    price_tier: str | None = Field(default=None, max_length=60)
+
+
+@router.patch("/customers/{customer_id}/price-tier", response_model=dict)
+async def set_price_tier(
+    customer_id: uuid.UUID, body: PriceTierIn, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    Set (or clear) which pricing tier this customer is in - Type 1's own
+    words for it ("Dealer A", "Distributor B"), same free-text-by-hand
+    convention as stage above. No stage-changed-style event: nothing
+    downstream watches a tier change today, unlike a pipeline stage. Only
+    real effect: GET /ledger/price-inconsistencies groups by this.
+    """
+    customer = await _owned_customer(customer_id, current_user.business, db)
+    customer.price_tier = (body.price_tier or "").strip() or None
+    return {"customer_id": str(customer_id), "price_tier": customer.price_tier}
+
+
 class DealValueIn(BaseModel):
     # None clears it - a lead that turned out to have no realistic value.
     deal_value_paise: int | None = Field(default=None, ge=0)
