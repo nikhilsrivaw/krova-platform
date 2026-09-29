@@ -47,6 +47,11 @@ from shared.db.types import EnumType
 class AppointmentStatus(str, enum.Enum):
     requested = "requested"    # booked, not yet confirmed by staff (rare - most
                                 # bookings self-confirm once the slot is held)
+    # Holding the slot while a required deposit is outstanding - see
+    # shared/scheduling/deposits.py. The unique (doctor_id, starts_at) index
+    # protects the slot the same as any other status; a released one goes to
+    # `cancelled`, a paid one to `confirmed`, same as a normal booking.
+    awaiting_deposit = "awaiting_deposit"
     confirmed = "confirmed"
     visited = "visited"
     no_show = "no_show"
@@ -265,6 +270,12 @@ class Appointment(UUIDMixin, TimestampMixin, Base):
     # Same dedupe shape as reminder_24h_sent_at/reminder_2h_sent_at -
     # stamped once a review request has been sent for this appointment.
     review_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Set only while status=awaiting_deposit - the deadline a required
+    # deposit has to arrive by before shared/scheduling/deposits.py's sweep
+    # releases the slot. Null once the deposit is paid (status moves to
+    # confirmed) or the booking never required one.
+    deposit_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("idx_appointments_business", "business_id"),

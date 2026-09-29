@@ -634,6 +634,13 @@ async def _verify_and_close_payment(connection, reference_id: str, db) -> None:
         commitment.id, connection.business_id,
     )
 
+    if commitment.status == CommitmentStatus.met:
+        # A cheap no-op for every ordinary commitment - only a deposit
+        # (shared/scheduling/deposits.py) has appointment_id set.
+        from shared.scheduling import deposits
+
+        await deposits.resolve_deposit_paid(db, commitment=commitment)
+
 
 async def _record_native_order(
     business_id: uuid.UUID, customer_id: uuid.UUID, order_data: dict,

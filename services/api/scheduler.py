@@ -148,7 +148,26 @@ async def send_appointment_reminders() -> None:
             if sent:
                 logger.info("sent %s appointment reminder(s)", sent)
     except Exception:
-        logger.exception("appointment reminder job failed")
+        logger.exception("appointment reminder sweep failed")
+
+
+async def release_unpaid_deposit_holds() -> None:
+    """
+    Free a slot a deposit-gated booking held past its deadline - see
+    shared/scheduling/deposits.py. Businesses with no deposit policy set
+    never produce a row this query matches, so this is a no-op for them.
+    """
+    from shared.db.session import AsyncSessionLocal
+    from shared.scheduling import deposits
+
+    try:
+        async with AsyncSessionLocal() as db:
+            released = await deposits.release_unpaid_deposits(db)
+            await db.commit()
+            if released:
+                logger.info("released %s unpaid deposit hold(s)", released)
+    except Exception:
+        logger.exception("unpaid-deposit release sweep failed")
 
 
 async def send_due_recalls() -> None:
@@ -683,6 +702,14 @@ def build() -> AsyncIOScheduler:
         send_appointment_reminders,
         IntervalTrigger(minutes=15),
         id="send_appointment_reminders",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        release_unpaid_deposit_holds,
+        IntervalTrigger(minutes=15),
+        id="release_unpaid_deposit_holds",
         replace_existing=True,
         misfire_grace_time=900,
     )

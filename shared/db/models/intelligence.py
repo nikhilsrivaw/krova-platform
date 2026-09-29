@@ -91,6 +91,15 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         ForeignKey("customers.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Set only for a deposit-on-booking commitment (shared/scheduling/
+    # deposits.py) - the booking this money secures. SET NULL if the
+    # appointment itself is later deleted; the commitment (and whatever was
+    # paid) stays on the Ledger regardless.
+    appointment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     direction: Mapped[CommitmentDirection] = mapped_column(EnumType(CommitmentDirection, 20), nullable=False)
     kind: Mapped[CommitmentKind] = mapped_column(

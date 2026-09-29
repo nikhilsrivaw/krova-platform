@@ -21,13 +21,14 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
 from shared.care import ledger_queries
 from shared.db.models import (
     Appointment,
+    AppointmentStatus,
     Business,
     BusinessDNA,
     Case,
@@ -162,6 +163,11 @@ class AgentContext:
     # Dates the business set on this customer ("Renewal: 30 Oct 2026") -
     # so "meri membership kab khatam hai?" gets a real answer.
     key_dates: list[str] = field(default_factory=list)
+    # How many of this customer's past appointments were a no-show - scheduling
+    # capability only, 0 for everyone else. Lets the agent (and a deposit
+    # policy decision) see a repeat pattern instead of judging one booking in
+    # isolation. See shared/scheduling/deposits.py for the Type 4 gap this closes.
+    no_show_count: int = 0
     # Every message id the agent was shown, so a draft can cite its sources
     # the same way a commitment does.
     context_message_ids: list[uuid.UUID] = field(default_factory=list)
@@ -294,6 +300,12 @@ class AgentContext:
         if self.key_dates:
             lines.append("\nDates on file for this customer (set by the business):")
             lines.extend(f"- {d}" for d in self.key_dates)
+
+        if self.no_show_count >= 2:
+            lines.append(
+                f"\nThis customer has {self.no_show_count} past no-shows on record. "
+                "If a deposit policy is set up, mention it when confirming a new booking."
+            )
 
         if self.paid_by:
             lines.append(f"\nPayments for this person are made by: {self.paid_by}")
@@ -461,6 +473,17 @@ async def build(
     escalate_immediately = (
         verticals.get(business.vertical).get("escalate_immediately", []) if business else []
     )
+
+    no_show_count = 0
+    if business and verticals.has_capability(business, "scheduling"):
+        no_show_count = (
+            await db.execute(
+                select(func.count(Appointment.id)).where(
+                    Appointment.customer_id == customer_id,
+                    Appointment.status == AppointmentStatus.no_show,
+                )
+            )
+        ).scalar_one()
 
     availability_text: str | None = None
     if business and verticals.has_capability(business, "scheduling"):
@@ -639,6 +662,7 @@ async def build(
         paid_by=paid_by_name,
         pays_for=pays_for,
         key_dates=key_dates,
+        no_show_count=no_show_count,
         context_message_ids=[m.id for m in messages],
     )
 

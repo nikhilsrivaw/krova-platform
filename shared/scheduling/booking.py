@@ -29,7 +29,7 @@ from shared.db.models import (
 )
 from shared import verticals
 from shared.integrations import google_calendar, webhooks
-from shared.scheduling import availability
+from shared.scheduling import availability, deposits
 from shared.scheduling.availability import Slot
 from shared.utils.logging import get_logger
 
@@ -72,6 +72,15 @@ async def book(
     # bug this replaced. Plain locals sidestep the whole question.
     doctor_id, slot_start = doctor.id, slot.starts_at
 
+    # A deposit-gated business gets the slot held (the unique index below
+    # protects it exactly the same regardless of status) but not confirmed -
+    # see shared/scheduling/deposits.py. Read once, before the insert, so
+    # the same policy decides both the status and whether request_deposit
+    # runs after.
+    business = await db.get(Business, business_id)
+    policy = deposits.deposit_policy(business) if business is not None else None
+    initial_status = AppointmentStatus.awaiting_deposit if policy else AppointmentStatus.confirmed
+
     appointment = Appointment(
         business_id=business_id,
         doctor_id=doctor_id,
@@ -79,7 +88,7 @@ async def book(
         property_id=property_id,
         starts_at=slot.starts_at,
         ends_at=slot.ends_at,
-        status=AppointmentStatus.confirmed,
+        status=initial_status,
         intake_channel=intake_channel,
         source_message_ids=source_message_ids,
         notes=notes,
@@ -98,15 +107,25 @@ async def book(
         ) from exc
 
     logger.info(
-        "appointment booked id=%s doctor=%s channel=%s",
-        appointment.id, doctor_id, intake_channel.value,
+        "appointment booked id=%s doctor=%s channel=%s status=%s",
+        appointment.id, doctor_id, intake_channel.value, initial_status.value,
     )
+
+    if policy:
+        # Deposit outstanding: the booking-confirmed side effects below
+        # (calendar, webhook, automations) wait for deposits.resolve_deposit_paid
+        # instead of firing now on a slot that isn't really held yet.
+        try:
+            await deposits.request_deposit(db, business=business, appointment=appointment, customer=customer)
+        except deposits.DepositError:
+            pass  # already logged in request_deposit; the appointment stays
+                  # awaiting_deposit for staff to see and resend manually
+        return appointment
 
     # Best-effort side channels - a business's own calendar/webhook, never
     # allowed to undo or block the booking itself. Same "log and move on"
     # contract shared/scheduling/queue_booking.py's own notify call already
     # follows for the identical reason.
-    business = await db.get(Business, business_id)
     if business is not None:
         try:
             await google_calendar.sync_appointment(db, business=business, appointment=appointment, action="upsert")
