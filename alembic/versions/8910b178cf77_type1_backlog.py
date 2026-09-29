@@ -1,6 +1,6 @@
 """Type 1 backlog: commitments.quotation_id, customers.price_tier
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 8910b178cf77
 Revises: z9a0b1c2d3e4
 Create Date: 2026-09-29
 
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
-revision: str = 'a1b2c3d4e5f6'
+revision: str = '8910b178cf77'
 down_revision: str | None = 'z9a0b1c2d3e4'
 branch_labels = None
 depends_on = None

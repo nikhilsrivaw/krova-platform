@@ -1,7 +1,7 @@
 """Type 2's biggest known gap: installment plans
 
-Revision ID: b2c3d4e5f6a7
-Revises: a1b2c3d4e5f6
+Revision ID: 54350b20dbae
+Revises: 8910b178cf77
 Create Date: 2026-09-29
 
 "₹60,000 in 3 installments" is a series of dated obligations from one
@@ -20,8 +20,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PgUUID
 
-revision: str = 'b2c3d4e5f6a7'
-down_revision: str | None = 'a1b2c3d4e5f6'
+revision: str = '54350b20dbae'
+down_revision: str | None = '8910b178cf77'
 branch_labels = None
 depends_on = None
 
