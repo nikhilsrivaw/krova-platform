@@ -141,6 +141,20 @@ REPLY_TOOL = {
                     "what's on offer - never send it unprompted."
                 ),
             },
+            "cancel_appointment_at": {
+                "type": "string",
+                "description": (
+                    "ISO 8601 datetime of the customer's OWN existing booking to "
+                    "cancel - set this only when the business details list their "
+                    "upcoming booking(s) AND the customer has clearly asked to "
+                    "cancel one. The value must exactly match one of the times "
+                    "under 'Their upcoming booking(s)', character for character. "
+                    "If they have more than one upcoming booking and did not say "
+                    "which, ask which one instead of guessing - do not set this. "
+                    "Omit entirely otherwise, and never invent a time that was "
+                    "not shown to you."
+                ),
+            },
         },
         "required": ["action", "reasoning", "confidence"],
     },
@@ -769,6 +783,11 @@ class Draft:
     # touching that shared, proven header-parsing loop for a feature only
     # one of its two consumers would ever use is not worth the risk.
     share_catalog: bool = False
+    # ISO datetime of the customer's own existing booking to cancel - see
+    # REPLY_TOOL's cancel_appointment_at. Text-channel only, same "not worth
+    # the risk on the shared voice loop" call as share_catalog above; a
+    # customer cancelling mid-call escalates to a human instead.
+    cancel_appointment_at: str | None = None
 
 
 async def draft_reply(
@@ -868,6 +887,9 @@ async def draft_reply(
         book_property=(result.get("book_property") or "").strip() or None if action == "reply" else None,
         book_token=(result.get("book_token") or "").strip() or None if action == "reply" else None,
         share_catalog=bool(result.get("share_catalog")) if action == "reply" else False,
+        cancel_appointment_at=(
+            (result.get("cancel_appointment_at") or "").strip() or None if action == "reply" else None
+        ),
     )
 
 

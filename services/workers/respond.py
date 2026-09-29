@@ -93,6 +93,23 @@ async def _try_book(
     )
 
 
+async def _try_cancel(
+    proposal: agent_module.Draft, *, business: Business, customer: Customer, db: AsyncSession
+) -> Appointment | None:
+    """
+    Turn a model's cancel_appointment_at decision into a real cancellation.
+
+    Thin wrapper over shared/scheduling/booking.py's try_cancel_from_agent -
+    same shape as _try_book above, existing only to unpack a Draft.
+    """
+    return await scheduling_booking.try_cancel_from_agent(
+        db,
+        cancel_appointment_at=proposal.cancel_appointment_at,
+        business=business,
+        customer=customer,
+    )
+
+
 async def _try_book_token(
     proposal: agent_module.Draft,
     *,
@@ -285,6 +302,26 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                     db, business=business, customer=customer,
                     doctor=doctor, starts_at=appointment.starts_at,
                 )
+
+    if proposal.cancel_appointment_at:
+        cancelled = await _try_cancel(proposal, business=business, customer=customer, db=db)
+        if cancelled is None:
+            # Same reasoning as the book_slot branch above: the drafted
+            # message may already say "done, cancelled" for a time that
+            # matched nothing real - escalate rather than send that as fact.
+            logger.info(
+                "cancel_appointment_at %s matched nothing, escalating instead",
+                proposal.cancel_appointment_at,
+            )
+            proposal.action = "escalate"
+            proposal.message = None
+            proposal.gap = (
+                f"Customer asked to cancel a booking at {proposal.cancel_appointment_at}, "
+                "but no upcoming booking of theirs matched it"
+            )
+        # On success: the agent's own reply confirms it, and cancel() already
+        # fired the appointment_cancelled automation trigger and calendar
+        # sync - no separate notify() call needed here.
 
     if proposal.book_token:
         queue_entry = await _try_book_token(proposal, business=business, customer=customer, message=message, db=db)

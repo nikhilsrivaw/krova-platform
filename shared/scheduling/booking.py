@@ -283,6 +283,71 @@ async def try_book_from_agent(
         return None
 
 
+async def try_cancel_from_agent(
+    db: AsyncSession,
+    *,
+    cancel_appointment_at: str | None,
+    business: Business,
+    customer: Customer,
+) -> Appointment | None:
+    """
+    Turn an agent's cancel_appointment_at decision (REPLY_TOOL) into a real
+    cancellation, or None for every way this can legitimately fail: an
+    unparseable time, or no upcoming booking of this customer's own that
+    matches it exactly - the same "an unmatched value means do not trust the
+    rest of this either" rule try_book_from_agent's book_doctor/book_property
+    matching already follows.
+
+    Deliberately re-queries the customer's own appointments here rather than
+    trusting shared/ai/context.py's upcoming_bookings text - the same
+    "re-check, don't trust the context snapshot" discipline try_book_from_agent
+    applies to availability via open_slots(). Matches on business_id AND
+    customer_id, so a hallucinated or copied time from another customer's
+    booking can never cancel the wrong person's slot.
+
+    Text-channel only for now, called from respond.py alongside try_book -
+    see Draft.cancel_appointment_at's own docstring for why voice doesn't
+    get this yet.
+    """
+    if not cancel_appointment_at:
+        return None
+
+    if not verticals.has_capability(business, "scheduling"):
+        logger.warning(
+            "agent returned cancel_appointment_at for a non-scheduling business=%s, ignoring",
+            business.id,
+        )
+        return None
+
+    try:
+        requested = datetime.fromisoformat(cancel_appointment_at)
+    except ValueError:
+        logger.warning("agent returned unparseable cancel_appointment_at %r", cancel_appointment_at)
+        return None
+
+    appointment = (
+        await db.execute(
+            select(Appointment).where(
+                Appointment.business_id == business.id,
+                Appointment.customer_id == customer.id,
+                Appointment.starts_at == requested,
+                Appointment.status.in_(
+                    [AppointmentStatus.confirmed, AppointmentStatus.awaiting_deposit,
+                     AppointmentStatus.requested]
+                ),
+            )
+        )
+    ).scalars().first()
+    if appointment is None:
+        logger.info(
+            "cancel_appointment_at %s matched no upcoming booking for customer=%s",
+            cancel_appointment_at, customer.id,
+        )
+        return None
+
+    return await cancel(db, appointment=appointment, reason="cancelled by the customer via chat")
+
+
 async def cancel(db: AsyncSession, *, appointment: Appointment, reason: str | None = None) -> Appointment:
     """Release a slot. The row stays - staff can still see it was booked and cancelled."""
     appointment.status = AppointmentStatus.cancelled

@@ -116,6 +116,11 @@ class AgentContext:
     # has no scheduling", distinct from "has it, nothing free" - the two must
     # read differently to the model, per the never-invent-availability rule.
     availability: str | None
+    # Same convention as availability, but this customer's OWN upcoming
+    # booking(s) rather than what's free - the source cancel_appointment_at
+    # must be matched against, verbatim. None when the vertical has no
+    # scheduling capability; empty string means "has it, nothing upcoming".
+    upcoming_bookings: str | None
     # Same convention as availability: rendered text, None when the
     # vertical has no case_tracking capability, distinct from "has it, no
     # open cases for this customer".
@@ -242,6 +247,15 @@ class AgentContext:
                 if self.availability
                 else "Real current availability: nothing free in the near term. "
                 "Escalate any booking request rather than guessing."
+            )
+
+        if self.upcoming_bookings is not None:
+            lines.append(
+                "\nTheir upcoming booking(s) - the only source of truth for "
+                f"cancel_appointment_at, matched verbatim:\n{self.upcoming_bookings}"
+                if self.upcoming_bookings
+                else "\nNo upcoming booking on record for this customer. If they "
+                "ask to cancel one, escalate rather than guessing which."
             )
 
         lines.append("\n---\n")
@@ -507,6 +521,32 @@ async def build(
             doctor_lines.append(f"- {doctor.name}: {times or 'nothing free in the next two weeks'}")
         availability_text = "\n".join(doctor_lines)
 
+    upcoming_bookings_text: str | None = None
+    if business and verticals.has_capability(business, "scheduling"):
+        upcoming = (
+            await db.execute(
+                select(Appointment)
+                .where(
+                    Appointment.customer_id == customer_id,
+                    Appointment.status.in_(
+                        [AppointmentStatus.confirmed, AppointmentStatus.awaiting_deposit,
+                         AppointmentStatus.requested]
+                    ),
+                    Appointment.starts_at >= datetime.now(timezone.utc),
+                )
+                .order_by(Appointment.starts_at.asc())
+                .limit(5)
+            )
+        ).scalars().all()
+        lines = []
+        for appt in upcoming:
+            # ISO, for the same reason availability_text above uses it - the
+            # model must echo this back verbatim in cancel_appointment_at to
+            # cancel the right one, never a human-friendly reformatting of it.
+            note = " (deposit not yet paid)" if appt.status == AppointmentStatus.awaiting_deposit else ""
+            lines.append(f"- {appt.starts_at.isoformat()}{note}")
+        upcoming_bookings_text = "\n".join(lines)
+
     cases_text: str | None = None
     if business and verticals.has_capability(business, "case_tracking"):
         rows = (
@@ -615,6 +655,7 @@ async def build(
         pricing_notes=dna.pricing_notes if dna else None,
         opening_hours=(dna.opening_hours if dna else {}) or {},
         availability=availability_text,
+        upcoming_bookings=upcoming_bookings_text,
         cases=cases_text,
         orders=orders_text,
         properties=properties_text,
@@ -758,6 +799,7 @@ async def build_anonymous(
         pricing_notes=dna.pricing_notes if dna else None,
         opening_hours=(dna.opening_hours if dna else {}) or {},
         availability=availability_text,
+        upcoming_bookings=None,
         cases=None,
         orders=None,
         properties=None,
