@@ -197,6 +197,20 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Set when this commitment is one installment of an InstallmentPlan
+    # (Type 2's biggest known gap - "₹60,000 in 3 installments" is a series
+    # of these, not a widened Commitment). CASCADE, not SET NULL: an
+    # installment with its plan deleted out from under it is an orphan, not
+    # a standalone commitment someone meant to keep. installment_number
+    # (1-based) is display order only - due_at is still what every sweep
+    # sorts and chases by, unchanged.
+    installment_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("installment_plans.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    installment_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     __table_args__ = (
         # The ledger's main query: what is open and overdue, soonest first.
         Index("idx_commitments_open", "business_id", "status", "due_at"),
@@ -218,6 +232,46 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         if self.amount_paise is None:
             return None
         return max(self.amount_paise - (self.amount_received_paise or 0), 0)
+
+
+class InstallmentPlan(UUIDMixin, TimestampMixin, Base):
+    """
+    One agreement, paid in parts - "₹60,000 in 3 installments." Only the
+    grouping: the total and what it's for. Each actual payment is its own
+    ordinary Commitment (direction=they_owe, kind=payment) with
+    installment_plan_id pointing back here - see that field's own comment
+    for why an installment is a real Commitment rather than a row in an
+    array. Every mechanism that already works on a Commitment (the
+    deadline sweep, reminders, partial payments, the Ledger) works on an
+    installment unmodified; this table adds nothing new to chase, only
+    something to group by.
+    """
+
+    __tablename__ = "installment_plans"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # What this plan is for, in the business's own words - "NEET 2027 batch
+    # fee", "Website + SEO retainer setup".
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    # The agreed total - must equal the sum of its installments' amounts;
+    # enforced where the plan is created, not here, so a partial read of
+    # the row never trips a constraint mid-write.
+    total_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    source_message_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(PgUUID(as_uuid=True)), nullable=False, default=list
+    )
+
+    __table_args__ = (
+        Index("idx_installment_plans_business_customer", "business_id", "customer_id"),
+    )
+
 
 class BusinessDNA(TimestampMixin, Base):
     """

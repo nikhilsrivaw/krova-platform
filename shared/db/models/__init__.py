@@ -65,6 +65,7 @@ from shared.db.models.intelligence import (
     CustomerIntelligence,
     Escalation,
     Insight,
+    InstallmentPlan,
 )
 from shared.db.models.draft import DraftAction, DraftStatus, MessageDraft
 from shared.db.models.flow import FlowSendLog, FlowStatus, WhatsAppFlow
@@ -153,6 +154,7 @@ __all__ = [
     "InsuranceClaim",
     "IntakeChannel",
     "Insight",
+    "InstallmentPlan",
     "Job",
     "KnowledgeItem",
     "KnowledgeKind",

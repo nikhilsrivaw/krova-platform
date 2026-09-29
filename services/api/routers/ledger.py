@@ -42,6 +42,7 @@ from shared.db.models import (
     CustomerIntelligence,
     CustomerTag,
     IdentityKind,
+    InstallmentPlan,
     Message,
     TagStatus,
 )
@@ -127,6 +128,36 @@ class PriceInconsistencyOut(BaseModel):
     variant_title: str | None
     price_tier: str | None
     quotes: list[PriceInconsistencyQuoteOut]
+
+
+class InstallmentIn(BaseModel):
+    amount_paise: int = Field(gt=0)
+    due_at: datetime | None = None
+
+
+class InstallmentPlanIn(BaseModel):
+    customer_id: uuid.UUID
+    description: str = Field(min_length=1)
+    installments: list[InstallmentIn] = Field(min_length=1, max_length=36)
+
+
+class InstallmentOut(BaseModel):
+    commitment_id: str
+    installment_number: int | None
+    amount_paise: int | None
+    due_at: datetime | None
+    status: str
+    outstanding_paise: int | None
+
+
+class InstallmentPlanOut(BaseModel):
+    plan_id: str
+    customer_id: str
+    customer_name: str
+    description: str
+    total_paise: int
+    paid_paise: int
+    installments: list[InstallmentOut]
 
 
 class EvidenceMessage(BaseModel):
@@ -254,6 +285,90 @@ async def price_inconsistencies(current_user: CurrentUserDep, db: DbDep) -> list
                     quotation_id=str(qid), reference=ref, customer_name=name, unit_price_paise=price,
                 )
                 for qid, ref, name, price in r.quotes
+            ],
+        )
+        for r in rows
+    ]
+
+
+@router.post("/installment-plans", response_model=InstallmentPlanOut)
+async def create_installment_plan(
+    body: InstallmentPlanIn, current_user: CurrentUserDep, db: DbDep
+) -> InstallmentPlanOut:
+    """
+    Record "₹60,000 in 3 installments" as a real, chased series - Type 2's
+    biggest known gap. Each installment is its own ordinary Commitment
+    (they_owe/payment) linked by installment_plan_id, in order - see
+    InstallmentPlan's own docstring for why. Deliberately manual: amounts
+    and dates typed by staff, never guessed at from a total - the same
+    "never invent a fact" discipline commitments.py's own extraction
+    follows. total_paise is derived as the sum of what was actually typed,
+    not a separately-entered number that could drift from it.
+    """
+    customer = await db.get(Customer, body.customer_id)
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+
+    total = sum(i.amount_paise for i in body.installments)
+    plan = InstallmentPlan(
+        business_id=current_user.business, customer_id=customer.id,
+        description=body.description, total_paise=total, source_message_ids=[],
+    )
+    db.add(plan)
+    await db.flush()
+
+    installments = []
+    for number, item in enumerate(body.installments, start=1):
+        c = Commitment(
+            business_id=current_user.business,
+            customer_id=customer.id,
+            installment_plan_id=plan.id,
+            installment_number=number,
+            direction=CommitmentDirection.they_owe,
+            kind=CommitmentKind.payment,
+            description=f"{body.description} - installment {number} of {len(body.installments)}",
+            amount_paise=item.amount_paise,
+            due_at=item.due_at,
+            due_at_explicit=item.due_at is not None,
+            status=CommitmentStatus.open,
+            confidence=1.0,
+            source_message_ids=[],
+        )
+        db.add(c)
+        installments.append(c)
+    await db.commit()
+
+    return InstallmentPlanOut(
+        plan_id=str(plan.id), customer_id=str(customer.id), customer_name=customer.display_name,
+        description=plan.description, total_paise=total, paid_paise=0,
+        installments=[
+            InstallmentOut(
+                commitment_id=str(c.id), installment_number=c.installment_number,
+                amount_paise=c.amount_paise, due_at=c.due_at, status=c.status.value,
+                outstanding_paise=c.outstanding_paise,
+            )
+            for c in installments
+        ],
+    )
+
+
+@router.get("/installment-plans", response_model=list[InstallmentPlanOut])
+async def list_installment_plans(
+    current_user: CurrentUserDep, db: DbDep, customer_id: uuid.UUID | None = Query(default=None),
+) -> list[InstallmentPlanOut]:
+    """Every installment plan for this business, or one customer's if filtered."""
+    rows = await ledger_queries.installment_plans(current_user.business, db, customer_id=customer_id)
+    return [
+        InstallmentPlanOut(
+            plan_id=str(r.plan_id), customer_id=str(r.customer_id), customer_name=r.customer_name,
+            description=r.description, total_paise=r.total_paise, paid_paise=r.paid_paise,
+            installments=[
+                InstallmentOut(
+                    commitment_id=str(i.commitment_id), installment_number=i.installment_number,
+                    amount_paise=i.amount_paise, due_at=i.due_at, status=i.status.value,
+                    outstanding_paise=i.outstanding_paise,
+                )
+                for i in r.installments
             ],
         )
         for r in rows

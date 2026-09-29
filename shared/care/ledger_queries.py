@@ -24,6 +24,7 @@ from shared.db.models import (
     CommitmentKind,
     CommitmentStatus,
     Customer,
+    InstallmentPlan,
     ProductVariant,
     Quotation,
     QuotationItem,
@@ -318,4 +319,93 @@ async def price_inconsistencies(
                     price_tier=tier, quotes=quotes,
                 )
             )
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Type 2's biggest known gap (docs/new/market-type-templates-spec.md):
+# installment plans - "₹60,000 in 3 installments" as a real, chased series.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass(slots=True)
+class InstallmentRow:
+    commitment_id: uuid.UUID
+    installment_number: int | None
+    amount_paise: int | None
+    due_at: datetime | None
+    status: CommitmentStatus
+    outstanding_paise: int | None
+
+
+@dataclass(slots=True)
+class InstallmentPlanRow:
+    plan_id: uuid.UUID
+    customer_id: uuid.UUID
+    customer_name: str
+    description: str
+    total_paise: int
+    paid_paise: int
+    installments: list[InstallmentRow]
+
+
+async def installment_plans(
+    business_id: uuid.UUID, db: AsyncSession, *, customer_id: uuid.UUID | None = None,
+) -> list[InstallmentPlanRow]:
+    """
+    Every installment plan for this business (or one customer), each with
+    its installments in order and how much of it has actually arrived -
+    the "who's behind on their plan" read.
+
+    Two queries, not a join: an InstallmentPlan with zero installments
+    (shouldn't happen - create_installment_plan always writes at least one
+    - but a partially-failed write must never crash this read) still shows
+    up with an empty list rather than being silently dropped by an INNER
+    JOIN.
+    """
+    plan_where = [InstallmentPlan.business_id == business_id]
+    if customer_id is not None:
+        plan_where.append(InstallmentPlan.customer_id == customer_id)
+
+    plans = (
+        await db.execute(
+            select(InstallmentPlan, Customer.display_name)
+            .join(Customer, Customer.id == InstallmentPlan.customer_id)
+            .where(*plan_where)
+            .order_by(InstallmentPlan.created_at.desc())
+        )
+    ).all()
+    if not plans:
+        return []
+
+    plan_ids = [p.id for p, _ in plans]
+    commitments = (
+        await db.execute(
+            select(Commitment)
+            .where(Commitment.installment_plan_id.in_(plan_ids))
+            .order_by(Commitment.installment_plan_id, Commitment.installment_number.asc().nullslast())
+        )
+    ).scalars().all()
+
+    by_plan: dict[uuid.UUID, list[Commitment]] = {}
+    for c in commitments:
+        by_plan.setdefault(c.installment_plan_id, []).append(c)
+
+    out = []
+    for plan, name in plans:
+        rows = by_plan.get(plan.id, [])
+        out.append(
+            InstallmentPlanRow(
+                plan_id=plan.id, customer_id=plan.customer_id, customer_name=name,
+                description=plan.description, total_paise=plan.total_paise,
+                paid_paise=sum(c.amount_received_paise for c in rows),
+                installments=[
+                    InstallmentRow(
+                        commitment_id=c.id, installment_number=c.installment_number,
+                        amount_paise=c.amount_paise, due_at=c.due_at, status=c.status,
+                        outstanding_paise=c.outstanding_paise,
+                    )
+                    for c in rows
+                ],
+            )
+        )
     return out
