@@ -64,41 +64,52 @@ def dial_response(number: str) -> str:
 
 
 def copilot_response(
-    websocket_url: str,
     staff_number: str,
     *,
+    websocket_url: str | None = None,
     status_callback_url: str | None = None,
     greeting: str | None = None,
 ) -> str:
     """
-    Live copilot mode: ring the staff member directly, never the AI's
-    voice - while forking a listen-only copy of the audio to us so the
-    same context-building machinery that drives AI replies can show the
-    human real-time suggestions instead of speaking them. `bidirectional`
-    is deliberately false: KROVA never sends anything back into this call.
+    Ring the staff member directly, never the AI's voice.
 
-    `greeting`, when given, is a plain <Speak> line heard before the ring
-    - Plivo's own built-in TTS, a separate system from the Sarvam voice
-    the streaming AI path uses (same choice getdigits_response already
-    makes), since this response is static XML, not a live stream. Without
-    one, a caller hears nothing but ringing, same as before this param
-    existed.
+    `websocket_url`, when given, forks a listen-only copy of the call
+    audio to us so the same context-building machinery that drives AI
+    replies can show the human real-time suggestions instead of speaking
+    them (see copilot.py). `bidirectional` is deliberately false: KROVA
+    never sends anything back into this call.
+
+    This is the one part of copilot mode with a real, ongoing AI cost -
+    copilot.py's _pump_suggestions runs live STT plus an LLM call per
+    final transcript segment for as long as the human conversation lasts,
+    unlike every other AI cost in this codebase, which is naturally
+    bounded by the AI's own turns. So it is opt-in on its own
+    (Business.settings["copilot_live_suggestions"], answer.py decides),
+    separate from copilot_mode itself: a business can have the greeting
+    and the warm hand-off to staff - the cheap, bounded part - without
+    paying for live suggestions it may not even want. Omit
+    websocket_url and this is just Speak + Dial, no AI involved once the
+    call connects, and copilot_stream/_pump_suggestions never runs at all
+    for that call.
     """
-    stream_attrs = [
-        'bidirectional="false"',
-        'audioTrack="both"',
-        f'contentType="{CONTENT_TYPE}"',
-    ]
-    if status_callback_url:
-        stream_attrs.append(f'statusCallbackUrl="{escape(status_callback_url)}"')
-
     speak_line = f"  <Speak>{escape(greeting)}</Speak>\n" if greeting else ""
+
+    stream_line = ""
+    if websocket_url:
+        stream_attrs = [
+            'bidirectional="false"',
+            'audioTrack="both"',
+            f'contentType="{CONTENT_TYPE}"',
+        ]
+        if status_callback_url:
+            stream_attrs.append(f'statusCallbackUrl="{escape(status_callback_url)}"')
+        stream_line = f"  <Stream {' '.join(stream_attrs)}>{escape(websocket_url)}</Stream>\n"
 
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<Response>\n"
         f"{speak_line}"
-        f"  <Stream {' '.join(stream_attrs)}>{escape(websocket_url)}</Stream>\n"
+        f"{stream_line}"
         f"  <Dial><Number>{escape(staff_number)}</Number></Dial>\n"
         "</Response>"
     )

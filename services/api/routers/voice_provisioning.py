@@ -728,6 +728,11 @@ class AgentSettingsOut(BaseModel):
     # use - the default, and what preserves today's behaviour exactly.
     staff_phone_number: str | None
     copilot_mode: bool
+    # False (the default) even when copilot_mode is on: whether KROVA also
+    # listens live and whispers suggestions to staff, the one part of
+    # copilot mode with an ongoing per-second AI cost - see
+    # shared/channels/voice/tenant.py's VoiceRoute.copilot_live_suggestions.
+    copilot_live_suggestions: bool
     # None means every call is customer-facing, today's exact behaviour -
     # see Business.owner_phone's own docstring.
     owner_phone: str | None
@@ -757,6 +762,7 @@ def _agent_settings_out(connection: ChannelConnection, business: Business | None
         languages=[LanguageOption(**l) for l in SUPPORTED_LANGUAGES],
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
+        copilot_live_suggestions=bool(extra.get("copilot_live_suggestions", False)),
         owner_phone=business.owner_phone if business else None,
         public_trust_page_enabled=bool((business.settings or {}).get("public_trust_page_enabled")) if business else False,
     )
@@ -779,6 +785,7 @@ class AgentSettingsIn(BaseModel):
     # optional-field convention every other field on this model follows.
     staff_phone_number: str | None = None
     copilot_mode: bool | None = None
+    copilot_live_suggestions: bool | None = None
     # Same "" clears / omit leaves untouched convention as
     # staff_phone_number - lives on Business, not this connection's
     # extra, since it identifies a person, not a per-number setting.
@@ -867,6 +874,8 @@ async def update_agent_settings(
         extra["staff_phone_number"] = normalised_staff_number
     if body.copilot_mode is not None:
         extra["copilot_mode"] = body.copilot_mode
+    if body.copilot_live_suggestions is not None:
+        extra["copilot_live_suggestions"] = body.copilot_live_suggestions
     connection.extra = extra
 
     business = await db.get(Business, current_user.business)

@@ -104,6 +104,14 @@ class VoiceRoute:
     # Meaningless without staff_phone_number also being set; the caller
     # (answer.py) checks both together.
     copilot_mode: bool
+    # A second, independent opt-in on top of copilot_mode: whether KROVA
+    # also listens live and whispers real-time suggestions to the staff
+    # member (shared/channels/voice/copilot.py), the one part of this
+    # feature with an ongoing per-second AI cost rather than one bounded
+    # by the AI's own turns. False by default even when copilot_mode is
+    # on - a business gets the free greeting + warm hand-off without
+    # paying for suggestions it never asked for.
+    copilot_live_suggestions: bool
     # Business.owner_phone, carried onto the route so relay.py can compare
     # it against an inbound caller's number without a second DB fetch -
     # see relay.py's own use of this for the owner voice interface. None
@@ -127,6 +135,7 @@ def _build_route(business: Business, connection: ChannelConnection) -> VoiceRout
         speaker=speaker,
         staff_phone_number=extra.get("staff_phone_number") or None,
         copilot_mode=bool(extra.get("copilot_mode", False)),
+        copilot_live_suggestions=bool(extra.get("copilot_live_suggestions", False)),
         owner_phone=business.owner_phone,
     )
 

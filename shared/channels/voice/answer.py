@@ -90,11 +90,21 @@ async def answer(
     # as not-opted-in rather than an error, so a half-finished setting can
     # never silently ring nobody.
     if route.copilot_mode and route.staff_phone_number:
-        ws_url = f"{settings.public_base_url.replace('https://', 'wss://')}/voice/copilot-stream"
+        # copilot_live_suggestions is the separate, costed opt-in
+        # (tenant.py's own docstring on it) - only fork the audio stream
+        # to copilot_stream/_pump_suggestions when a business has
+        # actually turned that on. Off (the default): greeting + ring +
+        # connect, no AI involved once the call is answered, at no
+        # ongoing AI cost.
+        ws_url = (
+            f"{settings.public_base_url.replace('https://', 'wss://')}/voice/copilot-stream"
+            if route.copilot_live_suggestions
+            else None
+        )
         return Response(
             content=copilot_response(
-                ws_url,
                 f"+{route.staff_phone_number}",
+                websocket_url=ws_url,
                 status_callback_url=f"{settings.public_base_url}/voice/status",
                 # route.greeting is written for the AI to carry the call
                 # on afterwards ("...how can I help you?") - wrong framing
