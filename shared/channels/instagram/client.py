@@ -20,8 +20,9 @@ neither caller has to know the difference.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 import httpx
 
@@ -43,6 +44,40 @@ class InstagramSendError(InstagramApiError):
 @dataclass(slots=True)
 class SendResult:
     external_id: str
+
+
+@dataclass(slots=True)
+class GenericTemplateButton:
+    # Confirmed against developers.facebook.com/docs/messenger-platform/
+    # instagram/features/generic-template: only these two button types
+    # exist on Instagram's generic template - no QUICK_REPLY/PHONE_NUMBER
+    # the way a WhatsApp template button has.
+    type: Literal["web_url", "postback"]
+    title: str
+    url: str | None = None      # web_url only
+    payload: str | None = None  # postback only
+
+
+@dataclass(slots=True)
+class GenericTemplateElement:
+    """One card. At least one field beyond title is required by Meta."""
+    title: str
+    subtitle: str | None = None
+    image_url: str | None = None
+    buttons: list[GenericTemplateButton] = field(default_factory=list)
+
+    def to_payload(self) -> dict:
+        out: dict = {"title": self.title[:80]}
+        if self.subtitle:
+            out["subtitle"] = self.subtitle[:80]
+        if self.image_url:
+            out["image_url"] = self.image_url
+        if self.buttons:
+            out["buttons"] = [
+                {"type": b.type, "title": b.title, **({"url": b.url} if b.type == "web_url" else {"payload": b.payload})}
+                for b in self.buttons
+            ]
+        return out
 
 
 @dataclass(slots=True)
@@ -411,6 +446,59 @@ class InstagramClient:
         external_id = body.get("message_id") or body.get("id") or ""
         if not external_id:
             logger.warning("instagram send returned no message id: %s", body)
+        return SendResult(external_id=external_id)
+
+    async def send_generic_template(
+        self, recipient_id: str, elements: list[GenericTemplateElement],
+    ) -> SendResult:
+        """
+        A horizontally-scrollable carousel of up to 10 cards - Meta's
+        "Generic Template" (developers.facebook.com/docs/messenger-platform/
+        instagram/features/generic-template). Same /messages Send API and
+        same recipient contract as send_text above, just a template
+        attachment instead of plain text.
+
+        Unlike a WhatsApp carousel template, this needs no Meta review -
+        it sends instantly, like any other Instagram message, and so is
+        still bound by the same 24-hour window Meta enforces server-side
+        for every Instagram send (confirmed by this class's own module
+        docstring: no local window check, Meta returns the error itself).
+        """
+        if not elements:
+            raise InstagramSendError("A carousel needs at least one card")
+        if len(elements) > 10:
+            raise InstagramSendError("A carousel can have at most 10 cards")
+
+        url = f"{self._base_url}/{self._ig_user_id}/messages"
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            res = await client.post(
+                url,
+                params={"access_token": self._token},
+                json={
+                    "recipient": {"id": recipient_id},
+                    "message": {
+                        "attachment": {
+                            "type": "template",
+                            "payload": {
+                                "template_type": "generic",
+                                "elements": [e.to_payload() for e in elements],
+                            },
+                        }
+                    },
+                },
+            )
+        if res.status_code != 200:
+            logger.error(
+                "instagram carousel send failed ig_user_id=%s status=%s body=%s",
+                self._ig_user_id, res.status_code, res.text[:500],
+            )
+            raise InstagramSendError(
+                f"Meta rejected the message ({res.status_code}): {res.text[:300]}"
+            )
+        body = res.json()
+        external_id = body.get("message_id") or body.get("id") or ""
+        if not external_id:
+            logger.warning("instagram carousel send returned no message id: %s", body)
         return SendResult(external_id=external_id)
 
     async def send_private_reply(self, comment_id: str, text: str) -> SendResult:

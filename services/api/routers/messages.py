@@ -12,6 +12,7 @@ and says plainly when nothing can.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
@@ -21,6 +22,8 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels import ingest
 from shared.channels.instagram.client import (
+    GenericTemplateButton,
+    GenericTemplateElement,
     InstagramApiError,
     InstagramClient,
     InstagramSendError,
@@ -608,6 +611,119 @@ async def send_instagram_text(
         identity_value=body.to,
         external_id=sent.external_id or None,
         text=body.body,
+        occurred_at=datetime.now(timezone.utc),
+        connection_id=connection.id,
+        enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
+        db=db,
+    )
+
+    return SendResult(
+        sent=True,
+        message_id=sent.external_id,
+        channel="instagram",
+        used_template=False,
+        window_open=True,
+    )
+
+
+class InstagramCarouselImageOut(BaseModel):
+    image_url: str
+
+
+@router.post("/instagram/carousel/image", response_model=InstagramCarouselImageOut)
+async def upload_instagram_carousel_image(
+    current_user: CurrentUserDep, db: DbDep, file: UploadFile = File(...),
+) -> InstagramCarouselImageOut:
+    """
+    Host one carousel card's picture at a public URL - Instagram's generic
+    template takes image_url directly (Meta fetches it itself), the same
+    contract publish_instagram_photo below already uses, so this reuses
+    the same bucket rather than a second upload path.
+    """
+    await _active_instagram_connection(current_user.business, db)
+    content = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        image_url = await media_storage.upload_media(content, content_type)
+    except MediaStorageError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return InstagramCarouselImageOut(image_url=image_url)
+
+
+class InstagramCarouselButtonIn(BaseModel):
+    type: Literal["web_url", "postback"]
+    title: str = Field(min_length=1, max_length=20)
+    url: str | None = None
+    payload: str | None = None
+
+
+class InstagramCarouselElementIn(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+    subtitle: str | None = Field(default=None, max_length=80)
+    image_url: str | None = None
+    buttons: list[InstagramCarouselButtonIn] = Field(default_factory=list, max_length=3)
+
+
+class SendInstagramCarousel(BaseModel):
+    to: str = Field(description="Recipient's Instagram-scoped id (IGSID)")
+    elements: list[InstagramCarouselElementIn] = Field(min_length=1, max_length=10)
+
+
+@router.post("/instagram/carousel", response_model=SendResult)
+async def send_instagram_carousel(
+    body: SendInstagramCarousel, current_user: CurrentUserDep, db: DbDep
+) -> SendResult:
+    """
+    Instagram's "Generic Template" - a horizontally-scrollable carousel.
+    No Meta review needed (unlike a WhatsApp template): sends instantly,
+    subject only to the same 24-hour window Meta enforces for every
+    Instagram message.
+    """
+    for element in body.elements:
+        for button in element.buttons:
+            if button.type == "web_url" and not button.url:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Button '{button.title}' is a link but has no URL",
+                )
+            if button.type == "postback" and not button.payload:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Button '{button.title}' needs a payload",
+                )
+
+    connection = await _active_instagram_connection(current_user.business, db)
+    client = InstagramClient.for_connection(connection)
+    try:
+        sent = await client.send_generic_template(
+            body.to,
+            [
+                GenericTemplateElement(
+                    title=e.title,
+                    subtitle=e.subtitle,
+                    image_url=e.image_url,
+                    buttons=[
+                        GenericTemplateButton(
+                            type=b.type, title=b.title, url=b.url, payload=b.payload,
+                        )
+                        for b in e.buttons
+                    ],
+                )
+                for e in body.elements
+            ],
+        )
+    except InstagramSendError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await ingest.ingest(
+        business_id=current_user.business,
+        channel=Channel.instagram,
+        direction=Direction.outbound,
+        identity_kind=IdentityKind.instagram,
+        identity_value=body.to,
+        external_id=sent.external_id or None,
+        text=f"[Carousel: {', '.join(e.title for e in body.elements)}]",
         occurred_at=datetime.now(timezone.utc),
         connection_id=connection.id,
         enqueue_analysis=False,
