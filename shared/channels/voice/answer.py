@@ -96,6 +96,16 @@ async def answer(
                 ws_url,
                 f"+{route.staff_phone_number}",
                 status_callback_url=f"{settings.public_base_url}/voice/status",
+                # route.greeting is written for the AI to carry the call
+                # on afterwards ("...how can I help you?") - wrong framing
+                # here, where a human is about to pick up instead. A
+                # short, business-named line instead, matching exactly
+                # what Nikhil asked for: a greeting, then ringing, then an
+                # employee answers.
+                greeting=(
+                    f"Thank you for calling {route.business_name}. "
+                    "Our team will connect with you shortly."
+                ),
             ),
             media_type="application/xml",
         )

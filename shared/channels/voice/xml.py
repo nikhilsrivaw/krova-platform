@@ -68,6 +68,7 @@ def copilot_response(
     staff_number: str,
     *,
     status_callback_url: str | None = None,
+    greeting: str | None = None,
 ) -> str:
     """
     Live copilot mode: ring the staff member directly, never the AI's
@@ -75,6 +76,13 @@ def copilot_response(
     same context-building machinery that drives AI replies can show the
     human real-time suggestions instead of speaking them. `bidirectional`
     is deliberately false: KROVA never sends anything back into this call.
+
+    `greeting`, when given, is a plain <Speak> line heard before the ring
+    - Plivo's own built-in TTS, a separate system from the Sarvam voice
+    the streaming AI path uses (same choice getdigits_response already
+    makes), since this response is static XML, not a live stream. Without
+    one, a caller hears nothing but ringing, same as before this param
+    existed.
     """
     stream_attrs = [
         'bidirectional="false"',
@@ -84,9 +92,12 @@ def copilot_response(
     if status_callback_url:
         stream_attrs.append(f'statusCallbackUrl="{escape(status_callback_url)}"')
 
+    speak_line = f"  <Speak>{escape(greeting)}</Speak>\n" if greeting else ""
+
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<Response>\n"
+        f"{speak_line}"
         f"  <Stream {' '.join(stream_attrs)}>{escape(websocket_url)}</Stream>\n"
         f"  <Dial><Number>{escape(staff_number)}</Number></Dial>\n"
         "</Response>"
