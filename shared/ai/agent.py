@@ -141,6 +141,20 @@ REPLY_TOOL = {
                     "what's on offer - never send it unprompted."
                 ),
             },
+            "share_carousel": {
+                "type": "string",
+                "description": (
+                    "Instagram only. The exact name of one carousel from "
+                    "'Available Instagram carousels' to send - set it only when "
+                    "the customer is asking what's available or about something "
+                    "one specific listed carousel directly answers, and only on "
+                    "Instagram (never on WhatsApp or any other channel - omit "
+                    "there even if a carousel would have fit). Omit entirely if "
+                    "no carousel is listed, if none of them fit, or if this "
+                    "customer is not on Instagram. Never invent a name that was "
+                    "not shown to you, and never send one unprompted."
+                ),
+            },
             "cancel_appointment_at": {
                 "type": "string",
                 "description": (
@@ -221,6 +235,13 @@ If the business details mention a connected product catalog, set \
 share_catalog to true when the customer is actually asking what's \
 available - never send it unprompted, and never in place of answering a \
 specific question they asked directly.
+
+If the business details list Available Instagram carousels, and this \
+conversation is on Instagram, set share_carousel to one carousel's exact \
+name when it genuinely matches what the customer is asking - same \
+restraint as share_catalog: never unprompted, never in place of answering \
+their actual question, and never on any channel other than Instagram even \
+if a carousel would otherwise fit.
 
 Use what you know about the customer. If they have an outstanding payment or \
 you promised them something, that is context worth using - naturally, not \
@@ -783,6 +804,12 @@ class Draft:
     # touching that shared, proven header-parsing loop for a feature only
     # one of its two consumers would ever use is not worth the risk.
     share_catalog: bool = False
+    # Name of a saved Instagram carousel to send - see REPLY_TOOL's
+    # share_carousel. Same text-channel-only reasoning as share_catalog
+    # above; respond.py is the layer that actually restricts this to
+    # channel == "instagram" (not re-checked here - this dataclass only
+    # carries what the model decided).
+    share_carousel: str | None = None
     # ISO datetime of the customer's own existing booking to cancel - see
     # REPLY_TOOL's cancel_appointment_at. Text-channel only, same "not worth
     # the risk on the shared voice loop" call as share_catalog above; a
@@ -887,6 +914,7 @@ async def draft_reply(
         book_property=(result.get("book_property") or "").strip() or None if action == "reply" else None,
         book_token=(result.get("book_token") or "").strip() or None if action == "reply" else None,
         share_catalog=bool(result.get("share_catalog")) if action == "reply" else False,
+        share_carousel=(result.get("share_carousel") or "").strip() or None if action == "reply" else None,
         cancel_appointment_at=(
             (result.get("cancel_appointment_at") or "").strip() or None if action == "reply" else None
         ),

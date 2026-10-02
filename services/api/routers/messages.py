@@ -10,6 +10,7 @@ It looks at when the customer last wrote, picks the only thing that can work,
 and says plainly when nothing can.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -17,6 +18,7 @@ from typing import Literal
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
@@ -44,6 +46,7 @@ from shared.db.models import (
     CustomerIdentity,
     Direction,
     IdentityKind,
+    InstagramCarousel,
     Message,
     MessageTemplate,
     TemplateStatus,
@@ -737,6 +740,158 @@ async def send_instagram_carousel(
         channel="instagram",
         used_template=False,
         window_open=True,
+    )
+
+
+_CAROUSEL_NAME_INVALID = re.compile(r"[^a-z0-9_]+")
+
+
+def _normalise_carousel_name(raw: str) -> str:
+    """Lowercase/underscore only - what the agent (share_carousel) and a
+    staff member picking from a list both match against exactly."""
+    name = _CAROUSEL_NAME_INVALID.sub("_", raw.strip().lower()).strip("_")
+    name = re.sub(r"_{2,}", "_", name)
+    return name[:100]
+
+
+class SavedInstagramCarouselOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    elements: list
+
+
+def _saved_carousel_out(c: InstagramCarousel) -> SavedInstagramCarouselOut:
+    return SavedInstagramCarouselOut(
+        id=str(c.id), name=c.name, description=c.description, elements=c.elements or [],
+    )
+
+
+@router.get("/instagram/carousels", response_model=list[SavedInstagramCarouselOut])
+async def list_instagram_carousels(
+    current_user: CurrentUserDep, db: DbDep
+) -> list[SavedInstagramCarouselOut]:
+    """
+    Saved carousels this business can offer again - the same list
+    shared/ai/context.py shows the agent under "Available Instagram
+    carousels" (so it can pick one by name via share_carousel), and what
+    a staff member can re-send by hand without rebuilding it card by card.
+    """
+    rows = await db.execute(
+        select(InstagramCarousel)
+        .where(InstagramCarousel.business_id == current_user.business)
+        .order_by(InstagramCarousel.name)
+    )
+    return [_saved_carousel_out(c) for c in rows.scalars().all()]
+
+
+class SaveInstagramCarousel(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=300)
+    elements: list[InstagramCarouselElementIn] = Field(min_length=1, max_length=10)
+
+
+@router.post(
+    "/instagram/carousels", response_model=SavedInstagramCarouselOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def save_instagram_carousel(
+    body: SaveInstagramCarousel, current_user: CurrentUserDep, db: DbDep
+) -> SavedInstagramCarouselOut:
+    """Save a carousel under a name, so the agent or a staff member can send it again without rebuilding it."""
+    name = _normalise_carousel_name(body.name)
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Give the carousel a name")
+
+    for element in body.elements:
+        for button in element.buttons:
+            if button.type == "web_url" and not button.url:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, f"Button '{button.title}' is a link but has no URL",
+                )
+            if button.type == "postback" and not button.payload:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, f"Button '{button.title}' needs a payload",
+                )
+
+    carousel = InstagramCarousel(
+        business_id=current_user.business,
+        name=name,
+        description=body.description.strip(),
+        elements=[e.model_dump(exclude_none=True) for e in body.elements],
+    )
+    db.add(carousel)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"A carousel named '{name}' already exists",
+        ) from exc
+
+    return _saved_carousel_out(carousel)
+
+
+@router.delete("/instagram/carousels/{carousel_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_instagram_carousel(
+    carousel_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+) -> None:
+    carousel = await db.get(InstagramCarousel, carousel_id)
+    if carousel is None or carousel.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Carousel not found")
+    await db.delete(carousel)
+
+
+class SendSavedInstagramCarousel(BaseModel):
+    to: str = Field(description="Recipient's Instagram-scoped id (IGSID)")
+
+
+@router.post("/instagram/carousels/{carousel_id}/send", response_model=SendResult)
+async def send_saved_instagram_carousel(
+    carousel_id: uuid.UUID, body: SendSavedInstagramCarousel,
+    current_user: CurrentUserDep, db: DbDep,
+) -> SendResult:
+    """
+    A staff member re-sending a saved carousel by hand - same Meta call as
+    POST /instagram/carousel, built from stored cards instead of ones just
+    typed into the one-off composer.
+    """
+    carousel = await db.get(InstagramCarousel, carousel_id)
+    if carousel is None or carousel.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Carousel not found")
+
+    connection = await _active_instagram_connection(current_user.business, db)
+    client = InstagramClient.for_connection(connection)
+    elements = [
+        GenericTemplateElement(
+            title=e.get("title", ""), subtitle=e.get("subtitle"), image_url=e.get("image_url"),
+            buttons=[GenericTemplateButton(**b) for b in e.get("buttons", [])],
+        )
+        for e in (carousel.elements or [])
+    ]
+    try:
+        sent = await client.send_generic_template(body.to, elements)
+    except InstagramSendError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    await ingest.ingest(
+        business_id=current_user.business,
+        channel=Channel.instagram,
+        direction=Direction.outbound,
+        identity_kind=IdentityKind.instagram,
+        identity_value=body.to,
+        external_id=sent.external_id or None,
+        text=f"[Carousel: {carousel.name}]",
+        occurred_at=datetime.now(timezone.utc),
+        connection_id=connection.id,
+        enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
+        db=db,
+    )
+
+    return SendResult(
+        sent=True, message_id=sent.external_id, channel="instagram",
+        used_template=False, window_open=True,
     )
 
 

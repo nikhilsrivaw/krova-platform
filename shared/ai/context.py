@@ -41,6 +41,7 @@ from shared.db.models import (
     CustomerIntelligence,
     Direction,
     Doctor,
+    InstagramCarousel,
     InsuranceClaim,
     KnowledgeItem,
     Message,
@@ -158,6 +159,12 @@ class AgentContext:
     # What the owner has written down. Injected whole - see the knowledge
     # module for why this is not a retrieval step.
     knowledge: list[dict] = field(default_factory=list)
+    # Saved, reusable Instagram carousels (shared/db/models/
+    # instagram_carousel.py) this business can offer - name + the
+    # one-line description an owner wrote, business-level like knowledge
+    # above, not customer-level. Empty for a business with none saved,
+    # which reads to the model as "nothing to offer", not "ask a human".
+    instagram_carousels: list[dict] = field(default_factory=list)
     recent: list[dict] = field(default_factory=list)
     open_commitments: list[dict] = field(default_factory=list)
     # Who pays for this customer, and who they pay for - with what is still
@@ -229,6 +236,16 @@ class AgentContext:
                 else "use as reference"
             )
             lines.append(f"\n{item['title']} ({weight}):\n{item['content']}")
+
+        if self.instagram_carousels:
+            lines.append(
+                "\nAvailable Instagram carousels (share_carousel, Instagram only - "
+                "set it to the name exactly as written here):\n"
+                + "\n".join(
+                    f"- {c['name']}: {c['description']}" if c["description"] else f"- {c['name']}"
+                    for c in self.instagram_carousels
+                )
+            )
 
         return lines
 
@@ -421,6 +438,13 @@ async def build(
         .order_by(KnowledgeItem.kind, KnowledgeItem.id)
     )
     knowledge_items = list(knowledge.scalars().all())
+
+    carousels = await db.execute(
+        select(InstagramCarousel)
+        .where(InstagramCarousel.business_id == business_id)
+        .order_by(InstagramCarousel.name)
+    )
+    carousel_items = list(carousels.scalars().all())
 
     commitments = await db.execute(
         select(Commitment)
@@ -669,6 +693,9 @@ async def build(
                 "content": k.content,
             }
             for k in knowledge_items
+        ],
+        instagram_carousels=[
+            {"name": c.name, "description": c.description} for c in carousel_items
         ],
         customer_name=customer.display_name if customer else None,
         customer_summary=intelligence.summary if intelligence else None,

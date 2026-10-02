@@ -22,6 +22,7 @@ from shared.db.models.call_campaign import (
     CallScriptResponse,
 )
 from shared.db.models.crm import CustomerDate, CustomerNote, CustomerTag, TagStatus
+from shared.db.models.instagram_carousel import InstagramCarousel
 from shared.db.models.channel import (
     Call,
     Channel,
@@ -155,6 +156,7 @@ __all__ = [
     "IntakeChannel",
     "Insight",
     "InstallmentPlan",
+    "InstagramCarousel",
     "Job",
     "KnowledgeItem",
     "KnowledgeKind",
