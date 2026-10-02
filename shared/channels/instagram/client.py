@@ -426,13 +426,31 @@ class InstagramClient:
 
         return PublishResult(media_id=media_id)
 
-    async def send_text(self, recipient_id: str, text: str) -> SendResult:
+    async def send_text(
+        self, recipient_id: str, text: str, *, human_agent: bool = False,
+    ) -> SendResult:
+        """
+        `human_agent`, when true, adds Meta's HUMAN_AGENT message tag -
+        confirmed against developers.facebook.com/documentation/
+        business-messaging/messenger-platform/send-messages: extends the
+        reply window from 24 hours to 7 days, but Meta's own policy
+        restricts it to a real person replying to continue an existing
+        conversation (never an automated/AI send, and never promotional
+        content) - the caller (messages.py's send_instagram_text) is what
+        decides a given send qualifies, this method only shapes the
+        request. Requires the "Human Agent" permission, already Approved
+        on this app (App Review, 30 Aug 2026).
+        """
         url = f"{self._base_url}/{self._ig_user_id}/messages"
+        payload: dict = {"recipient": {"id": recipient_id}, "message": {"text": text}}
+        if human_agent:
+            payload["messaging_type"] = "MESSAGE_TAG"
+            payload["tag"] = "HUMAN_AGENT"
         async with httpx.AsyncClient(timeout=25.0) as client:
             res = await client.post(
                 url,
                 params={"access_token": self._token},
-                json={"recipient": {"id": recipient_id}, "message": {"text": text}},
+                json=payload,
             )
         if res.status_code != 200:
             logger.error(

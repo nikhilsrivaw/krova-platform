@@ -12,7 +12,7 @@ and says plainly when nothing can.
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -595,14 +595,111 @@ async def list_instagram_conversations(
     ]
 
 
+async def _last_inbound_instagram(
+    business_id: uuid.UUID, igsid: str, db: DbDep
+) -> datetime | None:
+    """When this Instagram person last wrote to us - the phone/_last_inbound
+    helper's own logic, addressed by IGSID instead."""
+    identity = await db.execute(
+        select(CustomerIdentity).where(
+            CustomerIdentity.business_id == business_id,
+            CustomerIdentity.kind == IdentityKind.instagram,
+            CustomerIdentity.value == igsid,
+        )
+    )
+    found = identity.scalars().first()
+    if found is None:
+        return None
+    last = await db.execute(
+        select(Message.occurred_at)
+        .where(
+            Message.customer_id == found.customer_id,
+            Message.direction == Direction.inbound,
+            Message.channel == Channel.instagram,
+        )
+        .order_by(Message.occurred_at.desc())
+        .limit(1)
+    )
+    return last.scalar_one_or_none()
+
+
+class InstagramWindowState(BaseModel):
+    can_send_free_form: bool
+    # True only when can_send_free_form is - whether sending now requires
+    # (and will automatically use) the HUMAN_AGENT tag, so the UI can tell
+    # a staff member which situation they're in rather than just a flat
+    # yes/no the way WhatsApp's WindowState is.
+    requires_human_agent_tag: bool
+    last_inbound_at: str | None
+    explanation: str
+
+
+@router.get("/instagram/window/{igsid}", response_model=InstagramWindowState)
+async def instagram_window_state(
+    igsid: str, current_user: CurrentUserDep, db: DbDep
+) -> InstagramWindowState:
+    last_inbound = await _last_inbound_instagram(current_user.business, igsid, db)
+    if last_inbound is None:
+        return InstagramWindowState(
+            can_send_free_form=False, requires_human_agent_tag=False, last_inbound_at=None,
+            explanation="This person has never messaged you. Instagram requires them to message first.",
+        )
+    age = datetime.now(timezone.utc) - last_inbound
+    if age <= timedelta(hours=24):
+        return InstagramWindowState(
+            can_send_free_form=True, requires_human_agent_tag=False,
+            last_inbound_at=last_inbound.isoformat(),
+            explanation="They messaged you recently, so you can write anything.",
+        )
+    if age <= timedelta(days=7):
+        return InstagramWindowState(
+            can_send_free_form=True, requires_human_agent_tag=True,
+            last_inbound_at=last_inbound.isoformat(),
+            explanation=(
+                "More than 24 hours since they last wrote. You can still reply "
+                "as a human agent (sent as you, not automated) for up to 7 days "
+                "total."
+            ),
+        )
+    return InstagramWindowState(
+        can_send_free_form=False, requires_human_agent_tag=False,
+        last_inbound_at=last_inbound.isoformat(),
+        explanation="It's been over 7 days since they last messaged - Instagram no longer allows a reply.",
+    )
+
+
 @router.post("/instagram/text", response_model=SendResult)
 async def send_instagram_text(
     body: SendInstagramText, current_user: CurrentUserDep, db: DbDep
 ) -> SendResult:
+    """
+    A staff member's own manually-typed reply - never an AI-drafted or
+    automated send, so (unlike every other Instagram send in this file)
+    this is exactly the case Meta's HUMAN_AGENT tag exists for: a real
+    person continuing a conversation. Used automatically, not left to the
+    caller, since every call into this endpoint already is one.
+    """
+    last_inbound = await _last_inbound_instagram(current_user.business, body.to, db)
+    if last_inbound is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This person has never messaged you - Instagram requires them to "
+            "message first before you can reply.",
+        )
+    age = datetime.now(timezone.utc) - last_inbound
+    if age > timedelta(days=7):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "It's been over 7 days since they last messaged - Instagram no "
+            "longer allows a reply, even as a human agent. They need to "
+            "message again first.",
+        )
+    use_human_agent_tag = age > timedelta(hours=24)
+
     connection = await _active_instagram_connection(current_user.business, db)
     client = InstagramClient.for_connection(connection)
     try:
-        sent = await client.send_text(body.to, body.body)
+        sent = await client.send_text(body.to, body.body, human_agent=use_human_agent_tag)
     except InstagramSendError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
