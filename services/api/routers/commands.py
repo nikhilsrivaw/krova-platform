@@ -10,8 +10,10 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.commands import ai_parser, understand
 from shared.commands import settings_registry as registry
 from shared.commands.service import CommandError, cancel, confirm, create_pending
+from shared.commands.tools import ToolRefused
 from shared.commands.tools import CURRENT_PHASE, TOOLS
 from shared.db.models import Business, CommandAudit
 
@@ -64,6 +66,32 @@ async def list_settings(current_user: CurrentUserDep, db: DbDep) -> list[dict[st
          "choices": list(s.choices), "minimum": s.minimum, "maximum": s.maximum}
         for s in registry.REGISTRY.values()
     ]
+
+
+class UnderstandIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+class UnderstandOut(BaseModel):
+    source: str  # "pattern" | "ai" | "unavailable"
+    tool: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    message: str | None = None
+
+
+@router.post("/understand", response_model=UnderstandOut)
+async def understand_command(body: UnderstandIn, current_user: CurrentUserDep) -> UnderstandOut:
+    """Turn the owner's words into a tool call. Nothing runs here: the app previews it next."""
+    hit = understand.parse(body.text)
+    if hit is not None:
+        return UnderstandOut(source="pattern", tool=hit.tool, args=hit.args)
+    try:
+        result = await ai_parser.parse(body.text)
+    except ai_parser.ParserUnavailable as exc:
+        return UnderstandOut(source="unavailable", message=str(exc))
+    except ToolRefused as exc:
+        return UnderstandOut(source="unavailable", message=str(exc))
+    return UnderstandOut(source="ai", tool=result["tool"], args=result["args"])
 
 
 @router.post("/preview", response_model=CommandOut, status_code=status.HTTP_201_CREATED)

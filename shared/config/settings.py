@@ -164,6 +164,9 @@ class Settings(BaseSettings):
     # provider route (Claude is reserved for voice). Refused until that
     # provider is approved - see shared/ai/providers.py.
     owner_ask_model: str = Field(default="bedrock:deepseek.v3.2", alias="OWNER_ASK_MODEL")
+    # The model that turns an owner command into a tool call (Mode A). Same rule as
+    # owner_ask_model: a non-Anthropic provider, refused until it is approved.
+    owner_command_model: str = Field(default="bedrock:deepseek.v3.2", alias="OWNER_COMMAND_MODEL")
 
     # ── Google / Microsoft (email channels) ──────────────────────────────────
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
