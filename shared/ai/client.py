@@ -127,6 +127,43 @@ def _log_usage(task: str, model: str, usage: Any, cost_paise: int) -> None:
     )
 
 
+
+# Voice never leaves Claude: a live route for these is ignored, not honoured.
+_VOICE_TASK_PREFIXES = ("reply_voice", "reply_owner_voice", "reply_scripted_voice", "copilot", "call_")
+
+
+async def _complete_via_provider(
+    ref: str, task: str, system: str, messages: list[dict[str, Any]],
+    max_tokens: int, tool: dict | None,
+) -> Completion | None:
+    """
+    Answer through a non-Anthropic provider. Returns None on any failure, so the
+    caller falls back to Claude: a cheaper model that is down must never mean
+    a reply that is never sent.
+    """
+    from shared.ai import providers
+
+    request: dict[str, Any] = {"system": system, "messages": messages, "max_tokens": max_tokens}
+    if tool is not None:
+        request["tools"] = [tool]
+        request["tool_choice"] = {"type": "tool", "name": tool["name"]}
+    try:
+        answer = await providers.call(ref, request)
+    except Exception:  # noqa: BLE001 - any provider failure falls back to Claude
+        logger.warning("live route %s failed for task=%s, falling back to Claude", ref, task, exc_info=True)
+        return None
+
+    _log_usage(task, ref, answer.usage, answer.cost_paise)
+    return Completion(
+        text=answer.text,
+        tool_input=answer.tool_input,
+        input_tokens=answer.usage.input_tokens,
+        output_tokens=answer.usage.output_tokens,
+        cost_paise=answer.cost_paise,
+        model=ref,
+    )
+
+
 async def complete(
     *,
     system: str,
@@ -145,6 +182,12 @@ async def complete(
     and hoping produces valid JSON most of the time, and "most of the time" is
     a bug that appears in production at 2am.
     """
+    live = router.live_for(task)
+    if live is not None and not task.startswith(_VOICE_TASK_PREFIXES):
+        answer = await _complete_via_provider(live, task, system, messages, max_tokens, tool)
+        if answer is not None:
+            return answer
+
     client = _get_client()
     model = _model_for(speed)
 

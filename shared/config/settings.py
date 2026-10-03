@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     #   {"extract_signals": {"model": "claude-haiku-4-5", "rate": 1.0}}
     # Empty (the default) = no shadow calls at all, no extra spend.
     ai_shadow_routes: str = Field(default="", alias="AI_SHADOW_ROUTES")
+    # Live routing: which task answers from which non-Anthropic model. JSON, e.g.
+    #   {"extract_signals": "bedrock:minimax.minimax-m2.5"}
+    # Empty = everything on Claude. Voice tasks are never routed (see client.py).
+    ai_live_routes: str = Field(default="", alias="AI_LIVE_ROUTES")
     # Non-Anthropic providers allowed to receive customer conversations,
     # comma-separated ("sarvam,gemini"). Add one only after its training
     # opt-out, DPA and sub-processor listing are confirmed - see

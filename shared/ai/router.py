@@ -73,6 +73,23 @@ def _shadow_routes(raw: str) -> dict[str, ShadowRoute]:
         return {}
 
 
+@lru_cache(maxsize=1)
+def _live_routes(raw: str) -> dict[str, str]:
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return {str(task): str(model).strip() for task, model in parsed.items() if str(model).strip()}
+    except (ValueError, TypeError, AttributeError):
+        logger.error("AI_LIVE_ROUTES is not valid JSON of {task: model} - ignored")
+        return {}
+
+
+def live_for(task: str) -> str | None:
+    """The model that answers this task instead of Claude, if one is configured."""
+    return _live_routes(settings.ai_live_routes).get(task)
+
+
 def shadow_for(task: str) -> ShadowRoute | None:
     """The shadow route for this call, if one is configured and this call is sampled."""
     route = _shadow_routes(settings.ai_shadow_routes).get(task)
