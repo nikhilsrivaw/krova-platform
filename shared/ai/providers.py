@@ -121,7 +121,6 @@ PROVIDERS: dict[str, Provider] = {
     # third-party pages (2026-10), NOT the AWS pricing page: verify before
     # trusting cost numbers. No caching is documented for these models, so
     # cached input is priced at the normal input rate (no discount assumed).
-    # GLM 4.7 is deliberately absent until it has a verified price.
     "bedrock": Provider(
         base_url="https://bedrock-mantle.ap-south-1.api.aws/v1",
         key_setting="bedrock_api_key",
@@ -136,6 +135,14 @@ PROVIDERS: dict[str, Provider] = {
             ("moonshotai.kimi-k2.5", ModelSpec(
                 path="/chat/completions",
                 pricing=(0.60 * _INR_PER_USD, 0.60 * _INR_PER_USD, 3.00 * _INR_PER_USD),
+            )),
+            # GLM 4.7 (Z.AI): in-region in Mumbai per its model card. Price is NOT
+            # verified; the 0.60/2.20 USD figures are placeholders for cost tracking
+            # only, so treat its cost numbers as estimates until checked on AWS.
+            ("zai.glm-4.7", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.60 * _INR_PER_USD, 0.60 * _INR_PER_USD, 2.20 * _INR_PER_USD),
+                reasoning_headroom=4000,
             )),
             ("minimax.minimax-m2.5", ModelSpec(
                 path="/chat/completions",
