@@ -114,13 +114,10 @@ PROVIDERS: dict[str, Provider] = {
             )),
         ),
     ),
-    # Models hosted on AWS Bedrock. The OpenAI chat-completions format for
-    # these is served on the bedrock-mantle endpoint (AWS model cards), with
-    # client-side tool calling. Mumbai availability on mantle is NOT verified
-    # yet - the first live call decides it. Prices are USD list prices from
-    # third-party pages (2026-10), NOT the AWS pricing page: verify before
-    # trusting cost numbers. No caching is documented for these models, so
-    # cached input is priced at the normal input rate (no discount assumed).
+    # Models hosted on AWS Bedrock, served on the bedrock-mantle endpoint in
+    # Mumbai (verified by a live call). Prices are the AWS pricing page's
+    # Mumbai on-demand rates (checked 2026-10). No caching is documented for
+    # these, so cached input is priced at the normal input rate.
     "bedrock": Provider(
         base_url="https://bedrock-mantle.ap-south-1.api.aws/v1",
         key_setting="bedrock_api_key",
@@ -129,19 +126,18 @@ PROVIDERS: dict[str, Provider] = {
         models=(
             ("deepseek.v3.2", ModelSpec(
                 path="/chat/completions",
-                pricing=(0.62 * _INR_PER_USD, 0.62 * _INR_PER_USD, 1.85 * _INR_PER_USD),
+                pricing=(0.74 * _INR_PER_USD, 0.74 * _INR_PER_USD, 2.22 * _INR_PER_USD),
                 reasoning_headroom=1000,
             )),
             ("moonshotai.kimi-k2.5", ModelSpec(
                 path="/chat/completions",
-                pricing=(0.60 * _INR_PER_USD, 0.60 * _INR_PER_USD, 3.00 * _INR_PER_USD),
+                pricing=(0.72 * _INR_PER_USD, 0.72 * _INR_PER_USD, 3.60 * _INR_PER_USD),
             )),
-            # GLM 4.7 (Z.AI): in-region in Mumbai per its model card. Price is NOT
-            # verified; the 0.60/2.20 USD figures are placeholders for cost tracking
-            # only, so treat its cost numbers as estimates until checked on AWS.
+            # GLM 4.7 (Z.AI): in-region in Mumbai. Price from the AWS pricing page
+            # (Mumbai, on-demand).
             ("zai.glm-4.7", ModelSpec(
                 path="/chat/completions",
-                pricing=(0.60 * _INR_PER_USD, 0.60 * _INR_PER_USD, 2.20 * _INR_PER_USD),
+                pricing=(0.72 * _INR_PER_USD, 0.72 * _INR_PER_USD, 2.64 * _INR_PER_USD),
                 reasoning_headroom=4000,
             )),
             ("minimax.minimax-m2.5", ModelSpec(
