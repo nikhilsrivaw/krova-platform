@@ -58,17 +58,22 @@ def test_write_tools_refuse_non_owner_roles():
 
 
 def test_read_tools_are_not_role_gated():
-    # Read tools are phase 2 here, so the refusal must be about the phase, never the role.
     for role in ("agent", None):
-        with pytest.raises(ToolRefused) as exc:
-            check_allowed(TOOLS["report"], role)
-        assert "agle phase" in str(exc.value)
+        check_allowed(TOOLS["report"], role)
+        check_allowed(TOOLS["find"], role)
 
 
 def test_phase_gate_refuses_tools_not_yet_built():
-    assert CURRENT_PHASE == 1
+    assert CURRENT_PHASE == 2
     with pytest.raises(ToolRefused):
         check_allowed(TOOLS["rule"], "owner")
+    with pytest.raises(ToolRefused):
+        check_allowed(TOOLS["message"], "owner")
+
+
+def test_phase_two_tools_are_executable():
+    for name in ("find", "report", "update", "create", "block_slot"):
+        check_allowed(TOOLS[name], "owner")
 
 
 def test_parse_input_rejects_extra_fields_and_unknown_tool():
@@ -76,6 +81,19 @@ def test_parse_input_rejects_extra_fields_and_unknown_tool():
         parse_input("set_setting", {"key": "deposit_required", "value": True, "extra": 1})
     with pytest.raises(ToolRefused):
         parse_input("delete_everything", {})
+
+
+def test_block_slot_input_validates_fields():
+    parsed = parse_input("block_slot", {"date": "2026-10-10", "start": "14:00", "end": "16:00"})
+    assert parsed.doctor_id is None
+    with pytest.raises(ToolRefused):
+        parse_input("block_slot", {"date": "2026-10-10", "start": "14:00", "end": "16:00", "bogus": 1})
+
+
+def test_create_input_requires_customer_and_known_entity():
+    parse_input("create", {"entity": "note", "customer_id": "c1", "text": "hi"})
+    with pytest.raises(ToolRefused):
+        parse_input("create", {"entity": "invoice", "customer_id": "c1"})
 
 
 def test_preview_for_set_setting_shows_before_and_after():

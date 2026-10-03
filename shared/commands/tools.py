@@ -30,8 +30,9 @@ class UpdateInput(ToolInput):
 
 
 class CreateInput(ToolInput):
-    entity: Literal["booking", "note", "tag", "reminder"]
-    fields: dict[str, Any]
+    entity: Literal["note", "tag", "booking", "reminder"]
+    customer_id: str
+    text: str | None = None
 
 
 class MessageInput(ToolInput):
@@ -41,6 +42,7 @@ class MessageInput(ToolInput):
 
 
 class BlockSlotInput(ToolInput):
+    doctor_id: str | None = None
     date: str
     start: str
     end: str
@@ -76,11 +78,11 @@ class ToolSpec:
 TOOLS: dict[str, ToolSpec] = {
     t.name: t
     for t in (
-        ToolSpec("find", "Customers, bookings, orders or messages with filters", FindInput, False, 2),
-        ToolSpec("update", "Change one field on one customer record", UpdateInput, True, 2),
-        ToolSpec("create", "Create a booking, note, tag or reminder", CreateInput, True, 2),
-        ToolSpec("message", "Send a message to an audience (always confirmed)", MessageInput, True, 2),
-        ToolSpec("block_slot", "Block or open an availability slot", BlockSlotInput, True, 2),
+        ToolSpec("find", "Customers, bookings or orders with filters", FindInput, False, 2),
+        ToolSpec("update", "Change a customer's name", UpdateInput, True, 2),
+        ToolSpec("create", "Add a note or tag to a customer", CreateInput, True, 2),
+        ToolSpec("message", "Send a message to an audience (always confirmed)", MessageInput, True, 3),
+        ToolSpec("block_slot", "Block a time on a staff member's calendar", BlockSlotInput, True, 2),
         ToolSpec("set_setting", "Change one business setting from the registry", SetSettingInput, True, 1),
         ToolSpec("rule", "Create an automation from plain words", RuleInput, True, 4),
         ToolSpec("report", "Run one approved report", ReportInput, False, 2),
@@ -99,7 +101,7 @@ def check_allowed(tool: ToolSpec, role: str | None) -> None:
         raise ToolRefused(f"'{tool.name}' abhi nahi chalega. Ye agle phase mein aayega.")
 
 
-CURRENT_PHASE = 1
+CURRENT_PHASE = 2
 
 
 def parse_input(name: str, raw: dict[str, Any]) -> ToolInput:

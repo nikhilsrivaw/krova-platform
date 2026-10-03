@@ -82,7 +82,7 @@ async def preview(body: PreviewIn, current_user: CurrentUserDep, db: DbDep) -> C
 @router.post("/{audit_id}/confirm", response_model=CommandOut)
 async def confirm_command(audit_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> CommandOut:
     business = await _business(current_user, db)
-    row = await confirm(db, business=business, role=current_user.role, audit_id=audit_id)
+    row = await confirm(db, business=business, user_id=current_user.id, role=current_user.role, audit_id=audit_id)
     return _out(row)
 
 
