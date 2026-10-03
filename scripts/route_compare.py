@@ -10,9 +10,12 @@ is scored on amount, currency, status, and direction where the label is clear.
 """
 
 import asyncio
+import os
 import sys
 
-from shared.ai import client, providers
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from shared.ai import client, providers  # noqa: E402
 
 CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "bedrock:minimax.minimax-m2.5"
 
