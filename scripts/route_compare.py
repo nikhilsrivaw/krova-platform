@@ -36,7 +36,9 @@ TOOL = {
 
 SYSTEM = (
     "A business owner and a customer chat about money. Extract ONE commitment from the message. "
-    "direction: they_owe = the customer owes the business; we_owe = the business owes the customer. "
+    "direction is about who PAYS. they_owe = the customer pays the business (customer will pay, owes us, "
+    "has not paid us). we_owe = the business pays the customer (we will give, send, pay, refund, or the rent "
+    "we owe). If the business owner says they will give or send money, that is we_owe. "
     "status: already_paid if the money has already moved, otherwise pending. Use the tool."
 )
 
