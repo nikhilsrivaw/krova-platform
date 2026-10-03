@@ -140,6 +140,11 @@ PROVIDERS: dict[str, Provider] = {
                 pricing=(0.72 * _INR_PER_USD, 0.72 * _INR_PER_USD, 2.64 * _INR_PER_USD),
                 reasoning_headroom=4000,
             )),
+            # Mistral Large 3 on Bedrock, Mumbai on-demand (AWS pricing page).
+            ("mistral.mistral-large-3-675b-instruct", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.59 * _INR_PER_USD, 0.59 * _INR_PER_USD, 1.76 * _INR_PER_USD),
+            )),
             ("minimax.minimax-m2.5", ModelSpec(
                 path="/chat/completions",
                 pricing=(0.36 * _INR_PER_USD, 0.36 * _INR_PER_USD, 1.44 * _INR_PER_USD),
