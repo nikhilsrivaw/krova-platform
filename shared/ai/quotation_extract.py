@@ -275,8 +275,10 @@ async def extract(
         tool=EXTRACT_TOOL,
         max_tokens=1024,
     )
-    data = completion.tool_input or {}
-    cost = completion.cost_paise
+    return parse_quotation(completion.tool_input or {}, valid_ids, completion.cost_paise)
+
+
+def parse_quotation(data: dict, valid_ids: set[str], cost: int) -> Extraction:
 
     if not data.get("found"):
         return Extraction(quotation=None, cost_paise=cost)

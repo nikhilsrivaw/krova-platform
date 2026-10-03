@@ -20,9 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared import verticals
 from shared.ai import cache_policy, extraction_gate
 from shared.ai import commitments as extractor
-from shared.ai import quotation_extract as quotation_extractor
-from shared.ai import signals as signal_extractor
-from shared.ai.client import AIError
+from shared.ai import fact_extract
 from shared.billing import usage
 from shared.db import queue
 from shared.db.models import (
@@ -141,37 +139,8 @@ async def _existing_signal_titles(customer_id: uuid.UUID, db: AsyncSession) -> s
     return {(t or "").strip().lower() for t in result.scalars().all()}
 
 
-async def _extract_signals(
-    message: Message, conversation: list[dict], business_context: str, db: AsyncSession,
-    *, include_product: bool, cache: bool = False,
-) -> int:
-    """
-    Conversation signals stored as Insight rows. `include_product` picks the
-    extractor's mode: the full product-feedback set for a business with the
-    product_feedback capability, the business-neutral four for everyone
-    else (see shared/ai/signals.py). The caller decides which.
-    """
-    try:
-        extraction = await signal_extractor.extract(
-            messages=conversation, business_context=business_context,
-            include_product=include_product, cache=cache,
-        )
-    except AIError:
-        raise
-
-    channel = message.channel.value if hasattr(message.channel, "value") else message.channel
-    usage.record(
-        business_id=message.business_id,
-        event_type=UsageEventType.ai_signal_extraction,
-        channel=channel,
-        quantity=1,
-        unit="call",
-        krova_cost_paise=extraction.cost_paise,
-        source_type="message",
-        source_id=message.id,
-        db=db,
-    )
-
+async def _store_signals(message: Message, extraction, db: AsyncSession) -> int:
+    """Conversation signals from the combined extraction, stored as Insight rows."""
     already = await _existing_signal_titles(message.customer_id, db)
     stored = 0
     for found in extraction.signals:
@@ -214,10 +183,7 @@ async def _extract_signals(
     return stored
 
 
-async def _extract_quotation(
-    message: Message, conversation: list[dict], business_context: str, db: AsyncSession,
-    *, cache: bool = False,
-) -> None:
+async def _store_quotation(message: Message, extraction, db: AsyncSession) -> None:
     """
     Pull a price quotation out of the thread, if the business gave one.
 
@@ -231,29 +197,6 @@ async def _extract_quotation(
     commitments - re-analysing a thread after each new message would
     otherwise recreate the same quotation every time.
     """
-    try:
-        extraction = await quotation_extractor.extract(
-            messages=conversation, business_context=business_context, cache=cache
-        )
-    except AIError:
-        # Never fail the whole analysis job over the quotation pass - the
-        # commitments above are already written by the time this runs.
-        logger.warning("quotation extraction failed for message=%s", message.id)
-        return
-
-    channel = message.channel.value if hasattr(message.channel, "value") else message.channel
-    usage.record(
-        business_id=message.business_id,
-        event_type=UsageEventType.ai_commitment_extraction,
-        channel=channel,
-        quantity=1,
-        unit="call",
-        krova_cost_paise=extraction.cost_paise,
-        source_type="message",
-        source_id=message.id,
-        db=db,
-    )
-
     found = extraction.quotation
     if found is None:
         return
@@ -414,13 +357,27 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
     context = await _business_context(message.business_id, db)
     cache = await cache_policy.business_recently_active(message.business_id, db)
 
-    try:
-        extraction = await extractor.extract(
-            messages=conversation, business_context=context, cache=cache
-        )
-    except AIError:
-        # Let the job retry with backoff rather than dropping the message.
-        raise
+    # Signals for every business, not only product_feedback ones - see
+    # shared/ai/signals.py's module docstring. Without that capability a
+    # business gets the business-neutral mode, and only on the customer's own
+    # messages: the signal is always something the customer said.
+    product = bool(business) and verticals.has_capability(business, "product_feedback")
+    signal_mode = "off"
+    if business and (product or message.direction == Direction.inbound):
+        signal_mode = "product" if product else "conversation"
+
+    # A quotation is the business naming a price - with no new business
+    # message carrying a number, price word or attachment since the last
+    # analysis, there is nothing new for it to find.
+    want_quotation = bool(business) and bool(
+        verticals.has_capability(business, "quotations")
+    ) and extraction_gate.window_may_quote(window)
+
+    facts = await fact_extract.extract(
+        messages=conversation, business_context=context,
+        signal_mode=signal_mode, want_quotation=want_quotation, cache=cache,
+    )
+    extraction = facts.commitments
 
     channel = message.channel.value if hasattr(message.channel, "value") else message.channel
     usage.record(
@@ -429,35 +386,16 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         channel=channel,
         quantity=1,
         unit="call",
-        krova_cost_paise=extraction.cost_paise,
+        krova_cost_paise=facts.cost_paise,
         source_type="message",
         source_id=message.id,
         db=db,
     )
 
-    # Signals for every business now, not only product_feedback ones -
-    # see shared/ai/signals.py's module docstring. A business without that
-    # capability gets the business-neutral mode (complaint, churn_risk,
-    # praise, competitor_mention), and only on the customer's own messages:
-    # the signal is always something the customer said, and skipping the
-    # business's outbound messages keeps this to one extra model call per
-    # inbound message rather than per message.
-    if business:
-        product = verticals.has_capability(business, "product_feedback")
-        if product or message.direction == Direction.inbound:
-            await _extract_signals(
-                message, conversation, context, db, include_product=product, cache=cache
-            )
-
-    # A quotation is the business naming a price - with no new business
-    # message carrying a number, price word or attachment since the last
-    # analysis, there is nothing new for this extractor to find.
-    if (
-        business
-        and verticals.has_capability(business, "quotations")
-        and extraction_gate.window_may_quote(window)
-    ):
-        await _extract_quotation(message, conversation, context, db, cache=cache)
+    if signal_mode != "off":
+        await _store_signals(message, facts.signals, db)
+    if want_quotation:
+        await _store_quotation(message, facts.quotation, db)
 
     already = await _existing_quotes(message.customer_id, db)
     stored = 0

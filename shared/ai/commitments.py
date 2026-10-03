@@ -330,7 +330,12 @@ async def extract(
         max_tokens=2048,
     )
 
-    raw = _as_list((completion.tool_input or {}).get("commitments"))
+    found, rejected = parse_items((completion.tool_input or {}).get("commitments"), valid_ids, now)
+    return Extraction(commitments=found, cost_paise=completion.cost_paise, rejected=rejected)
+
+
+def parse_items(raw, valid_ids: set[str], now: datetime) -> tuple[list[ExtractedCommitment], int]:
+    raw = _as_list(raw)
     found: list[ExtractedCommitment] = []
     rejected = 0
 
@@ -401,6 +406,4 @@ async def extract(
             )
         )
 
-    return Extraction(
-        commitments=found, cost_paise=completion.cost_paise, rejected=rejected
-    )
+    return found, rejected

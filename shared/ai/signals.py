@@ -329,7 +329,16 @@ async def extract(
         max_tokens=2048,
     )
 
-    raw = _as_list((completion.tool_input or {}).get("signals"))
+    found, rejected = parse_items(
+        (completion.tool_input or {}).get("signals"), kinds, include_product, valid_ids
+    )
+    return Extraction(signals=found, cost_paise=completion.cost_paise, rejected=rejected)
+
+
+def parse_items(
+    raw, kinds: tuple[str, ...], include_product: bool, valid_ids: set[str]
+) -> tuple[list[ExtractedSignal], int]:
+    raw = _as_list(raw)
     found: list[ExtractedSignal] = []
     rejected = 0
 
@@ -392,4 +401,4 @@ async def extract(
             )
         )
 
-    return Extraction(signals=found, cost_paise=completion.cost_paise, rejected=rejected)
+    return found, rejected
