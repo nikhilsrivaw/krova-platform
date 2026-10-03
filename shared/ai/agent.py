@@ -995,6 +995,16 @@ async def notify_escalation(
     except Exception:
         logger.exception("escalation record failed business=%s", business_id)
 
+    try:
+        from shared.integrations import web_push
+
+        await web_push.send_to_business(
+            db, business_id=business_id,
+            payload={"title": "KROVA needs you", "body": reason[:140], "url": "/app/escalations"},
+        )
+    except Exception:
+        logger.exception("escalation push failed business=%s", business_id)
+
     # Same call site drives the general trigger-to-action bridge - skipped
     # when this escalation was itself raised BY an automation rule
     # (post_call_actions.py's "create_escalation_task" action), so a rule

@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     # a page under the actual dashboard, not the API itself, since the API
     # has nothing to show a human.
     frontend_base_url: str = Field(default="https://krova.space", alias="FRONTEND_BASE_URL")
+    # The installable app's own origin. Google sign-in from the app returns
+    # here instead of the marketing/desktop site.
+    app_base_url: str = Field(default="https://app.krova.space", alias="APP_BASE_URL")
 
     # India data residency for a connected number. Kept because we want it,
     # but NOT currently applied: passing data_localization_region to
@@ -148,6 +151,19 @@ class Settings(BaseSettings):
     # Paid-tier Gemini API key, for the gemini provider. Never a free-tier
     # key: the free tier trains on content.
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    # Long-term Bedrock API key (AWS console → Bedrock → API keys), for the
+    # bedrock provider. Mumbai-hosted models only; see providers.py.
+    bedrock_api_key: str = Field(default="", alias="BEDROCK_API_KEY")
+    # Web Push (VAPID) keys for the app's notifications - generate once with
+    # `npx web-push generate-vapid-keys` or pywebpush; keep the private key
+    # secret. Empty = push is off and nothing is sent.
+    vapid_public_key: str = Field(default="", alias="VAPID_PUBLIC_KEY")
+    vapid_private_key: str = Field(default="", alias="VAPID_PRIVATE_KEY")
+    vapid_subject: str = Field(default="mailto:support@krova.space", alias="VAPID_SUBJECT")
+    # The model the in-app "Ask KROVA" chat uses. Must be a non-Anthropic
+    # provider route (Claude is reserved for voice). Refused until that
+    # provider is approved - see shared/ai/providers.py.
+    owner_ask_model: str = Field(default="bedrock:deepseek.v3.2", alias="OWNER_ASK_MODEL")
 
     # ── Google / Microsoft (email channels) ──────────────────────────────────
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
@@ -187,7 +203,7 @@ class Settings(BaseSettings):
     # no origin allowed at all, discovered only once something was actually
     # deployed for the first time.
     cors_allowed_origins_raw: str = Field(
-        default="https://krova.space,https://www.krova.space", alias="CORS_ALLOWED_ORIGINS"
+        default="https://krova.space,https://www.krova.space,https://app.krova.space", alias="CORS_ALLOWED_ORIGINS"
     )
 
     @property

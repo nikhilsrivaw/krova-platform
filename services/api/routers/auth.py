@@ -212,6 +212,7 @@ def _google_redirect_uri() -> str:
 async def google_start(
     business_name: str | None = Query(default=None, max_length=255),
     vertical: str | None = Query(default=None),
+    app: bool = Query(default=False),
 ) -> GoogleStartUrl:
     """
     Called from the login page (no params - existing account only) or the
@@ -224,7 +225,8 @@ async def google_start(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Unknown business type",
         )
-    state = create_google_oauth_state(business_name, vertical)
+    return_to = settings.app_base_url if app else None
+    state = create_google_oauth_state(business_name, vertical, return_to)
     return GoogleStartUrl(
         authorize_url=google_oauth.authorize_url(state, _google_redirect_uri())
     )
@@ -246,6 +248,10 @@ async def google_callback(
         parsed_state = decode_google_oauth_state(state)
     except TokenError:
         return RedirectResponse(f"{frontend}/login?error=google_expired")
+
+    allowed_returns = {frontend, settings.app_base_url.rstrip("/")}
+    if parsed_state.get("return_to") and parsed_state["return_to"].rstrip("/") in allowed_returns:
+        frontend = parsed_state["return_to"].rstrip("/")
 
     try:
         tokens = await google_oauth.exchange_code(code, _google_redirect_uri())

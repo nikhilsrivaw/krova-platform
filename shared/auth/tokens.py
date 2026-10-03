@@ -145,7 +145,7 @@ def decode_connect_state(token: str) -> uuid.UUID:
 # attempt (which must not silently create a business for an unrecognised
 # email - see login_via_google's own reasoning).
 
-def create_google_oauth_state(business_name: str | None, vertical: str | None) -> str:
+def create_google_oauth_state(business_name: str | None, vertical: str | None, return_to: str | None = None) -> str:
     now = _now()
     payload = {
         "typ": "google_oauth_state",
@@ -157,6 +157,8 @@ def create_google_oauth_state(business_name: str | None, vertical: str | None) -
         payload["biz_name"] = business_name
     if vertical is not None:
         payload["vertical"] = vertical
+    if return_to is not None:
+        payload["ret"] = return_to
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -180,6 +182,7 @@ def decode_google_oauth_state(token: str) -> dict:
     return {
         "business_name": claims.get("biz_name"),
         "vertical": claims.get("vertical"),
+        "return_to": claims.get("ret"),
     }
 
 

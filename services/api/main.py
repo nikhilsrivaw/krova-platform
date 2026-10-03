@@ -24,6 +24,8 @@ from services.api.routers import (
     call_scripts,
     campaigns,
     canned_responses,
+    owner,
+    push,
     cases,
     channels,
     conversations,
@@ -180,6 +182,8 @@ app.include_router(team.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)
 app.include_router(flows.router, prefix=API_PREFIX)
 app.include_router(canned_responses.router, prefix=API_PREFIX)
+app.include_router(push.router, prefix=API_PREFIX)
+app.include_router(owner.router, prefix=API_PREFIX)
 
 # Webhooks sit at the root, not under the API prefix: the URL is
 # registered with Meta and changing it later means reconfiguring every

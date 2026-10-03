@@ -114,6 +114,34 @@ PROVIDERS: dict[str, Provider] = {
             )),
         ),
     ),
+    # Models hosted on AWS Bedrock. The OpenAI chat-completions format for
+    # these is served on the bedrock-mantle endpoint (AWS model cards), with
+    # client-side tool calling. Mumbai availability on mantle is NOT verified
+    # yet - the first live call decides it. Prices are USD list prices from
+    # third-party pages (2026-10), NOT the AWS pricing page: verify before
+    # trusting cost numbers. No caching is documented for these models, so
+    # cached input is priced at the normal input rate (no discount assumed).
+    # GLM 4.7 is deliberately absent until it has a verified price.
+    "bedrock": Provider(
+        base_url="https://bedrock-mantle.ap-south-1.api.aws/v1",
+        key_setting="bedrock_api_key",
+        headers=(("Authorization", "Bearer {key}"),),
+        vision=False,
+        models=(
+            ("deepseek.v3.2", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.62 * _INR_PER_USD, 0.62 * _INR_PER_USD, 1.85 * _INR_PER_USD),
+            )),
+            ("moonshotai.kimi-k2.5", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.60 * _INR_PER_USD, 0.60 * _INR_PER_USD, 3.00 * _INR_PER_USD),
+            )),
+            ("minimax.minimax-m2.5", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.36 * _INR_PER_USD, 0.36 * _INR_PER_USD, 1.44 * _INR_PER_USD),
+            )),
+        ),
+    ),
 }
 
 
