@@ -20,6 +20,7 @@ uses it mid-conversation, and "she usually pays late" is easier to act on than
 a paragraph of narration.
 """
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,12 +39,39 @@ MAX_MESSAGES = 200
 # turns and a summary would only add noise.
 MIN_MESSAGES = 4
 
+_PAYMENT_WORDING = re.compile(
+    r"(?<!not )\bpaid\b|\bpayment (received|came through|confirmed)\b|\bcame through\b",
+    re.IGNORECASE,
+)
+
+
+def unconfirmed_payment_wording(summary: str, confirmed: list) -> bool:
+    return not confirmed and bool(_PAYMENT_WORDING.search(summary))
+
+
 SUMMARY_TOOL = {
     "name": "record_customer",
     "description": "Write down what a person answering this customer should know.",
     "input_schema": {
         "type": "object",
         "properties": {
+            "payments_claimed_by_customer": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Payments the CUSTOMER says they made, in short phrases. Empty if none. "
+                    "Fill this before writing the summary."
+                ),
+            },
+            "payments_confirmed_by_business": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Payments the BUSINESS itself explicitly confirmed as received, in short "
+                    "phrases. Empty unless the business wrote the confirmation. A customer saying "
+                    "they paid is never a confirmation. Fill this before writing the summary."
+                ),
+            },
             "summary": {
                 "type": "string",
                 "description": (
@@ -81,7 +109,13 @@ SUMMARY_TOOL = {
                 "description": "One sentence on why that score.",
             },
         },
-        "required": ["summary", "health_score", "reasoning"],
+        "required": [
+            "payments_claimed_by_customer",
+            "payments_confirmed_by_business",
+            "summary",
+            "health_score",
+            "reasoning",
+        ],
     },
 }
 
@@ -199,6 +233,10 @@ async def compress(
     if not summary:
         logger.warning("compression returned no summary")
         return None
+
+    confirmed = result.get("payments_confirmed_by_business") or []
+    if unconfirmed_payment_wording(summary, confirmed):
+        logger.warning("compression wrote payment as received without a business confirmation")
 
     try:
         score = int(result.get("health_score", 50))

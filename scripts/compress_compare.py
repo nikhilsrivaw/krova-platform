@@ -307,7 +307,7 @@ async def ask_claude(case: dict) -> tuple[str, int | None]:
     return profile.summary, profile.health_score
 
 
-async def ask_candidate(case: dict) -> tuple[str, int | None]:
+async def ask_candidate(case: dict) -> tuple[str, int | None, bool]:
     answer = await providers.call(
         CANDIDATE,
         {"system": compression.SYSTEM, "messages": [{"role": "user", "content": build_prompt(case)}],
@@ -320,7 +320,8 @@ async def ask_candidate(case: dict) -> tuple[str, int | None]:
         score = int(data.get("health_score"))
     except (TypeError, ValueError):
         score = None
-    return summary, score
+    confirmed = data.get("payments_confirmed_by_business") or []
+    return summary, score, compression.unconfirmed_payment_wording(summary, confirmed)
 
 
 def check(case: dict, summary: str, score: int | None) -> tuple[bool, list[str]]:
@@ -337,26 +338,29 @@ def check(case: dict, summary: str, score: int | None) -> tuple[bool, list[str]]
 
 
 async def main() -> None:
-    claude_ok = candidate_ok = candidate_answered = 0
+    claude_ok = candidate_ok = candidate_answered = payment_flags = 0
     print(f"\nCandidate: {CANDIDATE}\n")
     for case in CASES:
         c_sum, c_score = await ask_claude(case)
-        m_sum, m_score = await ask_candidate(case)
+        m_sum, m_score, m_flag = await ask_candidate(case)
         c_ok, c_problems = check(case, c_sum, c_score)
         m_ok, m_problems = check(case, m_sum, m_score)
         claude_ok += c_ok
         candidate_ok += m_ok
         candidate_answered += bool(m_sum)
+        payment_flags += m_flag
         print(f"- {case['customer'] or 'unnamed'} (band {case['band'][0]}-{case['band'][1]})")
         print(f"    claude:    score={c_score} {'OK' if c_ok else 'CHECK ' + '; '.join(c_problems)}")
         print(f"               {c_sum}")
-        print(f"    candidate: score={m_score} {'OK' if m_ok else 'CHECK ' + '; '.join(m_problems)}")
+        print(f"    candidate: score={m_score} {'OK' if m_ok else 'CHECK ' + '; '.join(m_problems)}"
+              f"{'  PAYMENT-WORDING FLAG' if m_flag else ''}")
         print(f"               {m_sum}")
 
     n = len(CASES)
     print(f"\nScore (out of {n})")
     print(f"  claude     ok {claude_ok}/{n}")
-    print(f"  candidate  ok {candidate_ok}/{n}  answered {candidate_answered}/{n}")
+    print(f"  candidate  ok {candidate_ok}/{n}  answered {candidate_answered}/{n}  "
+          f"unconfirmed-payment wording {payment_flags}")
 
 
 if __name__ == "__main__":
