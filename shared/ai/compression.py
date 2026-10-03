@@ -103,6 +103,8 @@ What to leave out:
 - A retelling of the conversation. The agent can read that if it needs to.
 - Anything you inferred without evidence. If they have paid once, you do not \
 know that they "always pay promptly".
+- A payment as received, unless the business has confirmed it. A customer \
+saying they paid is a claim, not a confirmation.
 - Praise or judgement. "Good customer" tells nobody anything.
 
 Write in the second person, addressed to the owner: "She usually pays within \
