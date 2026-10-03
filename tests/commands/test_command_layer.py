@@ -63,17 +63,30 @@ def test_read_tools_are_not_role_gated():
         check_allowed(TOOLS["find"], role)
 
 
-def test_phase_gate_refuses_tools_not_yet_built():
+def test_all_eight_tools_are_executable_in_phase_two():
     assert CURRENT_PHASE == 2
-    with pytest.raises(ToolRefused):
-        check_allowed(TOOLS["rule"], "owner")
-    with pytest.raises(ToolRefused):
-        check_allowed(TOOLS["message"], "owner")
-
-
-def test_phase_two_tools_are_executable():
-    for name in ("find", "report", "update", "create", "block_slot"):
+    for name in TOOLS:
         check_allowed(TOOLS[name], "owner")
+
+
+def test_message_input_requires_mode_and_recipients():
+    parse_input("message", {"mode": "window_text", "customer_ids": ["c1"], "body": "hi"})
+    with pytest.raises(ToolRefused):
+        parse_input("message", {"mode": "blast", "customer_ids": ["c1"], "body": "hi"})
+    with pytest.raises(ToolRefused):
+        parse_input("message", {"mode": "template", "customer_ids": []})
+
+
+def test_rule_input_only_allows_booking_triggers():
+    parse_input("rule", {"trigger": "appointment_booked", "message": "Shukriya"})
+    with pytest.raises(ToolRefused):
+        parse_input("rule", {"trigger": "call_completed", "message": "x"})
+
+
+def test_message_preview_says_what_will_happen():
+    from shared.commands.service import preview_lines
+    lines = preview_lines("message", {"mode": "window_text", "customer_ids": ["a", "b"], "body": "x"}, None)
+    assert lines == ["2 customer ko text bhejenge. Jinki 24 ghante ki window band hai, unhe skip karenge"]
 
 
 def test_parse_input_rejects_extra_fields_and_unknown_tool():

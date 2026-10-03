@@ -32,6 +32,14 @@ def preview_lines(tool_name: str, args: dict[str, Any], business_settings: dict 
     if tool_name == "create":
         kind = "note" if args["entity"] == "note" else "tag"
         return [f"Is customer par {kind} jod denge: '{(args.get('text') or '')[:80]}'"]
+    if tool_name == "message":
+        count = len(args["customer_ids"])
+        if args["mode"] == "template":
+            return [f"{count} customer ko template '{args.get('template_name')}' bhejenge"]
+        return [f"{count} customer ko text bhejenge. Jinki 24 ghante ki window band hai, unhe skip karenge"]
+    if tool_name == "rule":
+        when = "appointment book hone par" if args["trigger"] == "appointment_booked" else "appointment cancel hone par"
+        return [f"Jab {when}, customer ko ye message jayega: '{args['message'][:120]}'"]
     if tool_name == "block_slot":
         reason = f" ({args['reason']})" if args.get("reason") else ""
         return [f"{args['date']} ko {args['start']} se {args['end']} tak slot band kar denge{reason}"]
@@ -141,4 +149,9 @@ async def _execute(db: AsyncSession, business: Business, user_id: uuid.UUID, row
         return await executors.update(db, business, args)
     if row.tool == "block_slot":
         return await executors.block_slot(db, business, args)
+    if row.tool == "message":
+        from shared.commands import messaging
+        return await messaging.send_bulk(db, business, user_id, args)
+    if row.tool == "rule":
+        return await executors.rule(db, business, args)
     raise ToolRefused(f"'{row.tool}' abhi nahi chalega. Ye agle phase mein aayega.")

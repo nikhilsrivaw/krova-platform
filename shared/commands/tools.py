@@ -8,7 +8,7 @@ refused with a clear message until their phase lands.
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 WRITE_ROLES = frozenset({"owner", "admin"})
 
@@ -36,9 +36,12 @@ class CreateInput(ToolInput):
 
 
 class MessageInput(ToolInput):
-    audience: str
-    body: str
-    template: str | None = None
+    mode: Literal["template", "window_text"]
+    customer_ids: list[str] = Field(min_length=1, max_length=50)
+    template_name: str | None = None
+    language: str = "en"
+    variables: list[str] = Field(default_factory=list)
+    body: str | None = Field(default=None, max_length=1000)
 
 
 class BlockSlotInput(ToolInput):
@@ -55,10 +58,9 @@ class SetSettingInput(ToolInput):
 
 
 class RuleInput(ToolInput):
-    trigger: str
-    condition: dict[str, Any] = {}
-    action: str
-    action_args: dict[str, Any] = {}
+    name: str | None = Field(default=None, max_length=120)
+    trigger: Literal["appointment_booked", "appointment_cancelled"]
+    message: str = Field(min_length=1, max_length=500)
 
 
 class ReportInput(ToolInput):
@@ -81,10 +83,10 @@ TOOLS: dict[str, ToolSpec] = {
         ToolSpec("find", "Customers, bookings or orders with filters", FindInput, False, 2),
         ToolSpec("update", "Change a customer's name", UpdateInput, True, 2),
         ToolSpec("create", "Add a note or tag to a customer", CreateInput, True, 2),
-        ToolSpec("message", "Send a message to an audience (always confirmed)", MessageInput, True, 3),
+        ToolSpec("message", "Send a message to chosen customers (always confirmed)", MessageInput, True, 2),
         ToolSpec("block_slot", "Block a time on a staff member's calendar", BlockSlotInput, True, 2),
         ToolSpec("set_setting", "Change one business setting from the registry", SetSettingInput, True, 1),
-        ToolSpec("rule", "Create an automation from plain words", RuleInput, True, 4),
+        ToolSpec("rule", "Create a follow-up message that runs on a booking event", RuleInput, True, 2),
         ToolSpec("report", "Run one approved report", ReportInput, False, 2),
     )
 }

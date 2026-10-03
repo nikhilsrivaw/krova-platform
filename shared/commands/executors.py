@@ -191,3 +191,21 @@ async def block_slot(db: AsyncSession, business: Business, args: dict[str, Any])
     db.add(exception)
     await db.flush()
     return {"id": str(exception.id), "doctor_id": str(doctor.id), "date": day.isoformat()}
+
+
+async def rule(db: AsyncSession, business: Business, args: dict[str, Any]) -> dict[str, Any]:
+    from shared.db.models import AutomationStep, PostCallActionRule
+
+    config = {"message": args["message"].strip()}
+    action = PostCallActionRule(
+        business_id=business.id, name=args.get("name"), trigger_type=args["trigger"],
+        action_type="whatsapp_followup", action_config=config, is_active=True, channel=None,
+    )
+    db.add(action)
+    await db.flush()
+    db.add(AutomationStep(
+        rule_id=action.id, position=0, condition=None, delay_seconds=None,
+        action_type="whatsapp_followup", action_config=config,
+    ))
+    await db.flush()
+    return {"id": str(action.id), "trigger": args["trigger"], "active": True}
