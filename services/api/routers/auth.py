@@ -249,9 +249,8 @@ async def google_callback(
     except TokenError:
         return RedirectResponse(f"{frontend}/login?error=google_expired")
 
-    allowed_returns = {frontend, settings.app_base_url.rstrip("/")}
-    if parsed_state.get("return_to") and parsed_state["return_to"].rstrip("/") in allowed_returns:
-        frontend = parsed_state["return_to"].rstrip("/")
+    if parsed_state.get("return_to") == settings.app_base_url:
+        frontend = f"{settings.app_base_url.rstrip('/')}/app"
 
     try:
         tokens = await google_oauth.exchange_code(code, _google_redirect_uri())
