@@ -45,4 +45,4 @@ stripe==15.6.1
 # Instagram's content-publish API fetches media from a public URL Krova
 # hosts - see shared/integrations/media_storage.py's own docstring.
 boto3==1.43.97
-pywebpush==2.5.0
+pywebpush==2.2.1
