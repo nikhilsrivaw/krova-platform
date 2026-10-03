@@ -53,7 +53,7 @@ CASES = [
         ],
         "commitments": [],
         "band": (70, 100),
-        "forbidden": ["unpaid", "complain"],
+        "forbidden": ["unpaid", "overdue"],
         "must": [],
     },
     {
