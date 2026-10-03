@@ -39,7 +39,10 @@ SYSTEM = (
     "direction is about who PAYS. they_owe = the customer pays the business (customer will pay, owes us, "
     "has not paid us). we_owe = the business pays the customer (we will give, send, pay, refund, or the rent "
     "we owe). If the business owner says they will give or send money, that is we_owe. "
-    "status: already_paid if the money has already moved, otherwise pending. Use the tool."
+    "status: already_paid if the money has already moved, otherwise pending. Use the tool.\n"
+    "Examples (not from the test set):\n"
+    "- 'Main kal 300 rupaye de dunga' -> direction we_owe, status pending (the owner pays)\n"
+    "- 'Usne 700 bhej diye hain' -> direction they_owe, status already_paid (the customer paid us)"
 )
 
 # (sentence, amount, status, direction or None when the direction is not clear from the text)
