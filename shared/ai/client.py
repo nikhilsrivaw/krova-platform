@@ -128,6 +128,17 @@ def _log_usage(task: str, model: str, usage: Any, cost_paise: int) -> None:
 
 
 
+_RUPEE_WORDS = {"inr", "rs", "rs.", "rupee", "rupees", "rupaye", "rupya", "rupya", "₹", "rupaiya", "rupaiye"}
+
+
+def _normalise_currency(value: Any) -> str:
+    """Models write the same currency many ways ("rupees", "Rs.", "₹"). Everything here means INR."""
+    if not isinstance(value, str):
+        return "INR"
+    key = value.strip().lower()
+    return "INR" if (key in _RUPEE_WORDS or not key) else value.strip().upper()
+
+
 # Voice never leaves Claude: a live route for these is ignored, not honoured.
 _VOICE_TASK_PREFIXES = ("reply_voice", "reply_owner_voice", "reply_scripted_voice", "copilot", "call_")
 
@@ -157,6 +168,9 @@ async def _complete_via_provider(
         # A tool-driven task with no tool call is an empty answer, not a result.
         logger.warning("live route %s gave no tool call for task=%s, falling back to Claude", ref, task)
         return None
+
+    if isinstance(answer.tool_input, dict) and "currency" in answer.tool_input:
+        answer.tool_input["currency"] = _normalise_currency(answer.tool_input["currency"])
 
     _log_usage(task, ref, answer.usage, answer.cost_paise)
     return Completion(
