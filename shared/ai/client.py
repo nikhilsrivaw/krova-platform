@@ -153,6 +153,11 @@ async def _complete_via_provider(
         logger.warning("live route %s failed for task=%s, falling back to Claude", ref, task, exc_info=True)
         return None
 
+    if tool is not None and answer.tool_input is None:
+        # A tool-driven task with no tool call is an empty answer, not a result.
+        logger.warning("live route %s gave no tool call for task=%s, falling back to Claude", ref, task)
+        return None
+
     _log_usage(task, ref, answer.usage, answer.cost_paise)
     return Completion(
         text=answer.text,
