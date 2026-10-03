@@ -131,6 +131,7 @@ PROVIDERS: dict[str, Provider] = {
             ("deepseek.v3.2", ModelSpec(
                 path="/chat/completions",
                 pricing=(0.62 * _INR_PER_USD, 0.62 * _INR_PER_USD, 1.85 * _INR_PER_USD),
+                reasoning_headroom=1000,
             )),
             ("moonshotai.kimi-k2.5", ModelSpec(
                 path="/chat/completions",
@@ -139,6 +140,9 @@ PROVIDERS: dict[str, Provider] = {
             ("minimax.minimax-m2.5", ModelSpec(
                 path="/chat/completions",
                 pricing=(0.36 * _INR_PER_USD, 0.36 * _INR_PER_USD, 1.44 * _INR_PER_USD),
+                # Thinks before it answers; without room it hit max_tokens and
+                # returned no tool call. Only tokens actually used are billed.
+                reasoning_headroom=4000,
             )),
         ),
     ),
