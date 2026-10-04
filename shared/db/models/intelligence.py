@@ -425,6 +425,15 @@ class Escalation(UUIDMixin, Base):
     # None until that sweep runs; one of shared/ai/escalation_categorize.py's
     # own fixed category set once it has.
     category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the customer asked, in their own words, and a number to reach them on.
+    request_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caller_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # open -> in_progress -> resolved, or dismissed. Acknowledging is "seen",
+    # which is separate: a person can see it and still have it open.
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="open")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
