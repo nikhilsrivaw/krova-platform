@@ -452,6 +452,7 @@ async def _buffered_voice(route: str, agent_context: ctx.AgentContext, haiku):
          "max_tokens": 300},
     )
     logger.info("voice reply from %s in %.2fs", route, time.perf_counter() - start)
+    client._log_usage("reply_voice", route, answer.usage, answer.cost_paise)
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
     if _grounded(answer.text or "", facts):
         return _Buffered(answer.text, answer.cost_paise)
