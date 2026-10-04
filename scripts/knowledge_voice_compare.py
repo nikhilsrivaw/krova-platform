@@ -78,19 +78,26 @@ async def main() -> None:
     h_times: list[float] = []
     c_times: list[float] = []
     print(f"\nCandidate: {CANDIDATE}\n")
+    haiku_ok_known = True
     for text, expected in CASES:
-        h_action, h_raw, h_t = await ask_haiku(text)
+        try:
+            h_action, h_raw, h_t = await ask_haiku(text)
+        except Exception as exc:  # noqa: BLE001 - baseline may be unavailable (no Anthropic credits)
+            haiku_ok_known = False
+            h_action, h_raw, h_t = None, f"unavailable: {type(exc).__name__}", 0.0
         c_action, c_raw, c_t = await ask_candidate(text)
         h_ok += h_action == expected
         c_ok += c_action == expected
-        h_times.append(h_t)
+        if h_t:
+            h_times.append(h_t)
         c_times.append(c_t)
         print(f"- {text}  (expected {expected})")
         print(f"    haiku:     {h_action} {h_t:.2f}s  {h_raw.strip()[:160]!r}")
         print(f"    candidate: {c_action} {c_t:.2f}s  {c_raw.strip()[:160]!r}")
     n = len(CASES)
     print(f"\nScore (out of {n})")
-    print(f"  haiku      action {h_ok}/{n}  median {statistics.median(h_times):.2f}s")
+    if haiku_ok_known:
+        print(f"  haiku      action {h_ok}/{n}  median {statistics.median(h_times):.2f}s")
     print(f"  candidate  action {c_ok}/{n}  median {statistics.median(c_times):.2f}s")
 
 
