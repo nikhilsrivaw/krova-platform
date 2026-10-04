@@ -625,6 +625,7 @@ class CallPipeline:
             await agent_module.notify_escalation(
                 self.route.business_id, reason=gap or "needs review",
                 customer_id=self.customer_id, channel="voice", db=self.db,
+                request_summary=self._caller_summary(),
             )
             if gap:
                 await agent_module.record_gap(self.route.business_id, gap, self.db)
@@ -989,6 +990,11 @@ class CallPipeline:
             ),
             record=True,
         )
+
+    def _caller_summary(self) -> str | None:
+        """What the caller said most recently, in their own words, for the staff member who follows up."""
+        said = [t.text for t in self.turns if t.role == "caller" and t.text][-3:]
+        return " | ".join(said)[:500] or None
 
     def _caller_asked_for_person(self) -> bool:
         """Transfer only when the caller asks for a person - not for every question the agent cannot answer."""

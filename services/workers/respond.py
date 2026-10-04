@@ -477,6 +477,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         await agent_module.notify_escalation(
             message.business_id, reason=proposal.gap or "needs review",
             customer_id=message.customer_id, channel=channel, db=db,
+            request_summary=(message.content or "")[:500] or None,
         )
         if proposal.gap:
             await agent_module.record_gap(message.business_id, proposal.gap, db)

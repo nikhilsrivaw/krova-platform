@@ -32,8 +32,9 @@ to a caller to remember.
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import auto_send_gate, bedrock_claude, client, context as ctx, providers, router, voice_guard
@@ -1124,7 +1125,7 @@ async def record_gap(business_id: uuid.UUID, gap: str, db: AsyncSession) -> None
 
 async def notify_escalation(
     business_id: uuid.UUID, *, reason: str, customer_id: uuid.UUID | None, channel: str, db: AsyncSession,
-    via_automation: bool = False,
+    via_automation: bool = False, request_summary: str | None = None,
 ) -> None:
     """
     Tell whoever's listening (Slack, Teams, anything else a business has
@@ -1158,9 +1159,25 @@ async def notify_escalation(
         logger.exception("escalation webhook dispatch failed business=%s", business_id)
 
     try:
+        from shared.db.models import Business, CustomerIdentity
+
+        now = datetime.now(timezone.utc)
+        caller_phone = None
+        if customer_id is not None:
+            phone = (await db.execute(
+                select(CustomerIdentity.value).where(
+                    CustomerIdentity.customer_id == customer_id,
+                    CustomerIdentity.kind == "phone",
+                ).limit(1)
+            )).scalars().first()
+            caller_phone = f"+{phone}" if phone else None
+        business = await db.get(Business, business_id)
+        sla_hours = ((business.settings or {}).get("escalation_sla_hours") if business else None)
+        due_at = now + timedelta(hours=float(sla_hours)) if sla_hours else None
         db.add(Escalation(
             business_id=business_id, customer_id=customer_id, channel=channel,
-            reason=reason, created_at=datetime.now(timezone.utc),
+            reason=reason, created_at=now, request_summary=request_summary,
+            caller_phone=caller_phone, due_at=due_at,
         ))
         await db.flush()
     except Exception:
