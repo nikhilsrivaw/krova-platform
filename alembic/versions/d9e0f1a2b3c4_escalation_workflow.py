@@ -1,14 +1,14 @@
 """Escalations carry the caller's request, a callback number, a status and a due time.
 
-Revision ID: f6a7b8c9d0e1
-Revises: e5f6a7b8c9d0
+Revision ID: d9e0f1a2b3c4
+Revises: c2d3e4f5a6b7
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "f6a7b8c9d0e1"
-down_revision: str = "e5f6a7b8c9d0"
+revision: str = "d9e0f1a2b3c4"
+down_revision: str = "c2d3e4f5a6b7"
 branch_labels = None
 depends_on = None
 
