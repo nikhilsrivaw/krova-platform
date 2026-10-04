@@ -140,7 +140,7 @@ def _normalise_currency(value: Any) -> str:
 
 
 # Voice never leaves Claude: a live route for these is ignored, not honoured.
-_VOICE_TASK_PREFIXES = ("reply_voice", "reply_owner_voice", "reply_scripted_voice", "copilot", "call_")
+_VOICE_TASK_PREFIXES = ("reply_voice", "reply_owner_voice", "reply_scripted_voice", "copilot")
 
 
 async def _complete_via_provider(
