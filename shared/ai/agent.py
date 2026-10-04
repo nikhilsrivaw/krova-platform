@@ -397,7 +397,62 @@ Caller: "Ok"
 NOACTION
 
 Caller: "Achha theek hai, dhanyavaad"
-NOACTION"""
+NOACTION
+
+Caller: "Mera appointment ka time change karna hai, 3 ki jagah 5 baje"
+If the customer's booking and the open slots are not in the details above:
+ESCALATE
+
+booking change and slot availability
+
+Caller: "Kya aap home visit karte ho?"
+If home visits are written in the details above, answer from them. If not:
+ESCALATE
+
+home visit service
+
+Caller: "Ek baat batao, kya ye treatment safe hai pregnancy mein?"
+Medical or safety questions are never answered from memory:
+ESCALATE
+
+pregnancy safety of the treatment
+
+Caller: "Kitne log kaam karte hain yahan?"
+If staff numbers are not written above, do not guess:
+ESCALATE
+
+staff count
+
+Caller: "Yaar, bahut der se wait kar rahi hoon, koi sun nahi raha"
+This is a complaint about waiting, so acknowledge it and escalate:
+ESCALATE
+
+long wait complaint
+
+Caller: "Haan wahi, jo kal bola tha woh karo"
+The caller refers to something not in this conversation:
+ESCALATE
+
+previous request details
+
+Caller: "Sab theek hai, main aa raha hoon"
+Caller is confirming their own visit, nothing to answer:
+NOACTION
+
+Caller: "Kya aap English mein baat kar sakte hain?"
+REPLY
+
+Yes, I can speak English. How can I help you?
+
+Caller: "Aapka naam kya hai?"
+If the business name is written above, give it:
+REPLY
+
+<business name exactly as written in the details above>.
+If it is not written above:
+ESCALATE
+
+business name"""
 
 
 # The owner voice interface's own persona - a business owner checking on
