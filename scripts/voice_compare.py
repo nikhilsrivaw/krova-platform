@@ -131,7 +131,10 @@ async def main() -> None:
     cand_times: list[float] = []
     print(f"\nCandidate: {CANDIDATE} (buffered, with guard)\n")
     for text, expected in CASES:
-        h_action, h_reply, h_t = await ask_haiku(text)
+        try:
+            h_action, h_reply, h_t = await ask_haiku(text)
+        except Exception as exc:  # noqa: BLE001 - baseline may be unavailable (no Anthropic credits)
+            h_action, h_reply, h_t = None, f"unavailable: {type(exc).__name__}", 0.0
         try:
             m_action, m_reply, m_t, fired = await ask_candidate(text)
         except Exception as exc:  # noqa: BLE001 - a failed call is a result, not a crash
