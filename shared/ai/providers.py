@@ -161,6 +161,19 @@ PROVIDERS: dict[str, Provider] = {
                 path="/chat/completions",
                 pricing=(0.18 * _INR_PER_USD, 0.18 * _INR_PER_USD, 0.18 * _INR_PER_USD),
             )),
+            # Google Gemma 3, Mumbai on-demand (user-supplied AWS Mumbai rates). Small instruct models.
+            ("google.gemma-3-4b-it", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.05 * _INR_PER_USD, 0.05 * _INR_PER_USD, 0.09 * _INR_PER_USD),
+            )),
+            ("google.gemma-3-12b-it", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.11 * _INR_PER_USD, 0.11 * _INR_PER_USD, 0.34 * _INR_PER_USD),
+            )),
+            ("google.gemma-3-27b-it", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.27 * _INR_PER_USD, 0.27 * _INR_PER_USD, 0.45 * _INR_PER_USD),
+            )),
             ("minimax.minimax-m2.5", ModelSpec(
                 path="/chat/completions",
                 pricing=(0.36 * _INR_PER_USD, 0.36 * _INR_PER_USD, 1.44 * _INR_PER_USD),
