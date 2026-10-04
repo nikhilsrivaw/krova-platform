@@ -489,6 +489,8 @@ def _grounded(text: str, facts: str) -> bool:
     if not lines or lines[0].strip().upper() != "REPLY":
         return bool(lines)
     spoken = text.partition("\n\n")[2] or text.partition("\n")[2]
+    if voice_guard.has_foreign_script(spoken):
+        return False
     return not voice_guard.ungrounded_claims(spoken, facts)
 
 

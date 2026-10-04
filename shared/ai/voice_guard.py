@@ -13,7 +13,7 @@ import re
 
 _CLAIM = re.compile(
     r"\b(khatam|khatm|available|confirm(?:ed)?|booked|cancel(?:led|ed)?|paid|payment|slot|"
-    r"am|pm|appointment|booking|connect|shortly|follow|band|hata|rad|badal|meeting|reschedul|change)\b",
+    r"am|pm|appointment|booking|connect|shortly|follow|band|hata|rad|badal|meeting|arrange|confirmation|reschedul|change)\b",
     re.IGNORECASE,
 )
 
@@ -28,6 +28,14 @@ _RECORD_CLAIM = re.compile(
 def has_record_claim(text: str) -> bool:
     """Text that talks about a meeting, booking, payment or a named person's record."""
     return bool(_RECORD_CLAIM.search(text or ""))
+
+
+_FOREIGN_SCRIPT = re.compile(r"[؀-ۿЀ-ӿ぀-ヿ一-鿿]")
+
+
+def has_foreign_script(text: str) -> bool:
+    """Arabic, Cyrillic, Japanese or Chinese characters in a reply meant for an Indian caller."""
+    return bool(_FOREIGN_SCRIPT.search(text or ""))
 
 
 def ungrounded_claims(reply: str, business_facts: str) -> list[str]:
