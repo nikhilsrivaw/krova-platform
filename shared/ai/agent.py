@@ -626,11 +626,14 @@ def _grounded(text: str, facts: str) -> bool:
     return not voice_guard.ungrounded_claims(spoken, facts)
 
 
-async def _buffered_voice(route: str, agent_context: ctx.AgentContext, haiku):
+GUARD_FALLBACK_REPLY = "REPLY\n\nIs baare mein main abhi confirm karke batata hoon."
+
+
+async def _buffered_voice(route: str, agent_context: ctx.AgentContext) -> _Buffered:
     """
     Voice reply from a configured non-Claude model, returned whole. If its
-    reply states a fact the business never gave, the caller hears Haiku's
-    reply instead - the guard runs before anything is spoken.
+    reply states a fact the business never gave, the caller hears a safe
+    holding line instead - the guard runs before anything is spoken.
     """
     start = time.perf_counter()
     answer = await providers.call(
@@ -643,8 +646,8 @@ async def _buffered_voice(route: str, agent_context: ctx.AgentContext, haiku):
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
     if _grounded(answer.text or "", facts):
         return _Buffered(answer.text, answer.cost_paise)
-    logger.warning("voice guard replaced an ungrounded reply from %s with Haiku", route)
-    return haiku()
+    logger.warning("voice guard replaced an ungrounded reply from %s with a holding line", route)
+    return _Buffered(GUARD_FALLBACK_REPLY, answer.cost_paise)
 
 
 CONVERSE_ROUTE_PREFIX = "bedrock-converse:"
@@ -749,7 +752,7 @@ async def stream_reply(agent_context: ctx.AgentContext):
     if route is not None and route.startswith(CONVERSE_ROUTE_PREFIX):
         stream = await _converse_voice(route[len(CONVERSE_ROUTE_PREFIX):], agent_context)
     elif route is not None:
-        stream = await _buffered_voice(route, agent_context, _haiku)
+        stream = await _buffered_voice(route, agent_context)
     else:
         stream = _haiku()
 
