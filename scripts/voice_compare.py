@@ -38,7 +38,10 @@ CASES = [
     ("Kya aap Sunday ko khule ho?", "reply"),
     ("Mujhe refund chahiye, aapne galat service di", "escalate"),
     ("Achha theek hai, dhanyavaad", "no_action"),
-    ("Kal ka appointment confirm hai na?", "reply"),
+    ("Kal ka appointment confirm hai na?", "escalate"),
+    ("Mera kal ka appointment cancel kar do", "escalate"),
+    ("Payment mil gaya na mera?", "escalate"),
+    ("Mera order kab aayega?", "escalate"),
 ]
 
 ACTIONS = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}

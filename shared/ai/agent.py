@@ -287,6 +287,11 @@ If ESCALATE: a blank line, then one short phrase naming exactly what you \
 did not know (five words or fewer) - not a sentence, just the missing \
 fact, e.g. "paediatric treatment pricing" or "Sunday opening hours".
 
+Never confirm, cancel or change a booking, order or payment unless the details \
+you were given state it. Do not guess a day, time, price or status. If the \
+caller asks about something the details do not show, choose ESCALATE and name \
+the missing fact, e.g. "existing booking status".
+
 If NOACTION: nothing else follows.
 
 NOACTION means only "the last thing said needs no reply at all" - a \
