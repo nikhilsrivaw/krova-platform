@@ -11,6 +11,7 @@ agent already reads. Never spoken, never sent anywhere but a screen - a
 human's own words remain their own words.
 """
 
+import re
 from dataclasses import dataclass
 
 from shared.ai import client, voice_guard
