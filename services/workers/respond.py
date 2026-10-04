@@ -16,6 +16,7 @@ Default is `draft`. Anything else has to be chosen deliberately by the owner,
 because sending on someone's behalf is not a default anyone should inherit.
 """
 
+import dataclasses
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -337,6 +338,14 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     except AIError:
         # Let the queue retry with backoff rather than losing the reply.
         raise
+
+    # A model that answers a question its business details cannot answer is
+    # overruled here, whatever the model chose. See auto_send_gate.must_escalate.
+    hit = auto_send_gate.must_escalate(message.content or "")
+    if hit and proposal.action == "reply":
+        proposal = dataclasses.replace(
+            proposal, action="escalate", message=None, gap=f"needs a person: {hit}"
+        )
 
     # Metered here, before the no_action early-return below: a no_action
     # decision is still one real Claude call that cost real tokens, even

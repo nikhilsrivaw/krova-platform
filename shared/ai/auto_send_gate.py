@@ -85,6 +85,28 @@ UNIVERSAL_ESCALATE_KEYWORDS: tuple[str, ...] = (
 )
 
 
+# Questions about an order, a booking or a payment the agent cannot see, and
+# medical reactions. Nothing in the business details answers these, so a
+# reply is always a guess. Over-matching is intended: a false match is a
+# draft for a human, never a sent message.
+ESCALATE_RECORD_KEYWORDS: tuple[str, ...] = (
+    "order status", "order kab", "order ka status", "mera order", "order ka", "order batao",
+    "kab aayega", "kab aayegi", "kab milega", "status batao", "status check",
+    "booking cancel", "appointment cancel", "cancel kar do", "cancel karo", "cancel karna",
+    "reschedule", "time badal", "time change", "slot", "slots", "appointment confirm",
+    "confirm hai", "mere naam se", "meri booking", "booking hai kya",
+    "payment mil", "paisa mil", "paise mil", "transfer kiya", "transfer kiye",
+    "transfer kar diya", "payment kiya", "pay kiya", "advance diya",
+    "rash", "allergy", "allergic", "reaction", "bleeding", "pregnan", "jalan ho",
+    "badtameez", "badtamiz", "rude", "gaali",
+    "ऑर्डर", "स्लॉट", "बुकिंग",
+)
+
+
+def must_escalate(text: str) -> str | None:
+    return _contains_any(text, (*UNIVERSAL_ESCALATE_KEYWORDS, *ESCALATE_RECORD_KEYWORDS))
+
+
 def _normalise(text: str) -> str:
     return " ".join(text.lower().split()) + " "
 
@@ -138,7 +160,7 @@ def check(
     # Hard floor - not something a business's own rule can loosen. Checked
     # against what the customer actually said (what should have triggered
     # escalation) as well as the reply itself.
-    floor = (*UNIVERSAL_ESCALATE_KEYWORDS, *escalate_keywords)
+    floor = (*UNIVERSAL_ESCALATE_KEYWORDS, *ESCALATE_RECORD_KEYWORDS, *escalate_keywords)
     hit = _contains_any(inbound_text, floor) or _contains_any(reply_body, floor)
     if hit:
         return GateResult(allowed=False, reason=f"touches an always-escalate topic: {hit!r}")

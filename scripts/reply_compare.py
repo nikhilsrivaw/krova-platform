@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.ai import agent, client, providers, voice_guard  # noqa: E402
+from shared.ai import agent, auto_send_gate, client, providers, voice_guard  # noqa: E402
 from voice_compare import BUSINESS, CASES, NOT_PROVIDED  # noqa: E402
 
 CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "bedrock:moonshotai.kimi-k2.5"
@@ -73,6 +73,9 @@ async def main() -> None:
         except Exception as exc:  # noqa: BLE001 - a failed call is a result
             m = None
             print(f"    candidate ERROR {type(exc).__name__}: {exc}")
+        floored = bool(m) and m.get("action") == "reply" and bool(auto_send_gate.must_escalate(text))
+        if floored:
+            m = {**m, "action": "escalate", "message": None}
         c_ok, c_g = score(c, expected)
         m_ok, m_g = score(m, expected)
         claude_ok += c_ok
