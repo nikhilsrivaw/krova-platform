@@ -29,13 +29,14 @@ person. That is the public promise, so it is enforced here rather than left
 to a caller to remember.
 """
 
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.ai import client, context as ctx
+from shared.ai import client, context as ctx, providers, router, voice_guard
 from shared.db.models import BusinessDNA
 from shared.utils.logging import get_logger
 
@@ -406,6 +407,58 @@ class ReplyDone:
 ReplyEvent = ReplyStart | ReplyChunk | ReplyDone
 
 
+class _Buffered:
+    """A whole model reply presented as the one-delta stream stream_reply reads."""
+
+    def __init__(self, text: str, cost_paise: int) -> None:
+        self._text = text
+        self.cost_paise = cost_paise
+
+    def __aiter__(self):
+        return self._once()
+
+    async def _once(self):
+        yield self._text
+
+
+def _voice_prompt(agent_context: ctx.AgentContext) -> str:
+    return (
+        f"{agent_context.render_business()}\n\n"
+        f"Today is {ctx.now_line()}.\n\n"
+        f"{agent_context.render_live()}\n\n"
+        f"{agent_context.render_conversation()}\n\n"
+        "Decide how to handle the customer's most recent message."
+    )
+
+
+def _grounded(text: str, facts: str) -> bool:
+    lines = text.strip().splitlines()
+    if not lines or lines[0].strip().upper() != "REPLY":
+        return bool(lines)
+    spoken = text.partition("\n\n")[2]
+    return not voice_guard.ungrounded_claims(spoken, facts)
+
+
+async def _buffered_voice(route: str, agent_context: ctx.AgentContext, haiku):
+    """
+    Voice reply from a configured non-Claude model, returned whole. If its
+    reply states a fact the business never gave, the caller hears Haiku's
+    reply instead - the guard runs before anything is spoken.
+    """
+    start = time.perf_counter()
+    answer = await providers.call(
+        route,
+        {"system": SYSTEM_STREAM, "messages": [{"role": "user", "content": _voice_prompt(agent_context)}],
+         "max_tokens": 300},
+    )
+    logger.info("voice reply from %s in %.2fs", route, time.perf_counter() - start)
+    facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
+    if _grounded(answer.text or "", facts):
+        return _Buffered(answer.text, answer.cost_paise)
+    logger.warning("voice guard replaced an ungrounded reply from %s with Haiku", route)
+    return haiku()
+
+
 async def stream_reply(agent_context: ctx.AgentContext):
     """
     The streaming counterpart to draft_reply, for a live call only.
@@ -446,7 +499,8 @@ async def stream_reply(agent_context: ctx.AgentContext):
     # business block (render_business) is identical across every call and
     # every customer of this business, so a second call reads it too; the
     # customer half below it is identical across the turns of this call.
-    stream = client.stream_text(
+    def _haiku():
+        return client.stream_text(
         system=SYSTEM_STREAM,
         messages=[{
             "role": "user",
@@ -474,6 +528,9 @@ async def stream_reply(agent_context: ctx.AgentContext):
         task="reply_voice",
         max_tokens=300,
     )
+
+    route = router.live_for("reply_voice")
+    stream = await _buffered_voice(route, agent_context, _haiku) if route is not None else _haiku()
 
     buffer = ""
     action: str | None = None
