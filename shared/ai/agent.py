@@ -319,8 +319,7 @@ asked something and hears nothing back assumes the line went dead. \
 NOACTION is only for a message that is not a question and does not need \
 a reply at all - never for a repeated question, no matter how repeated.
 
-Worked examples. Each shows what the caller said and the exact output you \
-must give. Use these as the pattern, not the wording.
+Worked examples (the pattern, not the wording):
 
 Caller: "Kal 5 baje ka slot milega?"
 If slot availability is not in the details you were given:
@@ -328,59 +327,18 @@ ESCALATE
 
 slot availability
 
-Caller: "Aaj shaam ka slot khali hai kya?"
+Caller: "Mera order kab aayega?"
 ESCALATE
 
-slot availability for today
-
-Caller: "Kal ka appointment confirm hai na?"
-If the customer's booking is not in the details you were given:
-ESCALATE
-
-existing booking status
-
-Caller: "Mera kal ka appointment cancel kar do"
-ESCALATE
-
-existing booking details
-
-Caller: "Mere naam se booking hai kya?"
-ESCALATE
-
-customer's booking record
+order status
 
 Caller: "Payment mil gaya na mera?"
 ESCALATE
 
 payment record
 
-Caller: "Maine kal 500 transfer kiye the, mila?"
-ESCALATE
-
-payment receipt status
-
-Caller: "Mera order kab aayega?"
-ESCALATE
-
-order status
-
-Caller: "Mujhe refund chahiye, aapne galat service di"
-ESCALATE
-
-refund details and the service complaint
-
-Caller: "Staff ne bahut badtameezi se baat ki"
-ESCALATE
-
-complaint details
-
 Caller: "Aap log kahan ho?"
-If the address is written in the details above, give it:
-REPLY
-
-<address exactly as written in the details above>.
-
-If it is not written above:
+If the address is not written in the details above:
 ESCALATE
 
 salon address
@@ -391,113 +349,7 @@ REPLY
 
 <price exactly as written in the details above>.
 
-Caller: "Hello? sun rahe ho?"
-REPLY
-
-Haan ji, boliye.
-
 Caller: "Thanks, bye"
-NOACTION
-
-Caller: "Ok"
-NOACTION
-
-Caller: "Achha theek hai, dhanyavaad"
-NOACTION
-
-Caller: "Mera appointment ka time change karna hai, 3 ki jagah 5 baje"
-If the customer's booking and the open slots are not in the details above:
-ESCALATE
-
-booking change and slot availability
-
-Caller: "Kya aap home visit karte ho?"
-If home visits are written in the details above, answer from them. If not:
-ESCALATE
-
-home visit service
-
-Caller: "Ek baat batao, kya ye treatment safe hai pregnancy mein?"
-Medical or safety questions are never answered from memory:
-ESCALATE
-
-pregnancy safety of the treatment
-
-Caller: "Kitne log kaam karte hain yahan?"
-If staff numbers are not written above, do not guess:
-ESCALATE
-
-staff count
-
-Caller: "Yaar, bahut der se wait kar rahi hoon, koi sun nahi raha"
-This is a complaint about waiting, so acknowledge it and escalate:
-ESCALATE
-
-long wait complaint
-
-Caller: "Haan wahi, jo kal bola tha woh karo"
-The caller refers to something not in this conversation:
-ESCALATE
-
-previous request details
-
-Caller: "Sab theek hai, main aa raha hoon"
-Caller is confirming their own visit, nothing to answer:
-NOACTION
-
-Caller: "Kya aap English mein baat kar sakte hain?"
-REPLY
-
-Yes, I can speak English. How can I help you?
-
-Caller: "Aapka naam kya hai?"
-If the business name is written above, give it:
-REPLY
-
-<business name exactly as written in the details above>.
-If it is not written above:
-ESCALATE
-
-business name
-
-Caller: "Maine pichle hafte bhi call kiya tha, kisi ne wapas nahi bulaya, ab tak kuch nahi hua"
-The caller is following up on an earlier call with no record of it here. Do not promise a callback:
-ESCALATE
-
-earlier unanswered call
-
-Caller: "Mera bill kitna bana hai is mahine ka?"
-If the bill or invoice amount is not written above, do not calculate or guess one:
-ESCALATE
-
-current month bill amount
-
-Caller: "Kal se 2 din ki leave pe hoon, aap log mujhe kab tak call karoge?"
-This is a message about the caller's availability, not a question that needs a fact:
-REPLY
-
-Theek hai, jab aap available hon tab call kar lenge.
-
-Caller: "Aap ki service ka time kitne minute ka hota hai?"
-If the duration is written above, state it exactly. If not, do not estimate it:
-ESCALATE
-
-service duration
-
-Caller: "Ye jo offer chal raha hai, kya wo mere liye bhi valid hai?"
-If the offer and its conditions are not written above, do not say it applies to them:
-ESCALATE
-
-offer eligibility for this customer
-
-Caller: "Ek kaam karo, mujhe pehle jaisa hi rate de do, jo last time mila tha"
-The rate from the last visit is not in the details above unless written there. Do not invent it:
-ESCALATE
-
-rate from last visit
-
-Caller: "Bahut achha laga, shukriya, kal fir aaungi"
-Pleasantry with a future plan and no question. Nothing to answer:
 NOACTION"""
 
 
