@@ -8,6 +8,7 @@ shared/care/escalation_failsafe.py's SMS sweep from firing for this one.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
@@ -28,15 +29,29 @@ class EscalationOut(BaseModel):
     channel: str
     reason: str
     category: str | None
+    request_summary: str | None
+    caller_phone: str | None
+    status: str
+    due_at: datetime | None
+    resolved_at: datetime | None
+    resolution_note: str | None
     created_at: datetime
     acknowledged_at: datetime | None
     escalated_further_at: datetime | None
 
 
+class EscalationStatusIn(BaseModel):
+    status: Literal["in_progress", "resolved", "dismissed"]
+    resolution_note: str | None = None
+
+
 def _out(e: Escalation) -> EscalationOut:
     return EscalationOut(
         id=str(e.id), customer_id=str(e.customer_id) if e.customer_id else None,
-        channel=e.channel, reason=e.reason, category=e.category, created_at=e.created_at,
+        channel=e.channel, reason=e.reason, category=e.category,
+        request_summary=e.request_summary, caller_phone=e.caller_phone,
+        status=e.status, due_at=e.due_at, resolved_at=e.resolved_at,
+        resolution_note=e.resolution_note, created_at=e.created_at,
         acknowledged_at=e.acknowledged_at, escalated_further_at=e.escalated_further_at,
     )
 
@@ -60,6 +75,25 @@ async def pending_count(current_user: CurrentUserDep, db: DbDep) -> dict:
         Escalation.acknowledged_at.is_(None),
     ))
     return {"open": int(result.scalar_one())}
+
+
+@router.patch("/{escalation_id}/status", response_model=EscalationOut)
+async def set_escalation_status(
+    escalation_id: uuid.UUID, body: EscalationStatusIn, current_user: CurrentUserDep, db: DbDep,
+) -> EscalationOut:
+    escalation = await db.get(Escalation, escalation_id)
+    if escalation is None or escalation.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Escalation not found")
+    now = datetime.now(timezone.utc)
+    escalation.status = body.status
+    if escalation.acknowledged_at is None:
+        escalation.acknowledged_at = now
+        escalation.acknowledged_by_user_id = current_user.id
+    if body.status in ("resolved", "dismissed"):
+        escalation.resolved_at = now
+        escalation.resolution_note = (body.resolution_note or "").strip() or None
+    await db.flush()
+    return _out(escalation)
 
 
 @router.post("/{escalation_id}/acknowledge", response_model=EscalationOut)
