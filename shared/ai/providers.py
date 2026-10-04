@@ -145,6 +145,13 @@ PROVIDERS: dict[str, Provider] = {
                 path="/chat/completions",
                 pricing=(0.59 * _INR_PER_USD, 0.59 * _INR_PER_USD, 1.76 * _INR_PER_USD),
             )),
+            # OpenAI open-weight model on Bedrock, Mumbai on-demand. Reasoning model:
+            # thinking tokens count against max_tokens, so headroom is added.
+            ("openai.gpt-oss-120b", ModelSpec(
+                path="/chat/completions",
+                pricing=(0.18 * _INR_PER_USD, 0.18 * _INR_PER_USD, 0.71 * _INR_PER_USD),
+                reasoning_headroom=2000,
+            )),
             ("minimax.minimax-m2.5", ModelSpec(
                 path="/chat/completions",
                 pricing=(0.36 * _INR_PER_USD, 0.36 * _INR_PER_USD, 1.44 * _INR_PER_USD),
