@@ -24,6 +24,7 @@ special-casing anywhere else in the platform.
 """
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -131,6 +132,12 @@ class _Speculation:
     text: str
     queue: "asyncio.Queue"
     task: asyncio.Task
+
+
+_PERSON_REQUEST = re.compile(
+    r"(insaan|human|real person|manager|owner|staff|kisi se baat|connect me|mujhe connect|person se)",
+    re.IGNORECASE,
+)
 
 
 async def _single_chunk(text: str):
@@ -632,7 +639,11 @@ class CallPipeline:
             # for every business by default, so this is additive: nothing
             # about today's apologize-and-hangup behaviour changes unless a
             # business has explicitly configured a number.
-            if self.route.staff_phone_number and await self._try_transfer():
+            if (
+                self.route.staff_phone_number
+                and self._caller_asked_for_person()
+                and await self._try_transfer()
+            ):
                 await self._say_stream(
                     _single_chunk(
                         "Let me connect you to someone who can help with that right now."
@@ -978,6 +989,11 @@ class CallPipeline:
             ),
             record=True,
         )
+
+    def _caller_asked_for_person(self) -> bool:
+        """Transfer only when the caller asks for a person - not for every question the agent cannot answer."""
+        last = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
+        return bool(_PERSON_REQUEST.search(last or ""))
 
     async def _try_transfer(self) -> bool:
         """
