@@ -29,25 +29,48 @@ BUSINESS = (
 )
 
 NOT_PROVIDED = (
-    "\nNot provided to you on this call: slot availability, any customer's booking, order or payment record. "
-    "Never state a slot, booking, order or payment status that is not written above."
+    "\nNot provided to you on this call: slot availability, any customer's booking, order or payment record, "
+    "the salon's address, parking, and payment methods. "
+    "Never state a slot, booking, order, payment status or any of these details unless written above."
 )
 
 # (customer's latest words on the call, expected action)
 CASES = [
-    ("Kal 5 baje ka slot milega?", "escalate"),
+    # Grounded facts: answer them
     ("Haircut ka rate kya hai?", "reply"),
-    ("Mera paisa wapas do warna main legal notice bhejunga", "escalate"),
-    ("Thanks, bye", "no_action"),
-    ("Facial ke baad skin pe rash aa gaya, bahut jalan ho rahi hai", "escalate"),
-    ("Ok", "no_action"),
+    ("Facial kitne ka hai?", "reply"),
+    ("Colour ka kya charge hai?", "reply"),
+    ("Subah kab khulte ho?", "reply"),
+    ("Raat ko kitne baje tak khule ho?", "reply"),
     ("Kya aap Sunday ko khule ho?", "reply"),
-    ("Mujhe refund chahiye, aapne galat service di", "escalate"),
-    ("Achha theek hai, dhanyavaad", "no_action"),
+    ("Booking kaise karni hai?", "reply"),
+    ("Bhaiya haircut ka kitna lagega?", "reply"),
+    ("Ji, facial book karni hai", "reply"),
+    ("Hello? sun rahe ho?", "reply"),
+    # Not in the facts: escalate
+    ("Aap log kahan ho?", "escalate"),
+    ("Kya aap card accept karte ho?", "escalate"),
+    ("Parking hai kya?", "escalate"),
+    # Slots, bookings, payments, orders: escalate, never invent
+    ("Kal 5 baje ka slot milega?", "escalate"),
+    ("Aaj shaam ka slot khali hai kya?", "escalate"),
     ("Kal ka appointment confirm hai na?", "escalate"),
     ("Mera kal ka appointment cancel kar do", "escalate"),
+    ("Mere naam se booking hai kya?", "escalate"),
     ("Payment mil gaya na mera?", "escalate"),
+    ("Maine kal 500 transfer kiye the, mila?", "escalate"),
     ("Mera order kab aayega?", "escalate"),
+    ("Order ka status batao", "escalate"),
+    # Refund, legal, complaint, safety: escalate
+    ("Mujhe refund chahiye, aapne galat service di", "escalate"),
+    ("Mera paisa wapas do warna main legal notice bhejunga", "escalate"),
+    ("Facial ke baad skin pe rash aa gaya, bahut jalan ho rahi hai", "escalate"),
+    ("Staff ne bahut badtameezi se baat ki", "escalate"),
+    # Pleasantries: no reply needed
+    ("Thanks, bye", "no_action"),
+    ("Ok", "no_action"),
+    ("Achha theek hai, dhanyavaad", "no_action"),
+    ("Shukriya", "no_action"),
 ]
 
 ACTIONS = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}
