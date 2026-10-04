@@ -13,7 +13,7 @@ human's own words remain their own words.
 
 from dataclasses import dataclass
 
-from shared.ai import client
+from shared.ai import client, voice_guard
 from shared.ai import context as ctx
 from shared.utils.logging import get_logger
 
@@ -68,6 +68,9 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
 
     text = completion.text.strip()
     if not text or text.upper() == "NONE":
+        return Suggestion(text=None, cost_paise=completion.cost_paise)
+    facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
+    if voice_guard.ungrounded_claims(text, facts):
         return Suggestion(text=None, cost_paise=completion.cost_paise)
     return Suggestion(text=text, cost_paise=completion.cost_paise)
 
