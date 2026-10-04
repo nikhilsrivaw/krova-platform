@@ -13,7 +13,7 @@ import re
 
 _CLAIM = re.compile(
     r"\b(khatam|khatm|available|confirm(?:ed)?|booked|cancel(?:led|ed)?|paid|payment|slot|"
-    r"am|pm|appointment|booking|connect|shortly|follow)\b",
+    r"am|pm|appointment|booking|connect|shortly|follow|band|hata|rad|badal|reschedul|change)\b",
     re.IGNORECASE,
 )
 
