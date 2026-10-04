@@ -13,9 +13,21 @@ import re
 
 _CLAIM = re.compile(
     r"\b(khatam|khatm|available|confirm(?:ed)?|booked|cancel(?:led|ed)?|paid|payment|slot|"
-    r"am|pm|appointment|booking|connect|shortly|follow|band|hata|rad|badal|reschedul|change)\b",
+    r"am|pm|appointment|booking|connect|shortly|follow|band|hata|rad|badal|meeting|reschedul|change)\b",
     re.IGNORECASE,
 )
+
+
+_RECORD_CLAIM = re.compile(
+    r"\b(meeting|appointment|booking|booked|cancel\w*|reschedul\w*|confirm\w*|paid|payment)\b"
+    r"|naam pe|ke naam",
+    re.IGNORECASE,
+)
+
+
+def has_record_claim(text: str) -> bool:
+    """Text that talks about a meeting, booking, payment or a named person's record."""
+    return bool(_RECORD_CLAIM.search(text or ""))
 
 
 def ungrounded_claims(reply: str, business_facts: str) -> list[str]:

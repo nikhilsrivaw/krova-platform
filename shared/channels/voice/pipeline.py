@@ -35,6 +35,7 @@ from urllib.parse import urlencode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import agent as agent_module
+from shared.ai import voice_guard
 from shared.ai import context as agent_context
 from shared.auth.encryption import decrypt
 from shared.billing import usage
@@ -434,6 +435,10 @@ class CallPipeline:
             self._context_cache = await agent_context.build(
                 self.route.business_id, self.customer_id, self.db
             )
+            if self._context_cache.customer_summary and voice_guard.has_record_claim(
+                self._context_cache.customer_summary
+            ):
+                self._context_cache.customer_summary = None
         # The turns as this call has actually heard them, in the shape
         # AgentContext.recent already uses.
         self._context_cache.recent = [

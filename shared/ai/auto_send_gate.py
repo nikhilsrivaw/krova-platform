@@ -99,6 +99,7 @@ ESCALATE_RECORD_KEYWORDS: tuple[str, ...] = (
     "transfer kar diya", "payment kiya", "pay kiya", "advance diya",
     "rash", "allergy", "allergic", "reaction", "bleeding", "pregnan", "jalan ho",
     "badtameez", "badtamiz", "rude", "gaali",
+    "meeting", "cancel", "reschedul", "cancellation",
     "ऑर्डर", "स्लॉट", "बुकिंग",
 )
 
