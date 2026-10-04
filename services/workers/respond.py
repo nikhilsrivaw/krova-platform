@@ -71,6 +71,11 @@ logger = get_logger(__name__)
 
 QUEUE = "draft_reply"
 
+ESCALATION_HOLDING_LINE = (
+    "Achha, is baare mein team aapko jaldi detail mein batayegi. "
+    "Tab tak aap bata sakte hain ki aapko kya chahiye?"
+)
+
 
 async def _try_book(
     proposal: agent_module.Draft,
@@ -444,6 +449,29 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     )
     db.add(draft)
     await db.flush()
+
+    if proposal.action == "escalate" and autonomy == "act" and channel in ("whatsapp", "instagram"):
+        holding = MessageDraft(
+            business_id=message.business_id,
+            customer_id=message.customer_id,
+            in_reply_to_id=message.id,
+            channel=channel,
+            action=DraftAction.reply,
+            status=DraftStatus.pending,
+            body=ESCALATION_HOLDING_LINE,
+            reasoning="Holding line while a person follows up on an escalated message.",
+            gap=None,
+            confidence=1.0,
+            used_context=[],
+            expires_at=message.occurred_at + SERVICE_WINDOW,
+            cost_paise=0,
+        )
+        db.add(holding)
+        await db.flush()
+        try:
+            await send_draft(holding, message.business_id, db, reviewed_by_user_id=None)
+        except DraftSendError as exc:
+            logger.warning("holding line not sent for draft=%s: %s", holding.id, exc)
 
     if proposal.action == "escalate":
         await agent_module.notify_escalation(
