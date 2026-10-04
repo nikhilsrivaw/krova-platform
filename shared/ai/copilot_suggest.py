@@ -50,6 +50,18 @@ class Suggestion:
     cost_paise: int
 
 
+_PROMISE = re.compile(
+    r"check (karke|kar ke|karna|karunga|karungi|karta|karti)|bata (deta|dunga|dungi|deti)|"
+    r"hold (karun|karna|kar dun|kar du)|abhi (confirm|check)",
+    re.IGNORECASE,
+)
+
+
+def unsafe_suggestion(text: str, facts: str) -> bool:
+    """A suggestion that states an unstated fact, or promises a check nobody can do."""
+    return bool(voice_guard.ungrounded_claims(text, facts) or _PROMISE.search(text))
+
+
 async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
     """One short suggestion for a staff member mid-call, or nothing."""
     prompt = (
@@ -70,7 +82,7 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
     if not text or text.upper() == "NONE":
         return Suggestion(text=None, cost_paise=completion.cost_paise)
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
-    if voice_guard.ungrounded_claims(text, facts):
+    if unsafe_suggestion(text, facts):
         return Suggestion(text=None, cost_paise=completion.cost_paise)
     return Suggestion(text=text, cost_paise=completion.cost_paise)
 
