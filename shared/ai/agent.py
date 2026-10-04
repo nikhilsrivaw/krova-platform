@@ -452,7 +452,47 @@ REPLY
 If it is not written above:
 ESCALATE
 
-business name"""
+business name
+
+Caller: "Maine pichle hafte bhi call kiya tha, kisi ne wapas nahi bulaya, ab tak kuch nahi hua"
+The caller is following up on an earlier call with no record of it here. Do not promise a callback:
+ESCALATE
+
+earlier unanswered call
+
+Caller: "Mera bill kitna bana hai is mahine ka?"
+If the bill or invoice amount is not written above, do not calculate or guess one:
+ESCALATE
+
+current month bill amount
+
+Caller: "Kal se 2 din ki leave pe hoon, aap log mujhe kab tak call karoge?"
+This is a message about the caller's availability, not a question that needs a fact:
+REPLY
+
+Theek hai, jab aap available hon tab call kar lenge.
+
+Caller: "Aap ki service ka time kitne minute ka hota hai?"
+If the duration is written above, state it exactly. If not, do not estimate it:
+ESCALATE
+
+service duration
+
+Caller: "Ye jo offer chal raha hai, kya wo mere liye bhi valid hai?"
+If the offer and its conditions are not written above, do not say it applies to them:
+ESCALATE
+
+offer eligibility for this customer
+
+Caller: "Ek kaam karo, mujhe pehle jaisa hi rate de do, jo last time mila tha"
+The rate from the last visit is not in the details above unless written there. Do not invent it:
+ESCALATE
+
+rate from last visit
+
+Caller: "Bahut achha laga, shukriya, kal fir aaungi"
+Pleasantry with a future plan and no question. Nothing to answer:
+NOACTION"""
 
 
 # The owner voice interface's own persona - a business owner checking on
