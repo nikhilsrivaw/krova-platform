@@ -245,7 +245,7 @@ async def proxy_voice_stream(websocket: WebSocket) -> None:
             pass
 
 
-async def _relay_websocket(websocket: WebSocket, upstream_url: str) -> None:
+async def _relay_websocket(websocket: WebSocket, upstream_url: str, headers: dict | None = None) -> None:
     """
     The same bidirectional pump proxy_voice_stream uses above, factored out
     only for the two newer sockets below - proxy_voice_stream itself is
@@ -254,7 +254,7 @@ async def _relay_websocket(websocket: WebSocket, upstream_url: str) -> None:
     for a refactor.
     """
     try:
-        upstream = await websockets.connect(upstream_url, open_timeout=10)
+        upstream = await websockets.connect(upstream_url, open_timeout=10, additional_headers=headers)
     except Exception:
         logger.exception("could not reach voice service for %s", upstream_url)
         await websocket.close(code=1011)
@@ -317,7 +317,15 @@ async def proxy_voice_copilot_stream(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
-    await _relay_websocket(websocket, f"{_VOICE_WS_BASE}/voice/copilot-stream")
+    forwarded_headers = {
+        k: v
+        for k, v in websocket.headers.items()
+        if k.lower()
+        in ("x-plivo-signature-ma-v3", "x-plivo-signature-v3", "x-plivo-signature-v3-nonce")
+    }
+    await _relay_websocket(
+        websocket, f"{_VOICE_WS_BASE}/voice/copilot-stream", headers=forwarded_headers or None
+    )
 
 
 @router.websocket("/voice/copilot-assist")
