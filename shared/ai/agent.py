@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.ai import bedrock_claude, client, context as ctx, providers, router, voice_guard
+from shared.ai import auto_send_gate, bedrock_claude, client, context as ctx, providers, router, voice_guard
 from shared.db.models import BusinessDNA
 from shared.utils.logging import get_logger
 
@@ -478,7 +478,18 @@ def _grounded(text: str, facts: str) -> bool:
     return not voice_guard.ungrounded_claims(spoken, facts)
 
 
-GUARD_FALLBACK_REPLY = "REPLY\n\nIs baare mein main abhi confirm karke batata hoon."
+def _escalate_floor(text: str, agent_context: ctx.AgentContext) -> str:
+    """Overrules a reply to a message that always needs a person. See auto_send_gate."""
+    customer = next(
+        (turn["text"] for turn in reversed(agent_context.recent) if turn["direction"] == "inbound"), ""
+    )
+    hit = auto_send_gate.must_escalate(customer or "")
+    if hit and text.strip().upper().startswith("REPLY"):
+        return f"ESCALATE\n\nneeds a person: {hit}"
+    return text
+
+
+GUARD_FALLBACK_REPLY ="REPLY\n\nIs baare mein main abhi confirm karke batata hoon."
 
 
 async def _buffered_voice(route: str, agent_context: ctx.AgentContext) -> _Buffered:
@@ -496,8 +507,9 @@ async def _buffered_voice(route: str, agent_context: ctx.AgentContext) -> _Buffe
     logger.info("voice reply from %s in %.2fs", route, time.perf_counter() - start)
     client._log_usage("reply_voice", route, answer.usage, answer.cost_paise)
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
-    if _grounded(answer.text or "", facts):
-        return _Buffered(answer.text, answer.cost_paise)
+    text = _escalate_floor(answer.text or "", agent_context)
+    if _grounded(text, facts):
+        return _Buffered(text, answer.cost_paise)
     logger.warning("voice guard replaced an ungrounded reply from %s with a holding line", route)
     return _Buffered(GUARD_FALLBACK_REPLY, answer.cost_paise)
 
@@ -527,7 +539,7 @@ async def _converse_voice(model_id: str, agent_context: ctx.AgentContext) -> _Bu
         task="reply_voice",
     )
     logger.info("voice reply from bedrock %s in %.2fs", model_id, time.perf_counter() - start)
-    return _Buffered(answer.text, answer.cost_paise)
+    return _Buffered(_escalate_floor(answer.text, agent_context), answer.cost_paise)
 
 
 async def stream_reply(agent_context: ctx.AgentContext):
