@@ -35,7 +35,7 @@ NOT_PROVIDED = (
 
 # (customer's latest words on the call, expected action)
 CASES = [
-    ("Kal 5 baje ka slot milega?", "reply"),
+    ("Kal 5 baje ka slot milega?", "escalate"),
     ("Haircut ka rate kya hai?", "reply"),
     ("Mera paisa wapas do warna main legal notice bhejunga", "escalate"),
     ("Thanks, bye", "no_action"),
