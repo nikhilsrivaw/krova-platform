@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from anthropic import AsyncAnthropic, APIError, APIStatusError
 
-from shared.ai import router
+from shared.ai import providers, router
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
 
@@ -140,7 +140,7 @@ def _normalise_currency(value: Any) -> str:
 
 
 # Voice never leaves Claude: a live route for these is ignored, not honoured.
-_VOICE_TASK_PREFIXES = ("reply_voice", "reply_owner_voice", "reply_scripted_voice", "copilot")
+_VOICE_TASK_PREFIXES = ("reply_voice", "reply_owner_voice", "reply_scripted_voice")
 
 
 async def _complete_via_provider(
@@ -347,6 +347,30 @@ class TextStream:
         _log_usage(self._task, model, usage, self.cost_paise)
 
 
+class _ProviderTextStream:
+    """A whole non-Claude reply, presented as the one-delta stream TextStream gives."""
+
+    def __init__(self, route: str, *, system: str, messages: list[dict[str, Any]], max_tokens: int, task: str):
+        self._route = route
+        self._system = system
+        self._messages = messages
+        self._max_tokens = max_tokens
+        self._task = task
+        self.cost_paise = 0
+
+    def __aiter__(self):
+        return self._once()
+
+    async def _once(self):
+        answer = await providers.call(
+            self._route,
+            {"system": self._system, "messages": self._messages, "max_tokens": self._max_tokens},
+        )
+        self.cost_paise = answer.cost_paise
+        _log_usage(self._task, self._route, answer.usage, answer.cost_paise)
+        yield answer.text or ""
+
+
 def stream_text(
     *, system: str, messages: list[dict[str, Any]], speed: Speed = "fast", max_tokens: int = 300,
     task: str = "unnamed",
@@ -363,4 +387,7 @@ def stream_text(
     entirely, at the cost of the caller (agent.stream_reply) needing its own
     much simpler convention for action/gap instead of a JSON schema.
     """
+    live = router.live_for(task)
+    if live is not None and not task.startswith(_VOICE_TASK_PREFIXES):
+        return _ProviderTextStream(live, system=system, messages=messages, max_tokens=max_tokens, task=task)
     return TextStream(system=system, messages=messages, speed=speed, max_tokens=max_tokens, task=task)

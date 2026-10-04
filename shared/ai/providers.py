@@ -52,6 +52,8 @@ class ModelSpec:
     # the thinking cannot use up the room the actual answer needs - the
     # caller's max_tokens was sized for the answer alone.
     reasoning_headroom: int = 0
+    # Accepts image input. Per model, since a provider can host both kinds.
+    vision: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +145,7 @@ PROVIDERS: dict[str, Provider] = {
             # Mistral Large 3 on Bedrock, Mumbai on-demand (AWS pricing page).
             ("mistral.mistral-large-3-675b-instruct", ModelSpec(
                 path="/chat/completions",
+                vision=True,
                 pricing=(0.59 * _INR_PER_USD, 0.59 * _INR_PER_USD, 1.76 * _INR_PER_USD),
             )),
             # OpenAI open-weight model on Bedrock, Mumbai on-demand. Reasoning model:
@@ -228,7 +231,7 @@ def _translate(request: dict[str, Any], model: str, provider: Provider) -> dict[
             if block.get("type") == "text":
                 parts.append({"type": "text", "text": block["text"]})
             elif block.get("type") == "image":
-                if not provider.vision:
+                if not (provider.vision or spec.vision):
                     raise ProviderRefused("provider has no image input")
                 src = block["source"]
                 parts.append({"type": "image_url",
