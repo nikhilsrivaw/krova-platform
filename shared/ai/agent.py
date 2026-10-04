@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.ai import client, context as ctx, providers, router, voice_guard
+from shared.ai import bedrock_claude, client, context as ctx, providers, router, voice_guard
 from shared.db.models import BusinessDNA
 from shared.utils.logging import get_logger
 
@@ -641,6 +641,34 @@ async def _buffered_voice(route: str, agent_context: ctx.AgentContext, haiku):
     return haiku()
 
 
+CONVERSE_ROUTE_PREFIX = "bedrock-converse:"
+
+
+async def _converse_voice(model_id: str, agent_context: ctx.AgentContext) -> _Buffered:
+    """
+    Claude served by Bedrock, whole reply. Claude's own answer is not checked by
+    the voice guard - the guard exists for models that are not Claude.
+    """
+    start = time.perf_counter()
+    answer = await bedrock_claude.converse(
+        model_id=model_id,
+        system=SYSTEM_STREAM,
+        stable=(
+            f"{agent_context.render_business()}\n\n"
+            f"Today is {ctx.now_line()}.\n\n"
+            f"{agent_context.render_live()}"
+        ),
+        volatile=(
+            f"{agent_context.render_conversation()}\n\n"
+            "Decide how to handle the customer's most recent message."
+        ),
+        max_tokens=300,
+        task="reply_voice",
+    )
+    logger.info("voice reply from bedrock %s in %.2fs", model_id, time.perf_counter() - start)
+    return _Buffered(answer.text, answer.cost_paise)
+
+
 async def stream_reply(agent_context: ctx.AgentContext):
     """
     The streaming counterpart to draft_reply, for a live call only.
@@ -712,7 +740,12 @@ async def stream_reply(agent_context: ctx.AgentContext):
     )
 
     route = router.live_for("reply_voice")
-    stream = await _buffered_voice(route, agent_context, _haiku) if route is not None else _haiku()
+    if route is not None and route.startswith(CONVERSE_ROUTE_PREFIX):
+        stream = await _converse_voice(route[len(CONVERSE_ROUTE_PREFIX):], agent_context)
+    elif route is not None:
+        stream = await _buffered_voice(route, agent_context, _haiku)
+    else:
+        stream = _haiku()
 
     buffer = ""
     action: str | None = None
