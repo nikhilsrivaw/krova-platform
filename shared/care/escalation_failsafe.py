@@ -64,6 +64,37 @@ logger = get_logger(__name__)
 _UNACKNOWLEDGED_WINDOW = timedelta(minutes=15)
 
 
+async def check_overdue(db: AsyncSession) -> int:
+    """
+    Tell the owner, once, about each escalation that is past its due time and still
+    open. Resolved or dismissed escalations are skipped. Returns how many were alerted.
+    """
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(Escalation).where(
+            Escalation.due_at.is_not(None),
+            Escalation.due_at <= now,
+            Escalation.resolved_at.is_(None),
+            Escalation.status.in_(["open", "in_progress"]),
+            Escalation.overdue_alerted_at.is_(None),
+        )
+    )
+    overdue = list(result.scalars().all())
+    for escalation in overdue:
+        # Stamped whether or not the SMS goes out, so a missing voice number does not
+        # turn into an alert every five minutes.
+        escalation.overdue_alerted_at = now
+        business = await db.get(Business, escalation.business_id)
+        if business is None:
+            continue
+        summary = (escalation.request_summary or escalation.reason or "")[:200]
+        await _try_sms(
+            escalation, business, db,
+            text=f"Krova: escalation past its due time at {business.name} - {summary}",
+        )
+    return len(overdue)
+
+
 async def check_unacknowledged(db: AsyncSession) -> int:
     """Fire the failsafe for every Escalation past the window with no
     acknowledgement yet. Returns how many were processed (notified or
@@ -98,7 +129,9 @@ async def check_unacknowledged(db: AsyncSession) -> int:
     return len(due)
 
 
-async def _try_sms(escalation: Escalation, business: Business, db: AsyncSession) -> bool:
+async def _try_sms(
+    escalation: Escalation, business: Business, db: AsyncSession, *, text: str | None = None,
+) -> bool:
     """Returns True if the SMS was actually sent."""
     connection = (
         await db.execute(
@@ -123,7 +156,7 @@ async def _try_sms(escalation: Escalation, business: Business, db: AsyncSession)
         await plivo_client.send_sms(
             auth_id=auth_id, auth_token=decrypt(connection.access_token),
             from_number=connection.external_account_id, to_number=staff_phone,
-            text=f"Krova: unacknowledged escalation at {business.name} - {escalation.reason[:200]}",
+            text=text or f"Krova: unacknowledged escalation at {business.name} - {escalation.reason[:200]}",
         )
         logger.info("escalation failsafe SMS sent id=%s business=%s", escalation.id, business.id)
         return True

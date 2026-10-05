@@ -206,6 +206,21 @@ async def send_review_requests() -> None:
         logger.exception("review request job failed")
 
 
+async def alert_overdue_escalations() -> None:
+    """Tell the owner once about each escalation past its due time. See escalation_failsafe.check_overdue."""
+    from shared.care import escalation_failsafe
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            alerted = await escalation_failsafe.check_overdue(db)
+            await db.commit()
+            if alerted:
+                logger.info("alerted owner about %s overdue escalation(s)", alerted)
+    except Exception:
+        logger.exception("overdue escalation alert job failed")
+
+
 async def escalate_unacknowledged() -> None:
     """
     The SMS failsafe for an Escalation nobody acknowledged in time. See
@@ -734,6 +749,14 @@ def build() -> AsyncIOScheduler:
         escalate_unacknowledged,
         IntervalTrigger(minutes=5),
         id="escalate_unacknowledged",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        alert_overdue_escalations,
+        IntervalTrigger(minutes=5),
+        id="alert_overdue_escalations",
         replace_existing=True,
         misfire_grace_time=300,
     )
