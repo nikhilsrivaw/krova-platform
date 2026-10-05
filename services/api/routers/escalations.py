@@ -31,6 +31,7 @@ class EscalationOut(BaseModel):
     category: str | None
     request_summary: str | None
     caller_phone: str | None
+    contact_handle: str | None
     status: str
     due_at: datetime | None
     resolved_at: datetime | None
@@ -49,7 +50,7 @@ def _out(e: Escalation) -> EscalationOut:
     return EscalationOut(
         id=str(e.id), customer_id=str(e.customer_id) if e.customer_id else None,
         channel=e.channel, reason=e.reason, category=e.category,
-        request_summary=e.request_summary, caller_phone=e.caller_phone,
+        request_summary=e.request_summary, caller_phone=e.caller_phone, contact_handle=e.contact_handle,
         status=e.status, due_at=e.due_at, resolved_at=e.resolved_at,
         resolution_note=e.resolution_note, created_at=e.created_at,
         acknowledged_at=e.acknowledged_at, escalated_further_at=e.escalated_further_at,
