@@ -1159,7 +1159,7 @@ async def notify_escalation(
         logger.exception("escalation webhook dispatch failed business=%s", business_id)
 
     try:
-        from shared.db.models import Business, CustomerIdentity
+        from shared.db.models import Business, Customer, CustomerIdentity
 
         now = datetime.now(timezone.utc)
         caller_phone = None
@@ -1178,6 +1178,15 @@ async def notify_escalation(
                     CustomerIdentity.kind == "instagram",
                 ).limit(1)
             )).scalars().first()
+            if contact_handle:
+                from shared.channels.instagram.profile import resolve_username
+
+                username = await resolve_username(db, business_id, contact_handle)
+                if username:
+                    contact_handle = f"@{username}"
+                    customer = await db.get(Customer, customer_id)
+                    if customer is not None and not customer.display_name:
+                        customer.display_name = username
         business = await db.get(Business, business_id)
         sla_hours = ((business.settings or {}).get("escalation_sla_hours") if business else None)
         due_at = now + timedelta(hours=float(sla_hours)) if sla_hours else None
