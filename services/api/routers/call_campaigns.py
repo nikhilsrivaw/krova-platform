@@ -19,6 +19,7 @@ campaign) is not the same latency shape at all.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ from shared.campaigns import audience as audience_module
 from shared.db import queue
 from shared.db.models import (
     Audience,
+    Business,
     CallCampaign,
     CallCampaignRecipient,
     CallCampaignRecipientStatus,
@@ -80,6 +82,8 @@ class CallCampaignIn(BaseModel):
     # only call - see CallCampaign.call_script_id's own docstring. `objective`
     # stays required either way, as the campaign's own descriptive label.
     call_script_id: str | None = None
+    # "service" or "promotional". Decides which number series may place the calls.
+    purpose: Literal["service", "promotional"] | None = None
 
 
 class RecipientPreviewOut(BaseModel):
@@ -131,6 +135,7 @@ class CallCampaignOut(BaseModel):
     audience: str
     audience_label: str
     objective: str
+    purpose: str | None
     call_script_id: str | None
     status: str
     recipients: int
@@ -149,6 +154,7 @@ def _out(campaign: CallCampaign) -> CallCampaignOut:
         audience=audience.value,
         audience_label=_AUDIENCE_LABELS[audience],
         objective=campaign.objective,
+        purpose=campaign.purpose,
         call_script_id=str(campaign.call_script_id) if campaign.call_script_id else None,
         status=campaign.status.value if hasattr(campaign.status, "value") else campaign.status,
         recipients=campaign.recipients,
@@ -183,6 +189,7 @@ async def create_call_campaign(body: CallCampaignIn, current_user: CurrentUserDe
         audience=audience,
         audience_params=body.audience_params,
         objective=body.objective.strip(),
+        purpose=body.purpose,
         status=CallCampaignStatus.draft,
         created_by_user_id=current_user.id,
         call_script_id=call_script_uuid,
@@ -204,6 +211,37 @@ async def list_call_campaigns(current_user: CurrentUserDep, db: DbDep) -> list[C
     return [_out(c) for c in rows]
 
 
+_SERIES_FOR_PURPOSE = {"service": {"080", "022"}, "promotional": {"140"}}
+
+
+def _check_number_series(campaign: CallCampaign, business: Business | None) -> None:
+    """
+    India's rules: service and transactional calls go on 080 or 022, promotional calls
+    on 140, and BFSI-only calls on 160. A campaign is refused before any call is placed
+    if its purpose does not match the business's connected series.
+    """
+    if campaign.purpose not in _SERIES_FOR_PURPOSE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Choose whether this campaign is a service call or a promotional call first.",
+        )
+    series = str((business.settings or {}).get("outbound_number_series", "")).strip() if business else ""
+    if not series:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This business has no outbound number series set. Set it before sending.",
+        )
+    if series not in _SERIES_FOR_PURPOSE[campaign.purpose]:
+        allowed = " or ".join(sorted(_SERIES_FOR_PURPOSE[campaign.purpose]))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A {campaign.purpose} campaign needs a {allowed} number, "
+                f"but this business's number is in the {series} series."
+            ),
+        )
+
+
 @router.post("/{campaign_id}/send", response_model=CallCampaignOut)
 async def send_call_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> CallCampaignOut:
     """
@@ -221,6 +259,7 @@ async def send_call_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDe
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Campaign is not in draft (status: {campaign.status.value})",
         )
+    _check_number_series(campaign, await db.get(Business, current_user.business))
 
     audience = campaign.audience if isinstance(campaign.audience, Audience) else Audience(campaign.audience)
     result = await audience_module.resolve(current_user.business, audience, campaign.audience_params, db)

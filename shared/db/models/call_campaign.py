@@ -82,6 +82,9 @@ class CallCampaign(UUIDMixin, TimestampMixin, Base):
     # prompt here reads, then the call proceeds through the same agent
     # loop as any inbound conversation.
     objective: Mapped[str] = mapped_column(Text, nullable=False)
+    # "service" (an existing customer's due payment, appointment, reminder) or
+    # "promotional" (anything that sells or offers). Set before the campaign is sent.
+    purpose: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     status: Mapped[CallCampaignStatus] = mapped_column(
         EnumType(CallCampaignStatus, 20), nullable=False, default=CallCampaignStatus.draft
