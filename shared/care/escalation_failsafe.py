@@ -41,6 +41,7 @@ from shared.ai import escalation_categorize
 from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels.voice import plivo_client
+from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
 from shared.config.settings import settings
 from shared.db.models import (
     Business,
@@ -62,6 +63,11 @@ logger = get_logger(__name__)
 # - generous enough that a person mid-task isn't paged for every single
 # escalation, tight enough that a real gap doesn't sit all day.
 _UNACKNOWLEDGED_WINDOW = timedelta(minutes=15)
+
+# Body variables: {{1}} business name, {{2}} the customer's request summary.
+# Must be created and approved (utility category) in Meta's WhatsApp Manager
+# before check_overdue can use it.
+ESCALATION_OVERDUE_TEMPLATE_NAME = "escalation_overdue_alert"
 
 
 async def check_overdue(db: AsyncSession) -> int:
@@ -88,11 +94,64 @@ async def check_overdue(db: AsyncSession) -> int:
         if business is None:
             continue
         summary = (escalation.request_summary or escalation.reason or "")[:200]
-        await _try_sms(
-            escalation, business, db,
-            text=f"Krova: escalation past its due time at {business.name} - {summary}",
-        )
+        # WhatsApp first: staff read it, while SMS often never reaches them
+        # (Indian SMS needs DLT registration). SMS stays as the fallback.
+        if not await _try_whatsapp_staff(escalation, business, db, summary=summary):
+            await _try_sms(
+                escalation, business, db,
+                text=f"Krova: escalation past its due time at {business.name} - {summary}",
+            )
     return len(overdue)
+
+
+async def _try_whatsapp_staff(
+    escalation: Escalation, business: Business, db: AsyncSession, *, summary: str,
+) -> bool:
+    """
+    Send the overdue alert to the staff phone as the escalation_overdue_alert
+    WhatsApp template, sent from the business's own WhatsApp connection.
+    Returns True only if Meta accepted it. The template must be approved in
+    Meta's WhatsApp Manager first - until then this returns False and the
+    caller falls back to SMS.
+    """
+    wa_connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == escalation.business_id,
+                ChannelConnection.channel == Channel.whatsapp,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if wa_connection is None or not wa_connection.access_token:
+        return False
+
+    voice_connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == escalation.business_id,
+                ChannelConnection.channel == Channel.voice,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    staff_phone = ((voice_connection.extra or {}) if voice_connection else {}).get("staff_phone_number")
+    if not staff_phone:
+        return False
+
+    client = WhatsAppClient(decrypt(wa_connection.access_token), wa_connection.external_account_id)
+    try:
+        await client.send_template(
+            staff_phone,
+            ESCALATION_OVERDUE_TEMPLATE_NAME,
+            "en",
+            body_params=[business.name, summary],
+        )
+    except WhatsAppError as exc:
+        logger.warning("escalation overdue WhatsApp failed id=%s: %s - falling back to SMS", escalation.id, exc)
+        return False
+    logger.info("escalation overdue WhatsApp sent id=%s business=%s", escalation.id, business.id)
+    return True
 
 
 async def check_unacknowledged(db: AsyncSession) -> int:
