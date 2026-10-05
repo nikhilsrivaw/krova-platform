@@ -428,6 +428,8 @@ class Escalation(UUIDMixin, Base):
     # What the customer asked, in their own words, and a number to reach them on.
     request_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     caller_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The customer's Instagram-scoped id, when the escalation came from Instagram.
+    contact_handle: Mapped[str | None] = mapped_column(Text, nullable=True)
     # open -> in_progress -> resolved, or dismissed. Acknowledging is "seen",
     # which is separate: a person can see it and still have it open.
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="open")

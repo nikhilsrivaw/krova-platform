@@ -1163,6 +1163,7 @@ async def notify_escalation(
 
         now = datetime.now(timezone.utc)
         caller_phone = None
+        contact_handle = None
         if customer_id is not None:
             phone = (await db.execute(
                 select(CustomerIdentity.value).where(
@@ -1171,13 +1172,20 @@ async def notify_escalation(
                 ).order_by(CustomerIdentity.kind).limit(1)
             )).scalars().first()
             caller_phone = f"+{phone}" if phone else None
+            contact_handle = (await db.execute(
+                select(CustomerIdentity.value).where(
+                    CustomerIdentity.customer_id == customer_id,
+                    CustomerIdentity.kind == "instagram",
+                ).limit(1)
+            )).scalars().first()
         business = await db.get(Business, business_id)
         sla_hours = ((business.settings or {}).get("escalation_sla_hours") if business else None)
         due_at = now + timedelta(hours=float(sla_hours)) if sla_hours else None
         db.add(Escalation(
             business_id=business_id, customer_id=customer_id, channel=channel,
             reason=reason, created_at=now, request_summary=request_summary,
-            caller_phone=caller_phone, due_at=due_at,
+            caller_phone=caller_phone, contact_handle=contact_handle,
+            due_at=due_at,
         ))
         await db.flush()
     except Exception:
