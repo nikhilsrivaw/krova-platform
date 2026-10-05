@@ -34,6 +34,7 @@ from services.api.routers import (
     knowledge,
     dashboard,
     escalations,
+    justdial,
     export,
     flow_exchange,
     flows,
@@ -175,6 +176,7 @@ app.include_router(insurance_claims.router, prefix=API_PREFIX)
 app.include_router(integrations.router, prefix=API_PREFIX)
 app.include_router(public_api.router, prefix=API_PREFIX)
 app.include_router(escalations.router, prefix=API_PREFIX)
+app.include_router(justdial.router, prefix=API_PREFIX)
 app.include_router(export.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(trust.router, prefix=API_PREFIX)
@@ -191,6 +193,7 @@ app.include_router(commands.router, prefix=API_PREFIX)
 # registered with Meta and changing it later means reconfiguring every
 # connected business.
 app.include_router(webhooks.router)
+app.include_router(justdial.public)
 
 # Same reasoning - a Flow's data_exchange endpoint_uri is registered with
 # Meta directly, per flow, not something the frontend ever calls.

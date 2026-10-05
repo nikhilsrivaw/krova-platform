@@ -24,6 +24,7 @@ from shared.db.models.call_campaign import (
     CallScriptResponse,
 )
 from shared.db.models.crm import CustomerDate, CustomerNote, CustomerTag, TagStatus
+from shared.db.models.inbound_lead import InboundLead
 from shared.db.models.instagram_carousel import InstagramCarousel
 from shared.db.models.channel import (
     Call,
@@ -145,6 +146,7 @@ __all__ = [
     "CustomerNote",
     "CustomerTag",
     "TagStatus",
+    "InboundLead",
     "Department",
     "Direction",
     "Doctor",
