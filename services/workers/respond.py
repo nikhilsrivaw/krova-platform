@@ -75,6 +75,10 @@ ESCALATION_HOLDING_LINE = (
     "Achha, is baare mein team aapko jaldi detail mein batayegi. "
     "Tab tak aap bata sakte hain ki aapko kya chahiye?"
 )
+ESCALATION_HOLDING_LINE_INSTAGRAM = (
+    "Achha, is baare mein team aapko jaldi detail mein batayegi. "
+    "Aap apna WhatsApp ya phone number bhi bata dijiye, taaki team aapse wahan contact kar sake."
+)
 
 
 async def _try_book(
@@ -458,7 +462,9 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
             channel=channel,
             action=DraftAction.reply,
             status=DraftStatus.pending,
-            body=ESCALATION_HOLDING_LINE,
+            body=(
+                ESCALATION_HOLDING_LINE_INSTAGRAM if channel == "instagram" else ESCALATION_HOLDING_LINE
+            ),
             reasoning="Holding line while a person follows up on an escalated message.",
             gap=None,
             confidence=1.0,

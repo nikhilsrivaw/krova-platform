@@ -1167,8 +1167,8 @@ async def notify_escalation(
             phone = (await db.execute(
                 select(CustomerIdentity.value).where(
                     CustomerIdentity.customer_id == customer_id,
-                    CustomerIdentity.kind == "phone",
-                ).limit(1)
+                    CustomerIdentity.kind.in_(["phone", "whatsapp"]),
+                ).order_by(CustomerIdentity.kind).limit(1)
             )).scalars().first()
             caller_phone = f"+{phone}" if phone else None
         business = await db.get(Business, business_id)
