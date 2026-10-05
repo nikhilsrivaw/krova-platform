@@ -38,6 +38,10 @@ class DocumentType:
 class Requirement:
     requirement_id: str
     document_types: list[DocumentType] = field(default_factory=list)
+    # Plivo's own grouping: each inner list is a set of alternatives, and ONE
+    # document from each group is enough (e.g. Udyam, COI or GST - any one).
+    # `document_types` above stays flat for anything that just lists them.
+    groups: list[list[DocumentType]] = field(default_factory=list)
 
 
 async def get_requirement(
@@ -66,12 +70,18 @@ async def get_requirement(
         raise PlivoError(f"Could not look up Plivo's KYC requirements: {_plivo_error_detail(res)}")
 
     body = res.json()
-    doc_types = [
-        DocumentType(document_type_id=d["document_type_id"], name=d["document_type_name"])
+    groups = [
+        [
+            DocumentType(document_type_id=d["document_type_id"], name=d["document_type_name"])
+            for d in group.get("acceptable_documents", [])
+        ]
         for group in body.get("acceptable_document_types", [])
-        for d in group.get("acceptable_documents", [])
     ]
-    return Requirement(requirement_id=body["compliance_requirement_id"], document_types=doc_types)
+    return Requirement(
+        requirement_id=body["compliance_requirement_id"],
+        document_types=[d for group in groups for d in group],
+        groups=groups,
+    )
 
 
 async def create_end_user(*, business_name: str, end_user_type: str = "business") -> str:

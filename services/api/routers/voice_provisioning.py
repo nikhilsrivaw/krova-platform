@@ -148,6 +148,8 @@ async def compliance_state(current_user: CurrentUserDep, db: DbDep) -> Complianc
 class RequirementOut(BaseModel):
     requirement_id: str
     document_types: list[dict]
+    # Each inner list is one "pick any one" group - see compliance.Requirement.groups.
+    groups: list[list[dict]] = []
 
 
 @router.get("/compliance/requirements", response_model=RequirementOut)
@@ -166,6 +168,7 @@ async def get_requirements(
     return RequirementOut(
         requirement_id=req.requirement_id,
         document_types=[{"id": d.document_type_id, "name": d.name} for d in req.document_types],
+        groups=[[{"id": d.document_type_id, "name": d.name} for d in g] for g in req.groups],
     )
 
 
