@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.db.models import Escalation
+from shared.db.models import Business, Escalation
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -76,6 +76,45 @@ async def pending_count(current_user: CurrentUserDep, db: DbDep) -> dict:
         Escalation.acknowledged_at.is_(None),
     ))
     return {"open": int(result.scalar_one())}
+
+
+class EscalationSettingsOut(BaseModel):
+    escalation_sla_hours: int | None
+    outbound_number_series: str | None
+
+
+class EscalationSettingsIn(BaseModel):
+    escalation_sla_hours: int | None = Field(default=None, ge=1, le=168)
+    outbound_number_series: Literal["080", "022", "140"] | None = None
+
+
+@router.get("/settings", response_model=EscalationSettingsOut)
+async def get_escalation_settings(current_user: CurrentUserDep, db: DbDep) -> EscalationSettingsOut:
+    business = await db.get(Business, current_user.business)
+    settings = (business.settings or {}) if business else {}
+    return EscalationSettingsOut(
+        escalation_sla_hours=settings.get("escalation_sla_hours"),
+        outbound_number_series=settings.get("outbound_number_series"),
+    )
+
+
+@router.patch("/settings", response_model=EscalationSettingsOut)
+async def set_escalation_settings(
+    body: EscalationSettingsIn, current_user: CurrentUserDep, db: DbDep,
+) -> EscalationSettingsOut:
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    business.settings = {
+        **(business.settings or {}),
+        "escalation_sla_hours": body.escalation_sla_hours,
+        "outbound_number_series": body.outbound_number_series,
+    }
+    await db.flush()
+    return EscalationSettingsOut(
+        escalation_sla_hours=body.escalation_sla_hours,
+        outbound_number_series=body.outbound_number_series,
+    )
 
 
 @router.patch("/{escalation_id}/status", response_model=EscalationOut)
