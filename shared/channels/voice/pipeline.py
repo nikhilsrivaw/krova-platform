@@ -134,8 +134,13 @@ class _Speculation:
     task: asyncio.Task
 
 
+# Phrases where a caller clearly asks for a person, in Hinglish and English.
+# Word-bounded so "connect" alone (wifi, connected) does not count.
 _PERSON_REQUEST = re.compile(
-    r"(insaan|human|real person|manager|owner|staff|kisi se baat|connect me|mujhe connect|person se)",
+    r"\b(insaan\w*|human|real person|person se|person ko|manager|owner|staff|team|agent|executive|"
+    r"representative|operator|sales|someone|somebody|talk to|speak to|speak with|transfer|"
+    r"kisi se|kisi ko|baat (?:karn|karwa|krn|krwa|kar|karo|karao)\w*|"
+    r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa))\b",
     re.IGNORECASE,
 )
 
@@ -570,6 +575,13 @@ class CallPipeline:
             logger.warning("reply requested with no resolved customer, skipping")
             return
 
+        # A caller who asks for a person gets the transfer straight away, not
+        # whenever the model happens to choose escalate. Before this, "team se
+        # baat karni hai" was answered by the AI as text and nothing transferred.
+        if self.route.staff_phone_number and self._caller_asked_for_person():
+            await self.request_transfer()
+            return
+
         t_context = time.monotonic()
         if speculation is not None:
             # Already generating - possibly already finished - against
@@ -967,10 +979,10 @@ class CallPipeline:
             call_row = await self.db.get(Call, self.call_row_id)
             if call_row is not None:
                 call_row.escalated = True
-                call_row.escalation_reason = "Caller pressed 0 to reach a person"
+                call_row.escalation_reason = "Caller asked to reach a person"
 
         await agent_module.notify_escalation(
-            self.route.business_id, reason="Caller pressed 0 to reach a person",
+            self.route.business_id, reason="Caller asked to reach a person",
             customer_id=self.customer_id, channel="voice", db=self.db,
         )
 
