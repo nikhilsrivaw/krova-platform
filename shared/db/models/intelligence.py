@@ -31,6 +31,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -180,6 +181,10 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
     # second open commitment for the same invoice), reusable by any
     # future non-conversational commitment source, not Stripe-specific.
     external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Which system external_ref belongs to ("zoho", "stripe", ...). Null for
+    # conversational commitments. Makes (source_system, external_ref) unique per
+    # business, so two systems' ids can never collide.
+    source_system: Mapped[str | None] = mapped_column(String(30), nullable=True)
     # Dedupe for the proactive "it's fixed" send - same "stamp so a
     # webhook retry never resends" shape as every other *_sent_at column
     # in this schema.
@@ -220,6 +225,7 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         Index("idx_commitments_github_issue", "github_issue_url"),
         # The Stripe dunning webhook's own idempotency query.
         Index("idx_commitments_external_ref", "business_id", "external_ref"),
+        UniqueConstraint("business_id", "source_system", "external_ref", name="uq_commitment_source_ref"),
     )
 
 

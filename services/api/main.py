@@ -35,6 +35,7 @@ from services.api.routers import (
     dashboard,
     escalations,
     justdial,
+    zoho,
     export,
     flow_exchange,
     flows,
@@ -177,6 +178,7 @@ app.include_router(integrations.router, prefix=API_PREFIX)
 app.include_router(public_api.router, prefix=API_PREFIX)
 app.include_router(escalations.router, prefix=API_PREFIX)
 app.include_router(justdial.router, prefix=API_PREFIX)
+app.include_router(zoho.router, prefix=API_PREFIX)
 app.include_router(export.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(trust.router, prefix=API_PREFIX)

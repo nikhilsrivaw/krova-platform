@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     google_calendar_client_id: str = Field(default="", alias="GOOGLE_CALENDAR_CLIENT_ID")
     google_calendar_client_secret: str = Field(default="", alias="GOOGLE_CALENDAR_CLIENT_SECRET")
     google_calendar_redirect_uri: str = Field(default="", alias="GOOGLE_CALENDAR_REDIRECT_URI")
+    # Zoho Books (server-based app). Secrets come from the environment only.
+    zoho_client_id: str = Field(default="", alias="ZOHO_CLIENT_ID")
+    zoho_client_secret: str = Field(default="", alias="ZOHO_CLIENT_SECRET")
+    zoho_accounts_domain: str = Field(default="https://accounts.zoho.in", alias="ZOHO_ACCOUNTS_DOMAIN")
+    zoho_api_domain: str = Field(default="https://www.zohoapis.in", alias="ZOHO_API_DOMAIN")
+    # Empty = derived from PUBLIC_BASE_URL. Must match the redirect URI registered in Zoho.
+    zoho_redirect_uri: str = Field(default="", alias="ZOHO_REDIRECT_URI")
     # Must match, character for character, what is registered in Meta's
     # dashboard as this app's OAuth Redirect URI - the token exchange call
     # is rejected otherwise, and the two are configured completely separately.
