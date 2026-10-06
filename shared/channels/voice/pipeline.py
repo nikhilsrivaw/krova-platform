@@ -134,6 +134,9 @@ class _Speculation:
     task: asyncio.Task
 
 
+# How long to let the 'connecting you' line play before the call is handed over.
+_TRANSFER_LINE_PLAYBACK_SECONDS = 3.0
+
 # Phrases where a caller clearly asks for a person, in Hinglish and English.
 # Word-bounded so "connect" alone (wifi, connected) does not count.
 _PERSON_REQUEST = re.compile(
@@ -986,14 +989,19 @@ class CallPipeline:
             customer_id=self.customer_id, channel="voice", db=self.db,
         )
 
-        if self.route.staff_phone_number and await self._try_transfer():
+        if self.route.staff_phone_number:
+            # Speak first, then give the line time to play out: the transfer
+            # cuts the audio stream, so anything not yet heard is lost. The
+            # wait is a fixed estimate, not measured playback.
             await self._say_stream(
                 _single_chunk(
                     "Let me connect you to someone who can help with that right now."
                 ),
                 record=True,
             )
-            return
+            await asyncio.sleep(_TRANSFER_LINE_PLAYBACK_SECONDS)
+            if await self._try_transfer():
+                return
 
         await self._say_stream(
             _single_chunk(
