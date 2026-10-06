@@ -659,24 +659,6 @@ class CallPipeline:
                     call_row.escalated = True
                     call_row.escalation_reason = gap
 
-            # A business that has opted into a warm transfer gets a real
-            # handoff instead of an apology - staff_phone_number is unset
-            # for every business by default, so this is additive: nothing
-            # about today's apologize-and-hangup behaviour changes unless a
-            # business has explicitly configured a number.
-            if (
-                self.route.staff_phone_number
-                and self._caller_asked_for_person()
-                and await self._try_transfer()
-            ):
-                await self._say_stream(
-                    _single_chunk(
-                        "Let me connect you to someone who can help with that right now."
-                    ),
-                    record=True,
-                )
-                return
-
             spoken = (
                 f"I don't have {gap} on hand right now, but I'll make sure "
                 "someone follows up with you on that."
