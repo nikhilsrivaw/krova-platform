@@ -17,6 +17,7 @@ more, and holding an HTTP request open per recipient (or for a whole
 campaign) is not the same latency shape at all.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -24,6 +25,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.campaigns import audience as audience_module
@@ -36,6 +38,9 @@ from shared.db.models import (
     CallCampaignRecipientStatus,
     CallCampaignStatus,
     CallScript,
+    Channel,
+    ChannelConnection,
+    ConnectionStatus,
 )
 from shared.utils.logging import get_logger
 
@@ -214,30 +219,81 @@ async def list_call_campaigns(current_user: CurrentUserDep, db: DbDep) -> list[C
 _SERIES_FOR_PURPOSE = {"service": {"080", "022"}, "promotional": {"140"}}
 
 
-def _check_number_series(campaign: CallCampaign, business: Business | None) -> None:
+def _series_of(number: str) -> str | None:
+    """The Indian number series a phone number belongs to, read from its digits."""
+    digits = re.sub(r"\D", "", number or "")
+    if digits.startswith("91") and len(digits) > 10:
+        digits = digits[2:]
+    if digits.startswith("140"):
+        return "140"
+    if digits.startswith("160"):
+        return "160"
+    if digits.startswith("80"):
+        return "080"
+    if digits.startswith("22"):
+        return "022"
+    return None
+
+
+async def _check_number_series(campaign: CallCampaign, business: Business | None, db: AsyncSession) -> None:
     """
     India's rules: service and transactional calls go on 080 or 022, promotional calls
     on 140, and BFSI-only calls on 160. A campaign is refused before any call is placed
-    if its purpose does not match the business's connected series.
+    if its purpose does not match the number it would actually dial from.
+
+    The series is read from the connected voice number, because that is the number
+    the calls go out on. The typed setting must agree with it, so a setting alone
+    cannot put a promotional campaign on an 080 line.
     """
     if campaign.purpose not in _SERIES_FOR_PURPOSE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Choose whether this campaign is a service call or a promotional call first.",
         )
-    series = str((business.settings or {}).get("outbound_number_series", "")).strip() if business else ""
-    if not series:
+    allowed = _SERIES_FOR_PURPOSE[campaign.purpose]
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == campaign.business_id,
+                ChannelConnection.channel == Channel.voice,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.external_account_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No voice number is connected, so there is nothing to call from.",
+        )
+    number = connection.external_account_id
+    actual = _series_of(number)
+    if actual is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The connected number {number} is not an 080, 022, 140 or 160 series number.",
+        )
+
+    setting = str((business.settings or {}).get("outbound_number_series", "")).strip() if business else ""
+    if not setting:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This business has no outbound number series set. Set it before sending.",
         )
-    if series not in _SERIES_FOR_PURPOSE[campaign.purpose]:
-        allowed = " or ".join(sorted(_SERIES_FOR_PURPOSE[campaign.purpose]))
+    if setting != actual:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"A {campaign.purpose} campaign needs a {allowed} number, "
-                f"but this business's number is in the {series} series."
+                f"The series setting is {setting}, but the connected number {number} is in the "
+                f"{actual} series. Fix one of them before sending."
+            ),
+        )
+    if actual not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A {campaign.purpose} campaign needs a {' or '.join(sorted(allowed))} number, "
+                f"but the connected number {number} is in the {actual} series."
             ),
         )
 
@@ -259,7 +315,7 @@ async def send_call_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDe
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Campaign is not in draft (status: {campaign.status.value})",
         )
-    _check_number_series(campaign, await db.get(Business, current_user.business))
+    await _check_number_series(campaign, await db.get(Business, current_user.business), db)
 
     audience = campaign.audience if isinstance(campaign.audience, Audience) else Audience(campaign.audience)
     result = await audience_module.resolve(current_user.business, audience, campaign.audience_params, db)
