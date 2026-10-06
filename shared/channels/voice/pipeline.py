@@ -138,13 +138,21 @@ class _Speculation:
 _MULAW_BYTES_PER_SECOND = 8000
 _PLAYBACK_MARGIN_SECONDS = 0.5
 
-# Phrases where a caller clearly asks for a person, in Hinglish and English.
-# Word-bounded so "connect" alone (wifi, connected) does not count.
+# A caller asking for a person: a person word AND a request in the same
+# utterance. A person word alone ("team size", "manager ka naam") or a bank
+# "transfer" never counts, so an ordinary question does not hand the call over.
+_PERSON_NOUN = (
+    r"(?:insaan\w*|human|real person|person|manager|owner|staff|team|agent|"
+    r"executive|representative|operator|sales|someone|somebody|koi|kisi)"
+)
+_PERSON_WANT = (
+    r"(?:baat (?:karn|karwa|krn|krwa|kar|karo|karao)\w*|talk to|speak to|speak with|"
+    r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa|to)|bulao|bulwa\w*|"
+    r"chahiye|karni hai|karna hai|want to)"
+)
 _PERSON_REQUEST = re.compile(
-    r"\b(insaan\w*|human|real person|person se|person ko|manager|owner|staff|team|agent|executive|"
-    r"representative|operator|sales|someone|somebody|talk to|speak to|speak with|transfer|"
-    r"kisi se|kisi ko|baat (?:karn|karwa|krn|krwa|kar|karo|karao)\w*|"
-    r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa))\b",
+    rf"\b(?=.*\b{_PERSON_NOUN}\b)(?=.*\b{_PERSON_WANT}\b)"
+    r"|\btransfer (?:kar|karo|kardo|kar do|karwa)\w*|\btransfer me\b",
     re.IGNORECASE,
 )
 
