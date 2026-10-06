@@ -298,6 +298,13 @@ async def stream(
     async def send_audio(mulaw_bytes: bytes) -> None:
         await _send_wire_audio(mulaw_bytes)
 
+    async def end_stream() -> None:
+        # Closing the socket ends the Stream, so Plivo moves on to the transfer.
+        try:
+            await websocket.close()
+        except Exception:
+            logger.info("stream already closed when transferring")
+
     async def send_clear() -> None:
         if stream_id:
             async with _ws_send_lock:
@@ -635,6 +642,7 @@ async def stream(
                         provider_call_id=call_uuid,
                         send_audio=send_audio,
                         send_clear=send_clear,
+                        end_stream=end_stream,
                         speak=speak,
                         db=db,
                         call_row_id=call_row_id,

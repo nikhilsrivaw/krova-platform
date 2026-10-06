@@ -246,6 +246,10 @@ class CallPipeline:
     # it - an AI-mediated booking must cite the conversation that
     # authorised it, the same rule book.py enforces for every channel.
     _last_inbound_message_id: uuid.UUID | None = None
+    # Closes the Stream websocket. Set by the relay. A live transfer only runs
+    # once the stream has ended (keepCallAlive waits for it), so the handover
+    # needs this, not just the Plivo request.
+    end_stream: "Callable[[], object] | None" = None
 
     async def start(self) -> None:
         """Greet the caller. The first thing anyone hears on the call."""
@@ -1072,6 +1076,8 @@ class CallPipeline:
             "call transfer triggered call=%s to=+%s",
             self.provider_call_id, self.route.staff_phone_number,
         )
+        if self.end_stream is not None:
+            await self.end_stream()
         return True
 
     async def _say_stream(self, text_chunks, *, record: bool) -> None:
