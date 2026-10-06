@@ -8,7 +8,10 @@ import. Nothing is written if the file itself cannot be read.
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
+from sqlalchemy import select
+
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.db.models import ImportRun
 from shared.integrations.receivables import apply_receivables, parse_file
 
 router = APIRouter(prefix="/receivables", tags=["receivables"])
@@ -43,5 +46,42 @@ async def import_receivables(
 
     counts = await apply_receivables(db, current_user.business, SOURCE, rows, mark_missing_paid=mark_missing_paid)
     counts["skipped"] = len(errors)
+    db.add(ImportRun(
+        business_id=current_user.business,
+        source=SOURCE,
+        filename=file.filename,
+        mark_missing_paid=mark_missing_paid,
+        rows=len(rows),
+        created=counts["created"],
+        updated=counts["updated"],
+        resolved=counts["resolved"],
+        skipped=len(errors),
+    ))
+    await db.flush()
     counts["errors"] = [e.__dict__ for e in errors[:50]]
     return counts
+
+
+@router.get("/history")
+async def receivables_history(current_user: CurrentUserDep, db: DbDep, limit: int = 20) -> list[dict]:
+    runs = await db.execute(
+        select(ImportRun)
+        .where(ImportRun.business_id == current_user.business)
+        .order_by(ImportRun.created_at.desc())
+        .limit(min(max(limit, 1), 100))
+    )
+    return [
+        {
+            "id": str(r.id),
+            "source": r.source,
+            "filename": r.filename,
+            "mark_missing_paid": r.mark_missing_paid,
+            "rows": r.rows,
+            "created": r.created,
+            "updated": r.updated,
+            "resolved": r.resolved,
+            "skipped": r.skipped,
+            "at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in runs.scalars().all()
+    ]

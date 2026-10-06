@@ -496,6 +496,32 @@ async def check_deadline_calls() -> None:
         logger.exception("deadline call sweep failed")
 
 
+async def sync_zoho_books() -> None:
+    """
+    Pull open Zoho Books invoices for every connected business, once a day.
+    A failure for one business is logged and does not stop the others.
+    See shared/integrations/zoho_sync.py.
+    """
+    from sqlalchemy import select
+
+    from shared.db.models.zoho import ZohoConnection
+    from shared.db.session import AsyncSessionLocal
+    from shared.integrations import zoho_books
+    from shared.integrations.zoho_sync import sync_connection
+
+    try:
+        async with AsyncSessionLocal() as db:
+            connections = (await db.execute(select(ZohoConnection))).scalars().all()
+            for connection in connections:
+                try:
+                    await sync_connection(db, connection)
+                except zoho_books.ZohoError as exc:
+                    logger.warning("zoho sync failed business=%s: %s", connection.business_id, exc)
+            await db.commit()
+    except Exception:
+        logger.exception("zoho daily sync failed")
+
+
 async def check_quotation_followups() -> None:
     """
     Nudge staff about quotes going quiet, and expire ones past their own
@@ -827,6 +853,14 @@ def build() -> AsyncIOScheduler:
         id="check_deadline_calls",
         replace_existing=True,
         misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        sync_zoho_books,
+        IntervalTrigger(hours=24),
+        id="sync_zoho_books",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     scheduler.add_job(
