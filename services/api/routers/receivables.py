@@ -9,7 +9,7 @@ import. Nothing is written if the file itself cannot be read.
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.integrations.receivables import apply_receivables, parse_csv
+from shared.integrations.receivables import apply_receivables, parse_file
 
 router = APIRouter(prefix="/receivables", tags=["receivables"])
 
@@ -24,13 +24,17 @@ async def import_receivables(
     file: UploadFile = File(...),
     mark_missing_paid: bool = Form(default=True),
 ) -> dict:
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Upload a .csv file")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".csv") or name.endswith(".xlsx")):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Upload a .csv or .xlsx file")
     content = await file.read(MAX_BYTES + 1)
     if len(content) > MAX_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "The file is larger than 2 MB")
 
-    rows, errors = parse_csv(content)
+    try:
+        rows, errors = parse_file(name, content)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     if errors and not rows:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,

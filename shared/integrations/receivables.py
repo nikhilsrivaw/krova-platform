@@ -1,10 +1,14 @@
 """
 Receivables from any source, as one shape: who owes what, by when.
 
-A file (CSV) or a connected system (Zoho) turns into ReceivableRow values, and
-apply_receivables() reconciles them into the Commitment Ledger the same way for
-both. Rows are keyed by the invoice number, per source, so importing the same
-file twice updates rows instead of duplicating them.
+A file (CSV or Excel) or a connected system (Zoho) turns into ReceivableRow
+values, and apply_receivables() reconciles them into the Commitment Ledger the
+same way for both. Rows are keyed by the invoice number, per source, so
+importing the same file twice updates rows instead of duplicating them.
+
+Column names differ across accounting software. Each field accepts the common
+labels below, matched case-insensitively. An export whose labels are not in
+this list needs its headers renamed once, or a new alias added here.
 
 Missing-means-paid is opt-in per import. It is only right when the file is the
 business's full outstanding list, so a partial file cannot close real debts.
@@ -16,6 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 
+import openpyxl
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +32,20 @@ from shared.db.models.intelligence import (
     CommitmentStatus,
 )
 
-CSV_COLUMNS = ("customer", "invoice_number", "due_date", "amount")
+# Field -> the labels it is recognised by (lowercase). The first is the template's own name.
+ALIASES: dict[str, tuple[str, ...]] = {
+    "customer": ("customer", "customer name", "party", "party name", "ledger name", "name"),
+    "invoice_number": (
+        "invoice_number", "invoice number", "invoice no", "invoice no.", "invoice #",
+        "bill no", "bill no.", "bill number", "voucher no", "voucher number",
+    ),
+    "due_date": ("due_date", "due date", "due on", "due"),
+    "amount": (
+        "amount", "balance", "balance due", "amount due", "outstanding",
+        "closing balance", "total",
+    ),
+}
+REQUIRED = ("customer", "invoice_number", "amount")
 MAX_ROWS = 5000
 
 
@@ -45,29 +63,56 @@ class RowError:
     reason: str
 
 
-def parse_csv(content: bytes) -> tuple[list[ReceivableRow], list[RowError]]:
-    """Read a CSV with the columns customer, invoice_number, due_date, amount."""
+def parse_file(filename: str, content: bytes) -> tuple[list[ReceivableRow], list[RowError]]:
+    lowered = filename.lower()
+    if lowered.endswith(".xlsx"):
+        headers, records = _read_xlsx(content)
+    else:
+        headers, records = _read_csv(content)
+    return parse_records(headers, records)
+
+
+def _read_csv(content: bytes) -> tuple[list[str], list[dict]]:
     try:
         text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return [], [RowError(0, "The file is not UTF-8 text. Save it as CSV (UTF-8) and try again.")]
-
+    except UnicodeDecodeError as exc:
+        raise ValueError("The file is not UTF-8 text. Save it as CSV (UTF-8) and try again.") from exc
     reader = csv.DictReader(io.StringIO(text))
-    headers = {(h or "").strip().lower() for h in (reader.fieldnames or [])}
-    missing = [c for c in CSV_COLUMNS if c not in headers]
+    return list(reader.fieldnames or []), list(reader)
+
+
+def _read_xlsx(content: bytes) -> tuple[list[str], list[dict]]:
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ValueError("This is not a readable Excel file. Save it again as .xlsx.") from exc
+    sheet = workbook.worksheets[0]
+    iterator = sheet.iter_rows(values_only=True)
+    header_row = next(iterator, None) or ()
+    headers = [str(h).strip() if h is not None else "" for h in header_row]
+    records = []
+    for values in iterator:
+        records.append({headers[i]: values[i] for i in range(min(len(headers), len(values))) if headers[i]})
+    workbook.close()
+    return headers, records
+
+
+def parse_records(headers: list[str], records: list[dict]) -> tuple[list[ReceivableRow], list[RowError]]:
+    column = _resolve_columns(headers)
+    missing = [field for field in REQUIRED if field not in column]
     if missing:
-        return [], [RowError(1, f"Missing column(s): {', '.join(missing)}")]
+        return [], [RowError(1, f"Missing column(s): {', '.join(missing)}. Accepted names: see the template.")]
 
     rows: list[ReceivableRow] = []
     errors: list[RowError] = []
-    for line, raw in enumerate(reader, start=2):
+    for line, record in enumerate(records, start=2):
         if len(rows) + len(errors) >= MAX_ROWS:
             errors.append(RowError(line, f"More than {MAX_ROWS} rows. Split the file and import in parts."))
             break
-        row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
-        if not any(row.values()):
+        values = {field: record.get(header) for field, header in column.items()}
+        if all(_blank(v) for v in values.values()):
             continue
-        parsed, reason = _parse_row(row)
+        parsed, reason = _parse_row(values)
         if parsed is None:
             errors.append(RowError(line, reason))
         else:
@@ -75,31 +120,60 @@ def parse_csv(content: bytes) -> tuple[list[ReceivableRow], list[RowError]]:
     return rows, errors
 
 
-def _parse_row(row: dict) -> tuple[ReceivableRow | None, str]:
-    customer = row.get("customer", "")
-    invoice = row.get("invoice_number", "")
+def _resolve_columns(headers: list[str]) -> dict[str, str]:
+    """Field -> the file's own header, for the first alias each field matches."""
+    by_label = {}
+    for header in headers:
+        key = (header or "").strip().lower()
+        if key:
+            by_label.setdefault(key, header)
+    resolved = {}
+    for field, labels in ALIASES.items():
+        for label in labels:
+            if label in by_label:
+                resolved[field] = by_label[label]
+                break
+    return resolved
+
+
+def _blank(value) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _parse_row(values: dict) -> tuple[ReceivableRow | None, str]:
+    customer = str(values.get("customer") or "").strip()
+    invoice = str(values.get("invoice_number") or "").strip()
     if not customer:
         return None, "Customer name is empty"
     if not invoice:
         return None, "Invoice number is empty"
+
+    raw_amount = values.get("amount")
     try:
-        amount = Decimal(row.get("amount", "").replace(",", ""))
+        amount = Decimal(str(raw_amount).replace(",", "").strip()) if not _blank(raw_amount) else Decimal(0)
     except (InvalidOperation, ValueError):
-        return None, f"Amount '{row.get('amount', '')}' is not a number"
+        return None, f"Amount '{raw_amount}' is not a number"
     if amount <= 0:
         return None, "Amount must be more than zero"
-    due = _parse_date(row.get("due_date", ""))
-    if row.get("due_date") and due is None:
-        return None, f"Due date '{row['due_date']}' is not YYYY-MM-DD or DD/MM/YYYY"
+
+    raw_due = values.get("due_date")
+    due = _as_date(raw_due)
+    if not _blank(raw_due) and due is None:
+        return None, f"Due date '{raw_due}' is not YYYY-MM-DD or DD/MM/YYYY"
     return ReceivableRow(customer, invoice, due, int(amount * 100)), ""
 
 
-def _parse_date(value: str) -> date | None:
-    if not value:
+def _as_date(value) -> date | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
         try:
-            return datetime.strptime(value, fmt).date()
+            return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
     return None
