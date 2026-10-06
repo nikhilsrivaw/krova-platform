@@ -134,8 +134,9 @@ class _Speculation:
     task: asyncio.Task
 
 
-# How long to let the 'connecting you' line play before the call is handed over.
-_TRANSFER_LINE_PLAYBACK_SECONDS = 3.0
+# Plivo Stream audio is 8 kHz mu-law: one byte per sample.
+_MULAW_BYTES_PER_SECOND = 8000
+_PLAYBACK_MARGIN_SECONDS = 0.5
 
 # Phrases where a caller clearly asks for a person, in Hinglish and English.
 # Word-bounded so "connect" alone (wifi, connected) does not count.
@@ -250,6 +251,10 @@ class CallPipeline:
     # once the stream has ended (keepCallAlive waits for it), so the handover
     # needs this, not just the Plivo request.
     end_stream: "Callable[[], object] | None" = None
+    # Audio handed to Plivo for the line being spoken, so the wait before a
+    # transfer matches how long the line actually plays.
+    _audio_bytes_sent: int = 0
+    _audio_started_at: float | None = field(default=None, repr=False)
 
     async def start(self) -> None:
         """Greet the caller. The first thing anyone hears on the call."""
@@ -994,16 +999,17 @@ class CallPipeline:
         )
 
         if self.route.staff_phone_number:
-            # Speak first, then give the line time to play out: the transfer
-            # cuts the audio stream, so anything not yet heard is lost. The
-            # wait is a fixed estimate, not measured playback.
+            # Speak first, then wait for the line to finish playing: the
+            # transfer cuts the audio stream, so anything not yet heard is lost.
+            self._audio_bytes_sent = 0
+            self._audio_started_at = None
             await self._say_stream(
                 _single_chunk(
                     "Let me connect you to someone who can help with that right now."
                 ),
                 record=True,
             )
-            await asyncio.sleep(_TRANSFER_LINE_PLAYBACK_SECONDS)
+            await self._wait_for_line_playback()
             if await self._try_transfer():
                 return
 
@@ -1014,6 +1020,20 @@ class CallPipeline:
             ),
             record=True,
         )
+
+    async def _wait_for_line_playback(self) -> None:
+        """
+        Hold the call open until the audio already sent has finished playing.
+
+        _say_stream returns once the audio is handed over, which can be faster
+        than real time. The duration comes from the bytes actually sent, not a
+        guessed constant.
+        """
+        if self._audio_started_at is None:
+            return
+        duration = self._audio_bytes_sent / _MULAW_BYTES_PER_SECOND
+        remaining = duration - (time.monotonic() - self._audio_started_at)
+        await asyncio.sleep(max(0.0, remaining) + _PLAYBACK_MARGIN_SECONDS)
 
     def _caller_summary(self) -> str | None:
         """What the caller said most recently, in their own words, for the staff member who follows up."""
@@ -1115,6 +1135,9 @@ class CallPipeline:
             async for chunk in self.speak(tracked_chunks()):
                 if t_first_chunk is None:
                     t_first_chunk = time.monotonic()
+                if self._audio_started_at is None:
+                    self._audio_started_at = time.monotonic()
+                self._audio_bytes_sent += len(chunk)
                 await self.send_audio(chunk)
                 # Rough proportional tracking - good enough for barge-in
                 # recovery, not claimed as exact.
