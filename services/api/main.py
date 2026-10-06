@@ -34,6 +34,7 @@ from services.api.routers import (
     knowledge,
     dashboard,
     escalations,
+    indiamart,
     justdial,
     receivables,
     zoho,
@@ -179,6 +180,7 @@ app.include_router(integrations.router, prefix=API_PREFIX)
 app.include_router(public_api.router, prefix=API_PREFIX)
 app.include_router(escalations.router, prefix=API_PREFIX)
 app.include_router(justdial.router, prefix=API_PREFIX)
+app.include_router(indiamart.router, prefix=API_PREFIX)
 app.include_router(zoho.router, prefix=API_PREFIX)
 app.include_router(receivables.router, prefix=API_PREFIX)
 app.include_router(export.router, prefix=API_PREFIX)
@@ -198,6 +200,7 @@ app.include_router(commands.router, prefix=API_PREFIX)
 # connected business.
 app.include_router(webhooks.router)
 app.include_router(justdial.public)
+app.include_router(indiamart.public)
 
 # Same reasoning - a Flow's data_exchange endpoint_uri is registered with
 # Meta directly, per flow, not something the frontend ever calls.
