@@ -36,6 +36,7 @@ from services.api.routers import (
     escalations,
     indiamart,
     justdial,
+    leads_import,
     lead_sources,
     receivables,
     zoho,
@@ -69,8 +70,10 @@ from services.api.routers import (
 )
 from shared.config.settings import settings
 from shared.db.session import check_db_connection, get_engine
+from shared.utils import log_redaction
 from shared.utils.logging import get_logger
 
+log_redaction.install()
 logger = get_logger(__name__)
 
 
@@ -204,6 +207,7 @@ app.include_router(justdial.public)
 app.include_router(indiamart.public)
 app.include_router(lead_sources.router, prefix=API_PREFIX)
 app.include_router(lead_sources.public)
+app.include_router(leads_import.router, prefix=API_PREFIX)
 
 # Same reasoning - a Flow's data_exchange endpoint_uri is registered with
 # Meta directly, per flow, not something the frontend ever calls.

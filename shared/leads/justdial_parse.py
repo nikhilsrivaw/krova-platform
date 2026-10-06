@@ -12,7 +12,7 @@ Kept free of database imports so it can be tested on its own.
 from dataclasses import dataclass
 
 _FIELDS: dict[str, tuple[str, ...]] = {
-    "name": ("name", "customer_name", "full_name", "Name"),
+    "name": ("name", "customer name", "customer_name", "full_name", "Name"),
     "phone": ("mobile", "phone", "mobile_number", "contact", "Mobile", "Phone"),
     "email": ("email", "email_id", "Email"),
     "query": ("query", "requirement", "enquiry", "message", "comments", "Query"),
