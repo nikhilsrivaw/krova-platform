@@ -287,6 +287,61 @@ class AccountClient:
                     sorted(k for k in body if k != "messaging_product"))
         return bool(payload.get("success", True))
 
+    async def update_profile_picture(self, content: bytes, content_type: str, filename: str) -> str:
+        """
+        Set the profile photo customers see - unlike every other profile
+        field above, Meta will not take a plain URL for this one. It is a
+        two-step Resumable Upload API handshake (confirmed against Meta's
+        own Graph API upload docs, since the Business Management API docs
+        this module otherwise follows do not spell this flow out):
+
+        1. POST {app_id}/uploads (file_name/file_length/file_type in the
+           query string, access_token also in the query string rather than
+           an Authorization header - this one endpoint is the exception)
+           to open a session, returning an "upload:<id>" session id.
+        2. POST the raw bytes straight to that session id as its own path,
+           this time with "Authorization: OAuth <token>" (not "Bearer") and
+           a required file_offset header, returning a file handle ("h").
+
+        That handle, not a URL, is what whatsapp_business_profile's own
+        profile_picture_handle field takes. Returns the new
+        profile_picture_url (re-fetched, since Meta does not echo it back
+        from the handle update call itself).
+        """
+        if not settings.meta_app_id:
+            raise AccountError("META_APP_ID is not configured on this server")
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            session = await client.post(
+                f"{settings.graph_base_url}/{settings.meta_app_id}/uploads",
+                params={
+                    "file_name": filename, "file_length": len(content),
+                    "file_type": content_type, "access_token": self._token,
+                },
+            )
+            session_payload = session.json() if session.content else {}
+            if session.status_code != 200 or "id" not in session_payload:
+                raise _explain(session_payload)
+            session_id = session_payload["id"]
+
+            upload = await client.post(
+                f"{settings.graph_base_url}/{session_id}",
+                headers={"Authorization": f"OAuth {self._token}", "file_offset": "0"},
+                content=content,
+            )
+            upload_payload = upload.json() if upload.content else {}
+            if upload.status_code != 200 or "h" not in upload_payload:
+                raise _explain(upload_payload)
+            handle = upload_payload["h"]
+
+        await self._call(
+            "POST", f"{self._number}/whatsapp_business_profile",
+            json={"messaging_product": "whatsapp", "profile_picture_handle": handle},
+        )
+        logger.info("profile picture updated number=%s", self._number)
+        profile = await self.get_profile()
+        return profile.profile_picture_url or ""
+
     # ── health ───────────────────────────────────────────────────────────────
 
     async def health(self) -> NumberHealth:

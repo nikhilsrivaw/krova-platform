@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -22,6 +22,9 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/account/whatsapp", tags=["account"])
+
+_PICTURE_ALLOWED_TYPES = {"image/jpeg", "image/png"}
+_PICTURE_MAX_BYTES = 5 * 1024 * 1024
 
 
 class ProfileOut(BaseModel):
@@ -143,6 +146,34 @@ async def get_profile(current_user: CurrentUserDep, db: DbDep) -> ProfileOut:
         vertical_label=meta.VERTICALS.get(profile.vertical or ""),
         profile_picture_url=profile.profile_picture_url,
     )
+
+
+class ProfilePictureOut(BaseModel):
+    profile_picture_url: str
+
+
+@router.post("/profile/picture", response_model=ProfilePictureOut)
+async def update_profile_picture(
+    current_user: CurrentUserDep, db: DbDep, file: UploadFile = File(...),
+) -> ProfilePictureOut:
+    """The icon customers see next to every message from this number -
+    see AccountClient.update_profile_picture's own docstring for why this
+    needs its own endpoint rather than another field on POST /profile."""
+    connection = await _connection(current_user.business, db)
+    content = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in _PICTURE_ALLOWED_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Use a JPEG or PNG image")
+    if len(content) > _PICTURE_MAX_BYTES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"File too large - max {_PICTURE_MAX_BYTES // (1024 * 1024)}MB")
+
+    try:
+        url = await _client(connection).update_profile_picture(
+            content, content_type, file.filename or "profile.jpg",
+        )
+    except meta.AccountError as exc:
+        raise _handle(exc) from exc
+    return ProfilePictureOut(profile_picture_url=url)
 
 
 @router.post("/profile", response_model=ProfileOut)
