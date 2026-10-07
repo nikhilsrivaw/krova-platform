@@ -56,6 +56,52 @@ logger = get_logger(__name__)
 # validates a condition's `field` against this same allowlist per
 # trigger_type, so a rule can never be saved referencing data that trigger
 # will never actually carry.
+async def ensure_default_lead_automation(db: AsyncSession, business_id: uuid.UUID) -> None:
+    """
+    The first time a business connects any lead source, give it one rule for
+    free: notify the team when a lead comes in. Without this, a business that
+    just generated a Justdial/IndiaMART/portal/email URL has zero visibility
+    into whether a lead ever arrives until it separately writes its own
+    automation rule - the same "a real gap sits with no second alarm" failure
+    shared/care/escalation_failsafe.py's own docstring already argues against,
+    just for leads instead of escalations.
+
+    Idempotent and silent: called from every lead-source "generate a URL/
+    address" endpoint, so it does nothing once a lead.received rule already
+    exists for this business - whether that's this seeded one, left alone, or
+    one the business edited, replaced, or deactivated itself. Never touches
+    an existing row.
+    """
+    existing = (
+        await db.execute(
+            select(PostCallActionRule).where(
+                PostCallActionRule.business_id == business_id,
+                PostCallActionRule.trigger_type == "lead.received",
+            )
+        )
+    ).scalars().first()
+    if existing is not None:
+        return
+
+    reason = "A new lead came in - see the Leads page for who and from where."
+    rule = PostCallActionRule(
+        business_id=business_id,
+        name="Notify the team about new leads",
+        trigger_type="lead.received",
+        channel=None,
+        action_type="create_escalation_task",
+        action_config={"reason": reason},
+        is_active=True,
+    )
+    db.add(rule)
+    await db.flush()
+    db.add(AutomationStep(
+        rule_id=rule.id, position=0, action_type="create_escalation_task",
+        action_config={"reason": reason},
+    ))
+    await db.flush()
+
+
 CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic", "requested_service"),
     "call.voicemail": ("campaign_objective",),

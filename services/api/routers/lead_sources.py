@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
+from shared.care import post_call_actions
 from shared.leads import intake
 from shared.leads.justdial_parse import parse_lead
 from shared.leads.platforms import BY_KEY, PLATFORMS
@@ -87,6 +88,7 @@ async def generate_lead_source_token(key: str, current_user: CurrentUserDep, db:
     token = intake.new_token()
     business.settings = {**(business.settings or {}), platform.token_setting: intake.hash_token(token)}
     await db.flush()
+    await post_call_actions.ensure_default_lead_automation(db, business.id)
     base = app_settings.public_base_url.rstrip("/")
     return LeadSourceTokenOut(key=key, webhook_url=f"{base}/webhooks/leads/{key}/{token}")
 

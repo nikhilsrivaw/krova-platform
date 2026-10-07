@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
+from shared.care import post_call_actions
 from shared.leads import intake
 from shared.leads.email_parse import extract_lead_from_body, parse_raw_email, recipient_local_part
 from shared.utils.logging import get_logger
@@ -63,6 +64,7 @@ async def generate_email_leads_token(current_user: CurrentUserDep, db: DbDep) ->
     token = intake.new_token()[:24]  # fits comfortably in an email local-part
     business.settings = {**(business.settings or {}), TOKEN_SETTING: intake.hash_token(token)}
     await db.flush()
+    await post_call_actions.ensure_default_lead_automation(db, business.id)
     address = f"leads-{token}@{app_settings.email_leads_domain}"
     return EmailLeadsSettingsOut(configured=True, address=address)
 

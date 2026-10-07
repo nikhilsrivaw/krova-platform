@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
+from shared.care import post_call_actions
 from shared.leads import justdial as justdial_leads
 
 router = APIRouter(prefix="/justdial", tags=["justdial"])
@@ -81,6 +82,7 @@ async def generate_justdial_token(current_user: CurrentUserDep, db: DbDep) -> Ju
         justdial_leads.TOKEN_SETTING: justdial_leads.hash_token(token),
     }
     await db.flush()
+    await post_call_actions.ensure_default_lead_automation(db, business.id)
     base = app_settings.public_base_url.rstrip("/")
     return JustdialSettingsOut(
         configured=True, webhook_url=f"{base}/webhooks/justdial/{token}",
