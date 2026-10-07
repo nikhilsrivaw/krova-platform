@@ -713,7 +713,7 @@ async def _run_step_action(
         return True
 
     if action_type == "add_tag":
-        return await _add_tag(business_id, customer_id, action_config or {}, db)
+        return await _add_tag(business_id, customer_id, action_config or {}, db, context)
 
     if action_type == "instagram_followup":
         message = (action_config or {}).get("message") or ""
@@ -1042,12 +1042,22 @@ async def _send_email(business_id: uuid.UUID, customer_id: uuid.UUID, config: di
     return True
 
 
-async def _add_tag(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
-    """Same shape as crm.py's own add_tag endpoint, minus a human user - a
-    rule's own reasoning fills where that endpoint records who typed it."""
+async def _add_tag(
+    business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession, context: dict,
+) -> bool:
+    """
+    Same shape as crm.py's own add_tag endpoint, minus a human user - a
+    rule's own reasoning fills where that endpoint records who typed it.
+
+    The tag text accepts a {{field}} token the same way a WhatsApp follow-up's
+    message does (_resolve_tokens) - e.g. tag: "lead-{{source}}" on a
+    lead.received rule tags a Justdial lead "lead-justdial" and an IndiaMART
+    one "lead-indiamart" from the same rule, instead of needing one rule per
+    source just to vary the tag text.
+    """
     from shared.db.models import CustomerTag, TagStatus
 
-    label = str(config.get("tag") or "").strip().lower()
+    label = _resolve_tokens(str(config.get("tag") or ""), context).strip().lower()
     if not label:
         logger.warning("add_tag rule for business=%s has no tag configured, skipping", business_id)
         return False
