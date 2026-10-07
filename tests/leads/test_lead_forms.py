@@ -56,3 +56,23 @@ def test_only_the_first_field_of_a_reserved_type_is_used():
     parsed, _ = _build_parsed_lead(fields, {"p1": "111", "p2": "222"})
     assert parsed.phone == "111"
     assert parsed.query == "Alternate phone: 222"
+
+
+CONDITIONAL_FIELDS = [
+    {"key": "interest", "label": "Interested in?", "type": "select", "required": True,
+     "options": ["Buying", "Renting"]},
+    {"key": "budget", "label": "Budget", "type": "text", "required": True,
+     "show_if": {"field_key": "interest", "equals": "Buying"}},
+]
+
+
+def test_a_field_behind_show_if_is_skipped_when_the_condition_does_not_match():
+    parsed, stored = _build_parsed_lead(CONDITIONAL_FIELDS, {"interest": "Renting", "budget": "50 lakh"})
+    assert "Budget" not in (parsed.query or "")
+    assert "budget" not in stored
+
+
+def test_a_field_behind_show_if_is_included_when_the_condition_matches():
+    parsed, stored = _build_parsed_lead(CONDITIONAL_FIELDS, {"interest": "Buying", "budget": "50 lakh"})
+    assert parsed.query == "Interested in?: Buying; Budget: 50 lakh"
+    assert stored["budget"] == "50 lakh"

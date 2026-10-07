@@ -41,12 +41,21 @@ class LeadForm(UUIDMixin, TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     # Opaque public identifier - see module docstring.
     token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    # Ordered list of {key, label, type, required, options?}. type is one of
-    # "name" | "phone" | "email" | "text" | "textarea" | "select" | "checkbox".
-    # Validated in the router, not the database - this stays a plain JSONB
-    # list so a business can reorder/add/remove fields freely.
+    # Ordered list of {key, label, type, required, options?, step?, show_if?}.
+    # type is one of "name" | "phone" | "email" | "text" | "textarea" |
+    # "select" | "checkbox" | "file". step groups fields into pages (0 =
+    # first page); show_if is {field_key, equals} - this field only renders
+    # when that earlier field's value matches. Validated in the router, not
+    # the database - this stays a plain JSONB list so a business can
+    # reorder/add/remove fields freely.
     fields: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Branding shown on the public page - both optional, fall back to the
+    # fixed dark theme when unset. logo_url points at shared/integrations/
+    # media_storage.py's own S3 bucket, uploaded via the authed
+    # POST /forms/logo endpoint.
+    logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    accent_color: Mapped[str | None] = mapped_column(String(9), nullable=True)
 
     rate_limit_window_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

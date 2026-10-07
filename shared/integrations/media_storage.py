@@ -31,6 +31,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {
     "image/jpeg", "image/png",
     "video/mp4", "video/quicktime",
+    "application/pdf",
 }
 
 
@@ -63,18 +64,30 @@ def _put(key: str, content: bytes, content_type: str) -> None:
         raise MediaStorageError("Could not upload this file") from exc
 
 
-async def upload_media(content: bytes, content_type: str) -> str:
+async def upload_media(
+    content: bytes, content_type: str, *, key_prefix: str = "instagram-publish",
+    max_bytes: int = MAX_UPLOAD_BYTES, allowed_content_types: set[str] | None = None,
+) -> str:
     """
     Store one file, return the public URL Meta (or anyone else) can fetch
     it from. Never overwrites - the key is always a fresh random id.
+
+    key_prefix defaults to this module's original (and still most common)
+    caller; a new feature storing a different kind of file passes its own
+    prefix rather than living under a misleading "instagram-publish/" path.
+    allowed_content_types/max_bytes let a caller apply a tighter check than
+    this module's own ceiling - e.g. a public, unauthenticated upload
+    endpoint restricting to images only and a smaller size cap than the
+    staff-authenticated Instagram carousel upload uses.
     """
-    if content_type not in ALLOWED_CONTENT_TYPES:
+    allowed = allowed_content_types if allowed_content_types is not None else ALLOWED_CONTENT_TYPES
+    if content_type not in allowed:
         raise MediaStorageError(f"Unsupported file type: {content_type}")
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise MediaStorageError(f"File too large - max {MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
+    if len(content) > max_bytes:
+        raise MediaStorageError(f"File too large - max {max_bytes // (1024 * 1024)}MB")
 
     extension = mimetypes.guess_extension(content_type) or ""
-    key = f"instagram-publish/{uuid.uuid4().hex}{extension}"
+    key = f"{key_prefix}/{uuid.uuid4().hex}{extension}"
 
     await asyncio.to_thread(_put, key, content, content_type)
 

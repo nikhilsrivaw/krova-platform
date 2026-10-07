@@ -50,22 +50,29 @@ TURN_CAP_MESSAGE = (
 )
 
 
-def check_rate_limit(config: _RateLimited) -> bool:
+def check_rate_limit(
+    config: _RateLimited, *, window: timedelta = _RATE_LIMIT_WINDOW, max_requests: int = _RATE_LIMIT_MAX_REQUESTS,
+) -> bool:
     """
     True if this request is allowed, mutating config's own counter either
     way - the caller is responsible for persisting it (a plain attribute
     mutation on an already-loaded ORM row, flushed by the caller like any
     other change in the same request).
+
+    window/max_requests default to the widget's own generous allowance -
+    a caller with a lower-volume, higher-abuse-cost surface (the public
+    lead-form submit/upload endpoints, services/api/routers/lead_forms.py)
+    passes its own tighter numbers instead.
     """
     now = datetime.now(timezone.utc)
     window_started = config.rate_limit_window_started_at
 
-    if window_started is None or now - window_started > _RATE_LIMIT_WINDOW:
+    if window_started is None or now - window_started > window:
         config.rate_limit_window_started_at = now
         config.rate_limit_count = 1
         return True
 
-    if config.rate_limit_count >= _RATE_LIMIT_MAX_REQUESTS:
+    if config.rate_limit_count >= max_requests:
         return False
 
     config.rate_limit_count += 1
