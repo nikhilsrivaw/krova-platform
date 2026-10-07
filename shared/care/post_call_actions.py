@@ -56,52 +56,6 @@ logger = get_logger(__name__)
 # validates a condition's `field` against this same allowlist per
 # trigger_type, so a rule can never be saved referencing data that trigger
 # will never actually carry.
-async def ensure_default_lead_automation(db: AsyncSession, business_id: uuid.UUID) -> None:
-    """
-    The first time a business connects any lead source, give it one rule for
-    free: notify the team when a lead comes in. Without this, a business that
-    just generated a Justdial/IndiaMART/portal/email URL has zero visibility
-    into whether a lead ever arrives until it separately writes its own
-    automation rule - the same "a real gap sits with no second alarm" failure
-    shared/care/escalation_failsafe.py's own docstring already argues against,
-    just for leads instead of escalations.
-
-    Idempotent and silent: called from every lead-source "generate a URL/
-    address" endpoint, so it does nothing once a lead.received rule already
-    exists for this business - whether that's this seeded one, left alone, or
-    one the business edited, replaced, or deactivated itself. Never touches
-    an existing row.
-    """
-    existing = (
-        await db.execute(
-            select(PostCallActionRule).where(
-                PostCallActionRule.business_id == business_id,
-                PostCallActionRule.trigger_type == "lead.received",
-            )
-        )
-    ).scalars().first()
-    if existing is not None:
-        return
-
-    reason = "A new lead came in - see the Leads page for who and from where."
-    rule = PostCallActionRule(
-        business_id=business_id,
-        name="Notify the team about new leads",
-        trigger_type="lead.received",
-        channel=None,
-        action_type="create_escalation_task",
-        action_config={"reason": reason},
-        is_active=True,
-    )
-    db.add(rule)
-    await db.flush()
-    db.add(AutomationStep(
-        rule_id=rule.id, position=0, action_type="create_escalation_task",
-        action_config={"reason": reason},
-    ))
-    await db.flush()
-
-
 CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic", "requested_service"),
     "call.voicemail": ("campaign_objective",),
@@ -301,6 +255,90 @@ def _snapshot_step(step: AutomationStep) -> dict:
         "condition": step.condition,
         "delay_seconds": step.delay_seconds,
     }
+
+
+async def ensure_default_lead_automation(db: AsyncSession, business_id: uuid.UUID) -> None:
+    """
+    The first time a business connects any lead source, give it one rule for
+    free instead of a silent gap: notify the team, send the lead a WhatsApp
+    acknowledgement, and call them - all three, immediately, no human review.
+
+    Why all three rather than the single notify-only step this used to seed:
+    speed-to-lead research is consistent that minutes matter (a lead called
+    within 5 minutes converts far better than one called in hours), and
+    WhatsApp read rates (92-97%) beat a cold call's pickup rate (~40%) - so
+    reaching for both channels at once, the moment a lead arrives, is the
+    actual point of building this rather than a feature nobody's business
+    ever turns on. This is a real behaviour change from "visibility" to
+    "autonomous outreach" - it is why it stays fully visible and editable on
+    the Automations page (delete a step, turn the rule off, or change its
+    wording there), never a hidden background job.
+
+    What actually fires depends on what the business has already connected,
+    same as every other automation step - nothing here is new leniency:
+    - create_escalation_task always runs (no prerequisite beyond a customer).
+    - whatsapp_followup needs the post_call_followup WhatsApp template
+      approved in Meta's WhatsApp Manager (shared/scheduling/notify.py) -
+      silently skipped and logged otherwise, same as any other rule.
+    - place_call needs a connected, KYC-approved voice number - skipped and
+      logged otherwise. Real cost applies per call once it is connected;
+      this is not gated on the number-series/DND checks call_campaigns.py's
+      bulk-send path enforces, because this is one adhoc call per lead, the
+      same mechanism commitment_deadline_calls.py's reminder calls already
+      use unconditionally.
+
+    Idempotent and silent: called from every lead-source "generate a URL/
+    address" endpoint, so it does nothing once a lead.received rule already
+    exists for this business - whether that's this seeded one, left alone, or
+    one the business edited, replaced, or deactivated itself. Never touches
+    an existing row.
+    """
+    existing = (
+        await db.execute(
+            select(PostCallActionRule).where(
+                PostCallActionRule.business_id == business_id,
+                PostCallActionRule.trigger_type == "lead.received",
+            )
+        )
+    ).scalars().first()
+    if existing is not None:
+        return
+
+    escalation_reason = "A new lead came in - see the Leads page for who and from where."
+    whatsapp_message = "Thanks for your enquiry! Our team will call you shortly to help."
+    call_reason = "Follow up on a new lead"
+
+    rule = PostCallActionRule(
+        business_id=business_id,
+        name="Reach out to every new lead automatically",
+        trigger_type="lead.received",
+        channel=None,
+        # Mirror of step 0 - these two columns are NOT NULL and nothing else
+        # reads them (see this module's own docstring).
+        action_type="create_escalation_task",
+        action_config={"reason": escalation_reason},
+        is_active=True,
+    )
+    db.add(rule)
+    await db.flush()
+
+    steps = [
+        AutomationStep(
+            rule_id=rule.id, position=0, action_type="create_escalation_task",
+            action_config={"reason": escalation_reason},
+        ),
+        AutomationStep(
+            rule_id=rule.id, position=1, action_type="whatsapp_followup",
+            action_config={"message": whatsapp_message},
+        ),
+        AutomationStep(
+            rule_id=rule.id, position=2, action_type="place_call",
+            action_config={"reason": call_reason},
+        ),
+    ]
+    for step in steps:
+        db.add(step)
+    await db.flush()
 
 
 async def apply_rules(
