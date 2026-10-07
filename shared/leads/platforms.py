@@ -27,6 +27,12 @@ class LeadPlatform:
     def token_setting(self) -> str:
         return f"{self.key}_token_hash"
 
+    @property
+    def enc_setting(self) -> str:
+        # The token stored reversibly, alongside the hash above - see
+        # shared/leads/intake.py's encrypt_token/decrypt_token docstrings.
+        return f"{self.key}_token_enc"
+
 
 PLATFORMS: tuple[LeadPlatform, ...] = (
     LeadPlatform(

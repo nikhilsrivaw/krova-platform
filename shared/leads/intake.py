@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.auth.encryption import DecryptionError, decrypt, encrypt
 from shared.care import post_call_actions
 from shared.db.models import Business, CustomerNote, IdentityKind, InboundLead
 from shared.identity import resolver
@@ -31,8 +32,29 @@ def new_token() -> str:
 
 
 def hash_token(token: str) -> str:
-    # Only the hash is stored. A lost URL means generating a new one.
+    # The lookup path (an inbound webhook request): compared against the
+    # hash stored under the *_token_hash setting, never the plaintext.
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def encrypt_token(token: str) -> str:
+    # Stored under *_token_enc, alongside the hash above - so the owner's
+    # own Settings page can show the URL/address back at any time instead
+    # of only once at generation. Reversible (Fernet, shared/auth/
+    # encryption.py), same mechanism already used for real channel
+    # credentials (WhatsApp/Instagram/Zoho tokens) - this token carries the
+    # same risk tier (it authenticates a public webhook), not a step down.
+    return encrypt(token)
+
+
+def decrypt_token(enc: str) -> str | None:
+    """None if the value can't be decrypted (e.g. ENCRYPTION_KEY rotated
+    since it was stored) - the caller falls back to "configured, but the
+    URL isn't recoverable; generate a new one" rather than raising."""
+    try:
+        return decrypt(enc)
+    except DecryptionError:
+        return None
 
 
 async def ingest_parsed(

@@ -27,11 +27,19 @@ router = APIRouter(prefix="/justdial", tags=["justdial"])
 public = APIRouter(prefix="/webhooks/justdial", tags=["webhooks"])
 
 
+STEPS = (
+    "Generate the URL below.",
+    "Copy it, and send it to your Justdial account manager - ask them to set it as your lead webhook.",
+    "Justdial's team activates it on their side, usually within a few days.",
+    "Leads start showing up on the Leads page once it's live.",
+)
+
+
 class JustdialSettingsOut(BaseModel):
     configured: bool
-    # Returned only right after generating, since only the hash is stored.
     webhook_url: str | None = None
     last_lead_at: datetime | None = None
+    steps: list[str] = list(STEPS)
 
 
 class InboundLeadOut(BaseModel):
@@ -56,14 +64,21 @@ def _to_out(row: InboundLead) -> InboundLeadOut:
 @router.get("/settings", response_model=JustdialSettingsOut)
 async def get_justdial_settings(current_user: CurrentUserDep, db: DbDep) -> JustdialSettingsOut:
     business = await db.get(Business, current_user.business)
-    configured = bool(business and (business.settings or {}).get(justdial_leads.TOKEN_SETTING))
+    settings_map = (business.settings or {}) if business else {}
+    configured = bool(settings_map.get(justdial_leads.TOKEN_SETTING))
+    webhook_url = None
+    enc = settings_map.get(justdial_leads.ENC_SETTING)
+    if configured and enc and app_settings.public_base_url:
+        token = justdial_leads.decrypt_token(enc)
+        if token:
+            webhook_url = f"{app_settings.public_base_url.rstrip('/')}/webhooks/justdial/{token}"
     last = await db.execute(
         select(func.max(InboundLead.received_at)).where(
             InboundLead.business_id == current_user.business,
             InboundLead.source == justdial_leads.SOURCE,
         )
     )
-    return JustdialSettingsOut(configured=configured, last_lead_at=last.scalar_one())
+    return JustdialSettingsOut(configured=configured, webhook_url=webhook_url, last_lead_at=last.scalar_one())
 
 
 @router.post("/token", response_model=JustdialSettingsOut)
@@ -80,6 +95,7 @@ async def generate_justdial_token(current_user: CurrentUserDep, db: DbDep) -> Ju
     business.settings = {
         **(business.settings or {}),
         justdial_leads.TOKEN_SETTING: justdial_leads.hash_token(token),
+        justdial_leads.ENC_SETTING: justdial_leads.encrypt_token(token),
     }
     await db.flush()
     await post_call_actions.ensure_default_lead_automation(db, business.id)

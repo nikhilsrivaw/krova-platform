@@ -32,6 +32,7 @@ class LeadSourceOut(BaseModel):
     setup: str
     steps: list[str]
     configured: bool
+    webhook_url: str | None = None
     last_lead_at: datetime | None = None
 
 
@@ -63,12 +64,20 @@ async def list_lead_sources(current_user: CurrentUserDep, db: DbDep) -> list[Lea
                 InboundLead.source == platform.key,
             )
         )
+        configured = bool(settings_map.get(platform.token_setting))
+        webhook_url = None
+        enc = settings_map.get(platform.enc_setting)
+        if configured and enc and app_settings.public_base_url:
+            token = intake.decrypt_token(enc)
+            if token:
+                webhook_url = f"{app_settings.public_base_url.rstrip('/')}/webhooks/leads/{platform.key}/{token}"
         out.append(LeadSourceOut(
             key=platform.key,
             label=platform.label,
             setup=platform.setup,
             steps=list(platform.steps),
-            configured=bool(settings_map.get(platform.token_setting)),
+            configured=configured,
+            webhook_url=webhook_url,
             last_lead_at=last.scalar_one(),
         ))
     return out
@@ -86,7 +95,11 @@ async def generate_lead_source_token(key: str, current_user: CurrentUserDep, db:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
 
     token = intake.new_token()
-    business.settings = {**(business.settings or {}), platform.token_setting: intake.hash_token(token)}
+    business.settings = {
+        **(business.settings or {}),
+        platform.token_setting: intake.hash_token(token),
+        platform.enc_setting: intake.encrypt_token(token),
+    }
     await db.flush()
     await post_call_actions.ensure_default_lead_automation(db, business.id)
     base = app_settings.public_base_url.rstrip("/")

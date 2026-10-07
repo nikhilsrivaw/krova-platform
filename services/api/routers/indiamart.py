@@ -25,15 +25,25 @@ from shared.leads.indiamart_parse import parse_indiamart
 
 SOURCE = "indiamart"
 TOKEN_SETTING = "indiamart_token_hash"
+ENC_SETTING = "indiamart_token_enc"
 
 router = APIRouter(prefix="/indiamart", tags=["indiamart"])
 public = APIRouter(prefix="/webhooks/indiamart", tags=["webhooks"])
+
+STEPS = (
+    "Generate the URL below.",
+    "Log in at seller.indiamart.com and open Lead Manager.",
+    "From the ⋮ menu, choose Import/Export Leads → Push API.",
+    "Paste the URL as the Listener URL, and confirm with the OTP sent to your registered mobile.",
+    "Needs an active IndiaMART paid plan - Push API isn't offered on a free account.",
+)
 
 
 class IndiamartSettingsOut(BaseModel):
     configured: bool
     webhook_url: str | None = None
     last_lead_at: datetime | None = None
+    steps: list[str] = list(STEPS)
 
 
 class IndiamartLeadOut(BaseModel):
@@ -58,14 +68,21 @@ def _to_out(row: InboundLead) -> IndiamartLeadOut:
 @router.get("/settings", response_model=IndiamartSettingsOut)
 async def get_indiamart_settings(current_user: CurrentUserDep, db: DbDep) -> IndiamartSettingsOut:
     business = await db.get(Business, current_user.business)
-    configured = bool(business and (business.settings or {}).get(TOKEN_SETTING))
+    settings_map = (business.settings or {}) if business else {}
+    configured = bool(settings_map.get(TOKEN_SETTING))
+    webhook_url = None
+    enc = settings_map.get(ENC_SETTING)
+    if configured and enc and app_settings.public_base_url:
+        token = intake.decrypt_token(enc)
+        if token:
+            webhook_url = f"{app_settings.public_base_url.rstrip('/')}/webhooks/indiamart/{token}"
     last = await db.execute(
         select(func.max(InboundLead.received_at)).where(
             InboundLead.business_id == current_user.business,
             InboundLead.source == SOURCE,
         )
     )
-    return IndiamartSettingsOut(configured=configured, last_lead_at=last.scalar_one())
+    return IndiamartSettingsOut(configured=configured, webhook_url=webhook_url, last_lead_at=last.scalar_one())
 
 
 @router.post("/token", response_model=IndiamartSettingsOut)
@@ -79,7 +96,11 @@ async def generate_indiamart_token(current_user: CurrentUserDep, db: DbDep) -> I
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
 
     token = intake.new_token()
-    business.settings = {**(business.settings or {}), TOKEN_SETTING: intake.hash_token(token)}
+    business.settings = {
+        **(business.settings or {}),
+        TOKEN_SETTING: intake.hash_token(token),
+        ENC_SETTING: intake.encrypt_token(token),
+    }
     await db.flush()
     await post_call_actions.ensure_default_lead_automation(db, business.id)
     base = app_settings.public_base_url.rstrip("/")

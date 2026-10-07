@@ -31,28 +31,44 @@ logger = get_logger(__name__)
 
 SOURCE = "email"
 TOKEN_SETTING = "email_leads_token_hash"
+ENC_SETTING = "email_leads_token_enc"
 
 router = APIRouter(prefix="/email-leads", tags=["email-leads"])
 public = APIRouter(tags=["webhooks"])
+
+STEPS = (
+    "Generate the address below.",
+    "Open your own mailbox's settings (Gmail, Outlook, whatever the portal alerts land in).",
+    "Add a forwarding rule: any email from the portal → forward it to this address.",
+    "A new alert email now becomes a lead here within a few seconds.",
+)
 
 
 class EmailLeadsSettingsOut(BaseModel):
     configured: bool
     address: str | None = None
     last_lead_at: datetime | None = None
+    steps: list[str] = list(STEPS)
 
 
 @router.get("/settings", response_model=EmailLeadsSettingsOut)
 async def get_email_leads_settings(current_user: CurrentUserDep, db: DbDep) -> EmailLeadsSettingsOut:
     business = await db.get(Business, current_user.business)
-    configured = bool(business and (business.settings or {}).get(TOKEN_SETTING))
+    settings_map = (business.settings or {}) if business else {}
+    configured = bool(settings_map.get(TOKEN_SETTING))
+    address = None
+    enc = settings_map.get(ENC_SETTING)
+    if configured and enc:
+        token = intake.decrypt_token(enc)
+        if token:
+            address = f"leads-{token}@{app_settings.email_leads_domain}"
     last = await db.execute(
         select(func.max(InboundLead.received_at)).where(
             InboundLead.business_id == current_user.business,
             InboundLead.source == SOURCE,
         )
     )
-    return EmailLeadsSettingsOut(configured=configured, last_lead_at=last.scalar_one())
+    return EmailLeadsSettingsOut(configured=configured, address=address, last_lead_at=last.scalar_one())
 
 
 @router.post("/token", response_model=EmailLeadsSettingsOut)
@@ -62,7 +78,11 @@ async def generate_email_leads_token(current_user: CurrentUserDep, db: DbDep) ->
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
 
     token = intake.new_token()[:24]  # fits comfortably in an email local-part
-    business.settings = {**(business.settings or {}), TOKEN_SETTING: intake.hash_token(token)}
+    business.settings = {
+        **(business.settings or {}),
+        TOKEN_SETTING: intake.hash_token(token),
+        ENC_SETTING: intake.encrypt_token(token),
+    }
     await db.flush()
     await post_call_actions.ensure_default_lead_automation(db, business.id)
     address = f"leads-{token}@{app_settings.email_leads_domain}"

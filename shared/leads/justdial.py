@@ -14,9 +14,14 @@ from shared.leads.justdial_parse import parse_lead
 
 SOURCE = "justdial"
 TOKEN_SETTING = "justdial_token_hash"
+# Alongside the hash above, the token stored reversibly - see intake.py's
+# encrypt_token/decrypt_token docstrings for why.
+ENC_SETTING = "justdial_token_enc"
 
 new_token = intake.new_token
 hash_token = intake.hash_token
+encrypt_token = intake.encrypt_token
+decrypt_token = intake.decrypt_token
 
 
 async def ingest(db: AsyncSession, business: Business, payload: dict) -> InboundLead:
