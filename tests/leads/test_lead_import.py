@@ -35,6 +35,15 @@ def test_csv_lead_export_maps_to_lead_fields():
     assert lead.query == "2BHK in Noida"
 
 
+def test_more_header_aliases_are_recognised():
+    csv_text = "Contact Person,Contact Number,Requirement Details\nPriya,9988776655,Office space\n"
+    rows = parse_lead_file("export.csv", csv_text.encode("utf-8"))
+    lead = parse_lead(rows[0])
+    assert lead.name == "Priya"
+    assert lead.phone == "9988776655"
+    assert lead.query == "Office space"
+
+
 def test_xlsx_lead_export_maps_to_lead_fields():
     wb = openpyxl.Workbook()
     ws = wb.active

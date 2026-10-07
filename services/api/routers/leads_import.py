@@ -61,13 +61,20 @@ async def import_leads(
     if len(records) > MAX_ROWS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"More than {MAX_ROWS} rows. Split the file.")
 
+    parsed = [parse_lead(record) for record in records]
+    if not any(lead.name or lead.phone or lead.email for lead in parsed):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Could not find a name, phone, or email column in this file. Check the column headers.",
+        )
+
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
 
     counts = {"received": 0, "duplicate": 0, "no_phone": 0}
-    for record in records:
-        row = await intake.ingest_parsed(db, business, source, parse_lead(record), record)
+    for record, lead in zip(records, parsed):
+        row = await intake.ingest_parsed(db, business, source, lead, record)
         counts[row.status] = counts.get(row.status, 0) + 1
     return {"source": source, "rows": len(records), **counts}
 

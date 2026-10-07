@@ -147,7 +147,7 @@ async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     Stack traces and driver errors in a response body describe our schema to
     whoever is probing it.
     """
-    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    logger.exception("unhandled error on %s %s", request.method, log_redaction.mask_path(request.url.path))
     return JSONResponse(
         status_code=500, content={"detail": "Something went wrong on our side"}
     )
