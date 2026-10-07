@@ -37,6 +37,7 @@ from services.api.routers import (
     indiamart,
     justdial,
     email_leads,
+    leads,
     leads_import,
     lead_sources,
     receivables,
@@ -210,6 +211,7 @@ app.include_router(lead_sources.router, prefix=API_PREFIX)
 app.include_router(lead_sources.public)
 app.include_router(leads_import.router, prefix=API_PREFIX)
 app.include_router(email_leads.router, prefix=API_PREFIX)
+app.include_router(leads.router, prefix=API_PREFIX)
 app.include_router(email_leads.public)
 
 # Same reasoning - a Flow's data_exchange endpoint_uri is registered with

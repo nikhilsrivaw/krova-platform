@@ -76,6 +76,11 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     # (the /escalations card badge) and, once true dispatch-time timing
     # allows it, a real future condition field - not this round.
     "escalation.raised": ("reason",),
+    # source is the lead platform's own key ("justdial", "indiamart",
+    # "magicbricks", "99acres", "housing", "generic"/"other", "email") -
+    # see shared/leads/platforms.py and services/api/routers/leads_import.py
+    # for where each value actually comes from.
+    "lead.received": ("source", "name", "query"),
     "queue_token.issued": ("shift", "queue_number"),
     "competitor.mentioned": ("severity", "title", "body"),
     "churn_risk.detected": ("severity", "title", "body"),

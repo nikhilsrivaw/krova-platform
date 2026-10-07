@@ -180,6 +180,13 @@ class WebhookEventType(str, enum.Enum):
     appointment_rescheduled = "appointment.rescheduled"
     queue_token_issued = "queue_token.issued"
     escalation_raised = "escalation.raised"
+    # Fires once a lead is actually resolved to a customer (a phone number
+    # was found) - shared/leads/intake.py::ingest_parsed, the one function
+    # every lead source (Justdial, IndiaMART, a portal webhook, a CSV/Excel
+    # upload, a manually typed lead, a forwarded email) already funnels
+    # through, so this one trigger covers all of them the same way
+    # message.received covers every inbound channel.
+    lead_received = "lead.received"
     # software-startup vertical - fired the moment a competitor_mention
     # signal is extracted (services/workers/analyse.py), not batched -
     # research found the first ~83 seconds after a competitor comes up

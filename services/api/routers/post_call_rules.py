@@ -75,6 +75,7 @@ _VALID_TRIGGERS = {
     WebhookEventType.appointment_cancelled.value,
     WebhookEventType.appointment_rescheduled.value,
     WebhookEventType.escalation_raised.value,
+    WebhookEventType.lead_received.value,
     WebhookEventType.queue_token_issued.value,
     WebhookEventType.competitor_mentioned.value,
     WebhookEventType.churn_risk_detected.value,

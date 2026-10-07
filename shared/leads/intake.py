@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.care import post_call_actions
 from shared.db.models import Business, CustomerNote, IdentityKind, InboundLead
 from shared.identity import resolver
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
@@ -86,6 +87,15 @@ async def ingest_parsed(
                 business_id=business.id, customer_id=resolution.customer.id,
                 body=" | ".join(parts)[:2000],
             ))
+        # Only ever fires once a phone resolved to a real customer -
+        # apply_rules needs one (see its own docstring), and a lead with no
+        # phone has nothing for a WhatsApp-follow-up or tag-the-customer
+        # action to act on anyway.
+        await post_call_actions.apply_rules(
+            db, business_id=business.id, trigger_type="lead.received",
+            customer_id=resolution.customer.id, channel=None,
+            context={"source": source, "name": parsed.name, "query": parsed.query},
+        )
 
     db.add(row)
     await db.flush()
