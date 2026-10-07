@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     zoho_api_domain: str = Field(default="https://www.zohoapis.in", alias="ZOHO_API_DOMAIN")
     # Empty = derived from PUBLIC_BASE_URL. Must match the redirect URI registered in Zoho.
     zoho_redirect_uri: str = Field(default="", alias="ZOHO_REDIRECT_URI")
+    # The subdomain a business forwards portal lead emails to. Its MX record
+    # points at this server's own Postfix (self-hosted, not a SaaS inbound
+    # provider), which pipes each message to /webhooks/email-leads.
+    email_leads_domain: str = Field(default="leads.krova.space", alias="EMAIL_LEADS_DOMAIN")
     # Must match, character for character, what is registered in Meta's
     # dashboard as this app's OAuth Redirect URI - the token exchange call
     # is rejected otherwise, and the two are configured completely separately.

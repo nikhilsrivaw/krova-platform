@@ -36,6 +36,7 @@ from services.api.routers import (
     escalations,
     indiamart,
     justdial,
+    email_leads,
     leads_import,
     lead_sources,
     receivables,
@@ -208,6 +209,8 @@ app.include_router(indiamart.public)
 app.include_router(lead_sources.router, prefix=API_PREFIX)
 app.include_router(lead_sources.public)
 app.include_router(leads_import.router, prefix=API_PREFIX)
+app.include_router(email_leads.router, prefix=API_PREFIX)
+app.include_router(email_leads.public)
 
 # Same reasoning - a Flow's data_exchange endpoint_uri is registered with
 # Meta directly, per flow, not something the frontend ever calls.
