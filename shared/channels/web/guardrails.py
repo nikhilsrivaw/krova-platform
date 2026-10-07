@@ -16,8 +16,22 @@ need the same correctness guarantee a booking does.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
-from shared.db.models import WebSession, WebWidgetConfig
+from shared.db.models import WebSession
+
+
+class _RateLimited(Protocol):
+    """Anything with these two columns can use check_rate_limit below - the
+    public lead-form submit endpoint (services/api/routers/lead_forms.py)
+    reuses this exact same rate limiter on its own LeadForm row, same
+    reasoning as WebWidgetConfig's own docstring: a public, unauthenticated
+    POST endpoint is the same kind of exposure regardless of which feature
+    it belongs to."""
+
+    rate_limit_window_started_at: datetime | None
+    rate_limit_count: int
+
 
 # Business-wide (every visitor session combined) - generous for real usage
 # from a small clinic/salon's actual traffic, tight enough to block a
@@ -36,7 +50,7 @@ TURN_CAP_MESSAGE = (
 )
 
 
-def check_rate_limit(config: WebWidgetConfig) -> bool:
+def check_rate_limit(config: _RateLimited) -> bool:
     """
     True if this request is allowed, mutating config's own counter either
     way - the caller is responsible for persisting it (a plain attribute

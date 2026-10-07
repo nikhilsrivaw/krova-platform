@@ -1,0 +1,244 @@
+"""
+Hosted public lead-intake forms - a business builds its own form (name,
+phone, and any custom fields it wants), publishes it, and shares the link
+anywhere (a bio, an ad, a QR code). A submission is parsed into the same
+ParsedLead shape every other lead source uses and handed to
+shared/leads/intake.py::ingest_parsed(), so it gets the same dedupe,
+customer resolution, and lead.received automation as Justdial/IndiaMART/a
+CSV import - the only new work here is building the form itself and
+collecting a submission.
+
+Two halves, one file - same shape as services/api/routers/kiosk.py:
+- /forms/* (staff, JWT): build, publish, list, delete a business's own forms.
+- /forms/{token}/public and /forms/{token}/submit (no auth): what the
+  public page (krova-web's app/f/[token]/page.tsx) reads and posts to.
+  Resolve-the-tenant-from-an-opaque-token, same auth model kiosk.py and
+  widget.py already use for a public-but-not-just-anyone endpoint. An
+  unknown or unpublished token is a 404, never a leakier "not published"
+  error that would confirm a guessed token is at least real.
+"""
+
+import uuid
+
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select
+
+from services.api.dependencies import CurrentUserDep, DbDep
+from shared.channels.web import guardrails
+from shared.config.settings import settings as app_settings
+from shared.db.models import Business, InboundLead, LeadForm
+from shared.leads import intake
+from shared.leads.justdial_parse import ParsedLead
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+router = APIRouter(prefix="/forms", tags=["forms"])
+
+SOURCE = "form"
+FIELD_TYPES = {"name", "phone", "email", "text", "textarea", "select", "checkbox"}
+MAX_FIELDS = 20
+
+
+class FieldDef(BaseModel):
+    key: str = Field(min_length=1, max_length=60)
+    label: str = Field(min_length=1, max_length=200)
+    type: str
+    required: bool = False
+    options: list[str] | None = None
+
+    @field_validator("type")
+    @classmethod
+    def _known_type(cls, v: str) -> str:
+        if v not in FIELD_TYPES:
+            raise ValueError(f"Unknown field type {v!r} - must be one of {sorted(FIELD_TYPES)}")
+        return v
+
+
+def _validate_fields(fields: list[FieldDef]) -> None:
+    if len(fields) > MAX_FIELDS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A form can have at most {MAX_FIELDS} fields")
+    keys = [f.key for f in fields]
+    if len(keys) != len(set(keys)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Field keys must be unique within a form")
+    for f in fields:
+        if f.type == "select" and not f.options:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Field {f.label!r} is a dropdown but has no options")
+
+
+class FormIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    fields: list[FieldDef] = Field(default_factory=list)
+    is_published: bool = False
+
+
+class FormOut(BaseModel):
+    id: str
+    title: str
+    description: str | None
+    fields: list[FieldDef]
+    is_published: bool
+    public_url: str | None
+    submission_count: int
+
+
+async def _submission_count(db: DbDep, token: str) -> int:
+    result = await db.execute(
+        select(func.count(InboundLead.id)).where(
+            InboundLead.source == SOURCE,
+            InboundLead.raw_payload["form_token"].as_string() == token,
+        )
+    )
+    return int(result.scalar_one())
+
+
+def _public_url(token: str) -> str | None:
+    if not app_settings.public_base_url:
+        return None
+    return f"{app_settings.public_base_url.rstrip('/')}/f/{token}"
+
+
+async def _to_out(db: DbDep, form: LeadForm) -> FormOut:
+    return FormOut(
+        id=str(form.id), title=form.title, description=form.description,
+        fields=[FieldDef(**f) for f in form.fields], is_published=form.is_published,
+        public_url=_public_url(form.token) if form.is_published else None,
+        submission_count=await _submission_count(db, form.token),
+    )
+
+
+@router.get("", response_model=list[FormOut])
+async def list_forms(current_user: CurrentUserDep, db: DbDep) -> list[FormOut]:
+    rows = await db.execute(
+        select(LeadForm)
+        .where(LeadForm.business_id == current_user.business)
+        .order_by(LeadForm.created_at.desc())
+    )
+    return [await _to_out(db, f) for f in rows.scalars().all()]
+
+
+@router.post("", response_model=FormOut, status_code=status.HTTP_201_CREATED)
+async def create_form(body: FormIn, current_user: CurrentUserDep, db: DbDep) -> FormOut:
+    _validate_fields(body.fields)
+    form = LeadForm(
+        business_id=current_user.business,
+        title=body.title,
+        description=body.description,
+        token=intake.new_token()[:24],
+        fields=[f.model_dump() for f in body.fields],
+        is_published=body.is_published,
+    )
+    db.add(form)
+    await db.flush()
+    return await _to_out(db, form)
+
+
+@router.patch("/{form_id}", response_model=FormOut)
+async def update_form(form_id: uuid.UUID, body: FormIn, current_user: CurrentUserDep, db: DbDep) -> FormOut:
+    form = await db.get(LeadForm, form_id)
+    if form is None or form.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found")
+    _validate_fields(body.fields)
+    form.title = body.title
+    form.description = body.description
+    form.fields = [f.model_dump() for f in body.fields]
+    form.is_published = body.is_published
+    await db.flush()
+    return await _to_out(db, form)
+
+
+@router.delete("/{form_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_form(form_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    form = await db.get(LeadForm, form_id)
+    if form is None or form.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found")
+    # Past submissions (inbound_leads rows) are kept - they are independent
+    # rows, not foreign-keyed to this form, same as every other lead source.
+    await db.delete(form)
+    await db.flush()
+
+
+# ── Public: the hosted page itself ────────────────────────────────────────
+
+
+async def _published_form(token: str, db: DbDep) -> LeadForm:
+    result = await db.execute(
+        select(LeadForm).where(LeadForm.token == token, LeadForm.is_published.is_(True))
+    )
+    form = result.scalars().first()
+    if form is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found")
+    return form
+
+
+class PublicFormOut(BaseModel):
+    title: str
+    description: str | None
+    fields: list[FieldDef]
+
+
+@router.get("/{token}/public", response_model=PublicFormOut)
+async def get_public_form(token: str, db: DbDep) -> PublicFormOut:
+    form = await _published_form(token, db)
+    return PublicFormOut(
+        title=form.title, description=form.description, fields=[FieldDef(**f) for f in form.fields],
+    )
+
+
+class FormSubmitIn(BaseModel):
+    values: dict[str, str]
+
+
+def _build_parsed_lead(fields: list[dict], values: dict[str, str]) -> tuple[ParsedLead, dict]:
+    """Maps a submission onto the shared ParsedLead shape. Pure/DB-free so
+    it's testable on its own, same reasoning shared/leads/justdial_parse.py
+    gives for keeping its own parser free of database imports."""
+    name = phone = email = None
+    query_parts: list[str] = []
+    stored: dict = {}
+
+    for f in fields:
+        value = (values.get(f["key"]) or "").strip()
+        stored[f["key"]] = value
+        if not value:
+            continue
+        if f["type"] == "name" and name is None:
+            name = value
+        elif f["type"] == "phone" and phone is None:
+            phone = value
+        elif f["type"] == "email" and email is None:
+            email = value
+        else:
+            query_parts.append(f"{f['label']}: {value}")
+
+    parsed = ParsedLead(name=name, phone=phone, email=email, query="; ".join(query_parts) or None, external_id=None)
+    return parsed, stored
+
+
+@router.post("/{token}/submit")
+async def submit_form(token: str, body: FormSubmitIn, db: DbDep) -> dict:
+    form = await _published_form(token, db)
+
+    if not guardrails.check_rate_limit(form):
+        await db.flush()
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many submissions - please try again shortly")
+
+    missing = [
+        f["label"] for f in form.fields
+        if f.get("required") and not body.values.get(f["key"], "").strip()
+    ]
+    if missing:
+        await db.flush()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Missing required field(s): {', '.join(missing)}")
+
+    business = await db.get(Business, form.business_id)
+    if business is None or not business.is_active:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Form not found")
+
+    parsed, stored = _build_parsed_lead(form.fields, body.values)
+    payload = {**stored, "form_token": token, "form_title": form.title}
+    row = await intake.ingest_parsed(db, business, SOURCE, parsed, payload)
+    logger.info("form submission form=%s business=%s status=%s", form.id, business.id, row.status)
+    return {"status": row.status}

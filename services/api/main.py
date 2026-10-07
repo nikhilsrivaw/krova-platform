@@ -39,6 +39,7 @@ from services.api.routers import (
     email_leads,
     leads,
     leads_import,
+    lead_forms,
     lead_sources,
     receivables,
     zoho,
@@ -207,6 +208,7 @@ app.include_router(commands.router, prefix=API_PREFIX)
 app.include_router(webhooks.router)
 app.include_router(justdial.public)
 app.include_router(indiamart.public)
+app.include_router(lead_forms.router, prefix=API_PREFIX)
 app.include_router(lead_sources.router, prefix=API_PREFIX)
 app.include_router(lead_sources.public)
 app.include_router(leads_import.router, prefix=API_PREFIX)

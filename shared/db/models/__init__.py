@@ -25,6 +25,7 @@ from shared.db.models.call_campaign import (
 )
 from shared.db.models.crm import CustomerDate, CustomerNote, CustomerTag, TagStatus
 from shared.db.models.inbound_lead import InboundLead
+from shared.db.models.lead_form import LeadForm
 from shared.db.models.zoho import ZohoConnection
 from shared.db.models.import_run import ImportRun
 from shared.db.models.instagram_carousel import InstagramCarousel
@@ -149,6 +150,7 @@ __all__ = [
     "CustomerTag",
     "TagStatus",
     "InboundLead",
+    "LeadForm",
     "ZohoConnection",
     "ImportRun",
     "Department",
