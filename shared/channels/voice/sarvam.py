@@ -96,17 +96,22 @@ def stt_connect_url(*, language: str = "auto") -> str:
         # them to pick one.
         "mode": "codemix",
         "endpointing": "vad",
-        # Sarvam's own default - the length of silence that ends a turn.
-        # Raised from it on real call evidence (a 2026-10-09 call:
-        # "Can you tell me about" was finalised mid-sentence, cutting the
-        # caller off before "...car automation" - a brief thinking pause
-        # mid-question read as the turn ending). This is a documented,
-        # mid-call-adjustable param (Sarvam's realtime API docs), not the
-        # legacy frame-count one - 700ms trades a little more latency
-        # before the agent replies for not finalising on a normal pause.
-        # The same caution this file used to carry still applies: verify
-        # against another real call rather than trusting the number alone.
-        "silence_duration_ms": "700",
+        # Sarvam's own default is 500ms - the length of silence that ends a
+        # turn. Raised twice now on real call evidence, not a guess either
+        # time: a 2026-10-09 call cut "Can you tell me about" off before
+        # "...car automation"; raising this to 700ms still was not enough -
+        # a second real call the same day cut two more mid-sentence
+        # ("...बता" missing its own ending) on a caller who evidently
+        # pauses longer than that before finishing a thought. Doubled from
+        # the original default rather than inching up again, since two
+        # successive small increases both proved short: 1000ms is also
+        # Sarvam's own "balanced" stream_type's default silence window, so
+        # this is landing on a value Sarvam itself ships as normal, not an
+        # arbitrary number. The real trade-off: every turn now waits up to
+        # ~0.5s longer in silence before the agent replies, in exchange for
+        # not cutting a caller off mid-sentence. Still worth confirming
+        # against a real call rather than treated as finished.
+        "silence_duration_ms": "1000",
         "encoding": AUDIO_ENCODING,
         "sample_rate": str(SAMPLE_RATE),
     }
