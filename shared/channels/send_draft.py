@@ -223,6 +223,7 @@ async def send_draft(
             went = await carousel_send.share_named_carousel(
                 business_id=business_id, customer_id=draft.customer_id,
                 channel=draft.channel, name=carousel_name, db=db,
+                values=(draft.extra or {}).get("share_carousel_values"),
             )
         except Exception:  # noqa: BLE001 - the reply already sent; see the docstring
             logger.warning(

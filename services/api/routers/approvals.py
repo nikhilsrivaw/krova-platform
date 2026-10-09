@@ -61,6 +61,9 @@ class DraftOut(BaseModel):
     # The carousel the AI wants to send along with this reply, if any - goes
     # out right after the text on approval unless the person turns it off.
     share_carousel: str | None = None
+    # What the AI filled the carousel's {{variables}} with, so the person approving
+    # can see "Hi Rahul" before it goes. None if the carousel has none.
+    share_carousel_values: dict | None = None
 
 
 class ApproveBody(BaseModel):
@@ -108,6 +111,7 @@ async def _out(draft: MessageDraft, db: DbDep) -> DraftOut:
         expired=bool(expires and expires < now),
         created_at=draft.created_at.isoformat(),
         share_carousel=(draft.extra or {}).get("share_carousel"),
+        share_carousel_values=(draft.extra or {}).get("share_carousel_values"),
     )
 
 

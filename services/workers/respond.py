@@ -378,7 +378,12 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         # goes out whenever the reply does - sent by send_draft itself, whether
         # that is act/conditional mode right now or a person approving it later.
         extra=(
-            {"share_carousel": proposal.share_carousel}
+            {
+                "share_carousel": proposal.share_carousel,
+                # What fills the carousel's {{variables}}, if it has any - the
+                # name or number the AI read out of this conversation.
+                "share_carousel_values": proposal.share_carousel_values,
+            }
             if proposal.action == "reply" and proposal.share_carousel
             and channel in ("whatsapp", "instagram")
             else {}

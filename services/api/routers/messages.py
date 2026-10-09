@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels import ingest
+from shared.channels.whatsapp.carousel_media import instagram_carousel_needs_values
 from shared.channels.instagram.client import (
     GenericTemplateButton,
     GenericTemplateElement,
@@ -956,6 +957,15 @@ async def send_saved_instagram_carousel(
     carousel = await db.get(InstagramCarousel, carousel_id)
     if carousel is None or carousel.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Carousel not found")
+    if instagram_carousel_needs_values(carousel.elements):
+        # {{1}}-style blanks are for the AI to fill from a conversation. Sent by
+        # hand there is nothing to fill them with, and the customer would
+        # receive the literal "{{1}}".
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This carousel has {{placeholders}} that only the AI fills in from a conversation, "
+            "so it can't be sent by hand.",
+        )
 
     connection = await _active_instagram_connection(current_user.business, db)
     client = InstagramClient.for_connection(connection)

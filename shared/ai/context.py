@@ -26,7 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
 from shared.care import ledger_queries
-from shared.channels.whatsapp.carousel_media import usable_whatsapp_carousel_media
+from shared.channels.whatsapp.carousel_media import (
+    describe_instagram_slots,
+    describe_slots,
+    whatsapp_carousel_spec,
+)
 from shared.db.models import (
     Appointment,
     AppointmentStatus,
@@ -94,6 +98,20 @@ def _amount_text(c) -> str | None:
         f"₹{c.outstanding_paise / 100:,.0f} still due "
         f"(₹{received / 100:,.0f} of ₹{c.amount_paise / 100:,.0f} received)"
     )
+
+def _carousel_line(carousel: dict) -> str:
+    """
+    One carousel in the list the model picks from: its name and what it is
+    for, then - only if it has {{variables}} - the text around each blank so
+    the model knows what to put there.
+    """
+    line = f"- {carousel['name']}"
+    if carousel.get("description"):
+        line += f": {carousel['description']}"
+    if carousel.get("slots"):
+        line += f"\n    fill in (share_carousel_values) - {carousel['slots']}"
+    return line
+
 
 @dataclass(slots=True)
 class AgentContext:
@@ -168,9 +186,11 @@ class AgentContext:
     # above, not customer-level. Empty for a business with none saved,
     # which reads to the model as "nothing to offer", not "ask a human".
     instagram_carousels: list[dict] = field(default_factory=list)
-    # The WhatsApp equivalent: APPROVED carousel message templates with no
-    # {{variables}} (shared/channels/whatsapp/carousel_media.py - the same test
+    # The WhatsApp equivalent: APPROVED carousel message templates with an image
+    # on every card (shared/channels/whatsapp/carousel_media.py - the same test
     # the sender uses, so the model is never offered one that would be refused).
+    # Either list's entries carry "slots": the text around each {{variable}} the
+    # model has to fill in via share_carousel_values; empty if there are none.
     whatsapp_carousels: list[dict] = field(default_factory=list)
     recent: list[dict] = field(default_factory=list)
     open_commitments: list[dict] = field(default_factory=list)
@@ -248,20 +268,14 @@ class AgentContext:
             lines.append(
                 "\nAvailable Instagram carousels (share_carousel, Instagram only - "
                 "set it to the name exactly as written here):\n"
-                + "\n".join(
-                    f"- {c['name']}: {c['description']}" if c["description"] else f"- {c['name']}"
-                    for c in self.instagram_carousels
-                )
+                + "\n".join(_carousel_line(c) for c in self.instagram_carousels)
             )
 
         if self.whatsapp_carousels:
             lines.append(
                 "\nAvailable WhatsApp carousels (share_carousel, WhatsApp only - "
                 "set it to the name exactly as written here):\n"
-                + "\n".join(
-                    f"- {c['name']}: {c['description']}" if c["description"] else f"- {c['name']}"
-                    for c in self.whatsapp_carousels
-                )
+                + "\n".join(_carousel_line(c) for c in self.whatsapp_carousels)
             )
 
         return lines
@@ -477,13 +491,11 @@ async def build(
     )
     # One entry per name: the same template can exist in several languages, and
     # the model picks by name alone (the sender chooses the language).
-    whatsapp_carousel_items = list(
-        {
-            t.name: t
-            for t in wa_templates_result.scalars().all()
-            if usable_whatsapp_carousel_media(t) is not None
-        }.values()
-    )
+    whatsapp_carousel_specs = {}
+    for t in wa_templates_result.scalars().all():
+        spec = whatsapp_carousel_spec(t)
+        if spec is not None:
+            whatsapp_carousel_specs.setdefault(t.name, spec)
 
     commitments = await db.execute(
         select(Commitment)
@@ -734,11 +746,20 @@ async def build(
             for k in knowledge_items
         ],
         instagram_carousels=[
-            {"name": c.name, "description": c.description} for c in carousel_items
+            {
+                "name": c.name,
+                "description": c.description,
+                "slots": describe_instagram_slots(c.elements),
+            }
+            for c in carousel_items
         ],
         whatsapp_carousels=[
-            {"name": t.name, "description": (t.body_text or "").strip()[:140]}
-            for t in whatsapp_carousel_items
+            {
+                "name": name,
+                "description": spec.body_text.strip()[:140],
+                "slots": describe_slots(spec),
+            }
+            for name, spec in whatsapp_carousel_specs.items()
         ],
         customer_name=customer.display_name if customer else None,
         customer_summary=intelligence.summary if intelligence else None,

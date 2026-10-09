@@ -38,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import auto_send_gate, bedrock_claude, client, context as ctx, providers, router, voice_guard
+from shared.channels.whatsapp.carousel_media import clean_values as clean_carousel_values
 from shared.db.models import BusinessDNA
 from shared.utils.logging import get_logger
 
@@ -159,6 +160,28 @@ REPLY_TOOL = {
                     "you, and never send one unprompted."
                 ),
             },
+            "share_carousel_values": {
+                "type": "object",
+                "description": (
+                    "Only with share_carousel, and only when that carousel's entry "
+                    "shows 'fill in (share_carousel_values)': the values for its "
+                    "{{variables}}, in the order they appear. 'body' is the "
+                    "carousel's intro text; 'cards' holds one list per card, in "
+                    "card order (an empty list for a card with no variables). Use "
+                    "only what you actually know from this conversation or the "
+                    "customer's profile - their name as they gave it, a number "
+                    "they wrote out. If you cannot fill EVERY variable, do not "
+                    "set share_carousel at all: a carousel is never sent with a "
+                    "blank, and never with a guess."
+                ),
+                "properties": {
+                    "body": {"type": "array", "items": {"type": "string"}},
+                    "cards": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            },
             "cancel_appointment_at": {
                 "type": "string",
                 "description": (
@@ -263,7 +286,10 @@ conversation is on WhatsApp, set share_carousel to one carousel's exact name \
 from the list for this channel when it genuinely matches what the customer \
 is asking - same restraint as share_catalog: never unprompted, never in \
 place of answering their actual question, and never on any channel other \
-than those two even if a carousel would otherwise fit.
+than those two even if a carousel would otherwise fit. If its entry says \
+"fill in", also set share_carousel_values with the customer's own name or \
+number as they gave it in this conversation; if you do not have every value, \
+leave share_carousel out rather than guess.
 
 Use what you know about the customer. If they have an outstanding payment or \
 you promised them something, that is context worth using - naturally, not \
@@ -1003,6 +1029,11 @@ class Draft:
     # channel == "instagram" (not re-checked here - this dataclass only
     # carries what the model decided).
     share_carousel: str | None = None
+    # What fills that carousel's {{variables}}: {"body": [str], "cards": [[str]]}
+    # (shared/channels/whatsapp/carousel_media.py::clean_values). None when the
+    # carousel has none or the model gave none - the sender then refuses a
+    # carousel that has a blank rather than sending it.
+    share_carousel_values: dict | None = None
     # ISO datetime of the customer's own existing booking to cancel - see
     # REPLY_TOOL's cancel_appointment_at. Text-channel only, same "not worth
     # the risk on the shared voice loop" call as share_catalog above; a
@@ -1108,6 +1139,9 @@ async def draft_reply(
         book_token=(result.get("book_token") or "").strip() or None if action == "reply" else None,
         share_catalog=bool(result.get("share_catalog")) if action == "reply" else False,
         share_carousel=(result.get("share_carousel") or "").strip() or None if action == "reply" else None,
+        share_carousel_values=(
+            clean_carousel_values(result.get("share_carousel_values")) if action == "reply" else None
+        ),
         cancel_appointment_at=(
             (result.get("cancel_appointment_at") or "").strip() or None if action == "reply" else None
         ),
