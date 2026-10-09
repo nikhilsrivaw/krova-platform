@@ -165,10 +165,15 @@ async def _submission_count(db: DbDep, token: str) -> int:
     return int(result.scalar_one())
 
 
-def _public_url(token: str) -> str | None:
-    if not app_settings.public_base_url:
-        return None
-    return f"{app_settings.public_base_url.rstrip('/')}/f/{token}"
+def _public_url(token: str) -> str:
+    # /f/{token} is a krova-web page (app/f/[token]/page.tsx), not a
+    # backend route - app_base_url (the Next.js app's own domain, e.g.
+    # app.krova.space) is the right setting here, same one auth.py/zoho.py
+    # already use to send a human back into the app. public_base_url is
+    # the API's own domain, correct for every other lead source's webhook
+    # URL in this codebase (a machine posts there directly) but wrong for
+    # this one - a human opens this link in a browser.
+    return f"{app_settings.app_base_url.rstrip('/')}/f/{token}"
 
 
 async def _to_out(db: DbDep, form: LeadForm) -> FormOut:
