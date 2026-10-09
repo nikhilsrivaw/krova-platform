@@ -34,11 +34,82 @@ from shared.db.models import (
     IdentityKind,
     TagStatus,
 )
+from shared.identity import resolver as identity_resolver
+from shared.identity.normalise import InvalidIdentifier, normalise_phone
+
+# A hand-typed list is for a test or a handful of people; a real audience
+# comes from the ledger, not from pasting a spreadsheet into a text box.
+MAX_MANUAL_NUMBERS = 25
+
+
+async def _customers_for_numbers(
+    business_id: uuid.UUID, raw_numbers: list, db: AsyncSession, *, create_missing: bool = True
+) -> tuple[list[uuid.UUID], list[str], list[dict]]:
+    """
+    (customer ids, numbers with no customer yet, skip entries) for hand-typed
+    numbers - one skip entry for each that is unusable.
+
+    A number that is not yet a customer becomes a bare one when
+    create_missing is set - the campaign needs a customer to attach its
+    recipient row to, and the person typing it in is the one vouching it is
+    real. A preview passes create_missing=False and gets those numbers back
+    in the second list instead: a preview re-runs on every keystroke, and
+    creating a customer for each half-typed number would litter the CRM.
+
+    An existing customer is looked up, not resolved: identity_resolver.resolve
+    stamps last_contact_at, which would quietly take a real customer out of a
+    "gone quiet" audience just because someone sent them a test.
+    """
+    skipped: list[dict] = []
+    normalised: list[str] = []
+    for raw in raw_numbers[:MAX_MANUAL_NUMBERS]:
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            number = normalise_phone(text)
+        except InvalidIdentifier:
+            skipped.append({"customer_id": None, "name": text, "reason": "Not a valid phone number"})
+            continue
+        if number not in normalised:
+            normalised.append(number)
+
+    if not normalised:
+        return [], [], skipped
+
+    found = dict(
+        (
+            await db.execute(
+                select(CustomerIdentity.value, CustomerIdentity.customer_id).where(
+                    CustomerIdentity.business_id == business_id,
+                    CustomerIdentity.kind == IdentityKind.phone,
+                    CustomerIdentity.value.in_(normalised),
+                )
+            )
+        ).all()
+    )
+
+    ids: list[uuid.UUID] = []
+    new_numbers: list[str] = []
+    for number in normalised:
+        customer_id = found.get(number)
+        if customer_id is None:
+            if not create_missing:
+                new_numbers.append(number)
+                continue
+            resolution = await identity_resolver.resolve(
+                business_id, IdentityKind.phone, number, db
+            )
+            customer_id = resolution.customer.id
+        ids.append(customer_id)
+    return ids, new_numbers, skipped
 
 
 @dataclass(slots=True)
 class Recipient:
-    customer_id: uuid.UUID
+    # None only for a hand-typed number in a preview that is not yet a
+    # customer - a real send always creates the customer first.
+    customer_id: uuid.UUID | None
     name: str | None
     phone: str
     # What this person's message should say, keyed by the field names a
@@ -74,22 +145,52 @@ async def resolve(
     # UTILITY/AUTHENTICATION sends leave this false - a transactional
     # message like a payment reminder isn't "marketing".
     require_marketing_opt_in: bool = False,
+    # Only matters for Audience.numbers. False for a preview, so previewing a
+    # typed number never writes a customer - see _customers_for_numbers.
+    create_missing: bool = True,
 ) -> AudienceResult:
     """
     Turn an audience question into people, with their own figures attached.
     """
     now = datetime.now(timezone.utc)
     skipped: list[dict] = []
+    # Typed-in numbers that are not customers yet (preview only).
+    new_recipients: list[Recipient] = []
 
     # Start from customers, never from commitments - the same person can have
     # three open promises and must appear once, not three times.
-    conditions = [
-        Customer.business_id == business_id,
-        Customer.is_private == False,  # noqa: E712
-    ]
+    conditions = [Customer.business_id == business_id]
+    # Hand-typed numbers are the one audience where a private customer is
+    # not silently dropped by the query - it is skipped below with a reason,
+    # so the person who typed the number can see why nothing went to it.
+    if audience != Audience.numbers:
+        conditions.append(Customer.is_private == False)  # noqa: E712
 
     commitment_filter = None
-    if audience == Audience.owes_money:
+    if audience == Audience.numbers:
+        manual_ids, new_numbers, invalid = await _customers_for_numbers(
+            business_id, list(params.get("numbers") or []), db, create_missing=create_missing
+        )
+        skipped.extend(invalid)
+        new_recipients = [
+            Recipient(
+                customer_id=None,
+                name=None,
+                phone=number,
+                values={
+                    "customer_name": "there",
+                    "amount": "the outstanding amount",
+                    "due_date": "shortly",
+                    "description": "",
+                    "count": "0",
+                },
+            )
+            for number in new_numbers
+        ]
+        if not manual_ids:
+            return AudienceResult(recipients=new_recipients, skipped=skipped, total_amount_paise=0)
+        conditions.append(Customer.id.in_(manual_ids))
+    elif audience == Audience.owes_money:
         commitment_filter = (
             Commitment.direction == CommitmentDirection.they_owe,
             Commitment.status == CommitmentStatus.open,
@@ -140,7 +241,7 @@ async def resolve(
     )
     customers = list(rows.scalars().all())
     if not customers:
-        return AudienceResult(recipients=[], skipped=[], total_amount_paise=0)
+        return AudienceResult(recipients=new_recipients, skipped=skipped, total_amount_paise=0)
 
     ids = [c.id for c in customers]
 
@@ -194,7 +295,24 @@ async def resolve(
             )
             continue
 
-        if require_marketing_opt_in and not customer.marketing_opt_in:
+        if audience == Audience.numbers and customer.is_private:
+            skipped.append(
+                {
+                    "customer_id": str(customer.id),
+                    "name": customer.display_name,
+                    "reason": "Marked private - not messaged",
+                }
+            )
+            continue
+
+        # A number typed in by hand is a test or a one-off the person has
+        # chosen deliberately, so it is not held to the marketing opt-in
+        # list that protects a whole-audience send.
+        if (
+            require_marketing_opt_in
+            and audience != Audience.numbers
+            and not customer.marketing_opt_in
+        ):
             skipped.append(
                 {
                     "customer_id": str(customer.id),
@@ -230,6 +348,7 @@ async def resolve(
             )
         )
 
+    recipients.extend(new_recipients)
     return AudienceResult(
         recipients=recipients, skipped=skipped, total_amount_paise=total
     )

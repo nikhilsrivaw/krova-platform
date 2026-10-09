@@ -58,8 +58,9 @@ _AUDIENCE_LABELS: dict[Audience, str] = {
     Audience.gone_quiet: "Gone quiet",
     Audience.by_tag: "By tag",
     Audience.all_customers: "All customers",
+    Audience.numbers: "Specific phone numbers",
 }
-_NEEDS_PARAMS = {Audience.gone_quiet, Audience.by_tag}
+_NEEDS_PARAMS = {Audience.gone_quiet, Audience.by_tag, Audience.numbers}
 
 
 class AudienceOut(BaseModel):
@@ -117,7 +118,11 @@ async def preview(body: CallCampaignIn, current_user: CurrentUserDep, db: DbDep)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown audience")
 
-    result = await audience_module.resolve(current_user.business, audience, body.audience_params, db)
+    # create_missing=False: a preview re-runs as someone types, so it must
+    # not create a customer for a half-entered number.
+    result = await audience_module.resolve(
+        current_user.business, audience, body.audience_params, db, create_missing=False
+    )
 
     return CallCampaignPreviewOut(
         audience=audience.value,
@@ -126,7 +131,11 @@ async def preview(body: CallCampaignIn, current_user: CurrentUserDep, db: DbDep)
         will_skip=len(result.skipped),
         skipped_reasons=result.skipped[:20],
         sample=[
-            RecipientPreviewOut(customer_id=str(r.customer_id), name=r.name, phone_masked=_mask(r.phone))
+            RecipientPreviewOut(
+                customer_id=str(r.customer_id) if r.customer_id else "new",
+                name=r.name,
+                phone_masked=_mask(r.phone),
+            )
             for r in result.recipients[:5]
         ],
     )

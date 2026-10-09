@@ -61,6 +61,7 @@ AUDIENCE_LABELS = {
     Audience.gone_quiet: "Everyone who has gone quiet",
     Audience.by_tag: "Everyone with a chosen CRM tag",
     Audience.all_customers: "Every customer",
+    Audience.numbers: "Specific phone numbers",
 }
 
 
@@ -68,6 +69,9 @@ def _audience_label(audience: Audience, params: dict) -> str:
     if audience == Audience.by_tag:
         tag = (params or {}).get("tag")
         return f"Tagged '{tag}'" if tag else AUDIENCE_LABELS[Audience.by_tag]
+    if audience == Audience.numbers:
+        count = len((params or {}).get("numbers") or [])
+        return f"{count} specific number{'s' if count != 1 else ''}"
     return AUDIENCE_LABELS.get(audience, _value(audience))
 
 
@@ -79,7 +83,7 @@ class CampaignCardIn(BaseModel):
 class CampaignIn(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     audience: Literal[
-        "owes_money", "overdue", "we_promised", "gone_quiet", "by_tag", "all_customers"
+        "owes_money", "overdue", "we_promised", "gone_quiet", "by_tag", "all_customers", "numbers"
     ]
     audience_params: dict = Field(default_factory=dict)
     template_name: str
@@ -197,7 +201,7 @@ async def list_audiences(current_user: CurrentUserDep) -> list[dict]:
         {
             "value": a.value,
             "label": AUDIENCE_LABELS[a],
-            "needs_params": a in (Audience.gone_quiet, Audience.by_tag),
+            "needs_params": a in (Audience.gone_quiet, Audience.by_tag, Audience.numbers),
         }
         for a in Audience
     ]
@@ -219,6 +223,9 @@ async def preview(
     result = await audience_module.resolve(
         business_id, Audience(body.audience), body.audience_params, db,
         require_marketing_opt_in=(category == "MARKETING"),
+        # A preview re-runs as someone types - it must never create a
+        # customer for a number they have not finished entering.
+        create_missing=False,
     )
     if category == "MARKETING":
         cost_note = (
@@ -252,7 +259,7 @@ async def preview(
 
     sample = [
         RecipientPreview(
-            customer_id=str(r.customer_id),
+            customer_id=str(r.customer_id) if r.customer_id else "new",
             name=r.name,
             phone_masked=_mask(r.phone),
             message_preview=_fill(template.body_text or "", r.values, body.variable_mapping),

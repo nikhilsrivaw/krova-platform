@@ -46,6 +46,7 @@ class Audience(str, enum.Enum):
     gone_quiet = "gone_quiet"              # no contact in N days
     by_tag = "by_tag"                      # a CRM tag, confirmed or suggested-and-confirmed
     all_customers = "all_customers"        # the blunt instrument, still available
+    numbers = "numbers"                    # phone numbers typed in by hand - a test, or a one-off
 
 
 class CampaignStatus(str, enum.Enum):
