@@ -326,6 +326,19 @@ class CallPipeline:
             await self._barge_in()
 
         if is_final:
+            # Ground truth for diagnosing a "repeats itself / doesn't
+            # listen" report: this is every final transcript the pipeline
+            # ever acted on, call-tagged. If a future occurrence shows the
+            # same text logged here turn after turn, the fault is upstream
+            # (Sarvam/Plivo audio never actually changing); if this text
+            # visibly changes but _say_stream's own log line keeps
+            # producing the same reply, the fault is in agent_module/
+            # context instead - this one line is what turns "it happened
+            # again" into a provable root cause instead of another guess.
+            logger.info(
+                "voice turn call=%s turn=%d heard: %r",
+                self.provider_call_id, len(self.turns) + 1, text.strip(),
+            )
             await self._handle_utterance(text.strip())
         else:
             self._arm_speculation(text.strip())
@@ -1144,6 +1157,15 @@ class CallPipeline:
                     "voice latency call=%s tts_connect_and_first_chunk=%.2fs",
                     self.provider_call_id,
                     t_first_chunk - t_start,
+                )
+            if turn.text.strip():
+                # Paired with on_transcript's "heard" log - the other half
+                # of the ground truth needed to prove whether a "repeats
+                # itself" report is the agent regenerating the same reply
+                # for different input, or audio/relay replaying old output.
+                logger.info(
+                    "voice turn call=%s said (complete=%s): %r",
+                    self.provider_call_id, turn.complete, turn.text.strip(),
                 )
             if record and turn.text.strip() and self.mode != "owner":
                 await self._store_turn(
