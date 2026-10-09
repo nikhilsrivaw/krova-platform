@@ -144,7 +144,7 @@ class TrustReport(BaseModel):
 class TeamMemberPerformance(BaseModel):
     user_id: str
     full_name: str | None
-    email: str
+    email: str | None
     messages_sent: int
     # How many of those sends were a genuine reply to a preceding inbound
     # message - a bulk-sent template with nobody waiting on it doesn't count.

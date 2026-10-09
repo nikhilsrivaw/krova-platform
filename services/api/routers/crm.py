@@ -269,7 +269,10 @@ async def add_note(
     await db.flush()
     return NoteOut(
         id=str(note.id), body=note.body, author_user_id=str(current_user.id),
-        author_name=current_user.email, created_at=note.created_at.isoformat(),
+        # A phone-only account has no email to show here - "Team member"
+        # rather than leaving this blank or crashing on a None.
+        author_name=current_user.email or "Team member",
+        created_at=note.created_at.isoformat(),
     )
 
 

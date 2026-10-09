@@ -193,10 +193,6 @@ async def register_via_otp(
     register() directly with a generated, never-shown password, exactly
     like register_via_google's own docstring explains for why that is
     safe (password reset is still a real, if unlikely, escape hatch).
-
-    Email only, never phone - see User.phone's own docstring on why a
-    phone number cannot create an account, only log into one that
-    already exists.
     """
     return await register(
         email=email,
@@ -206,6 +202,50 @@ async def register_via_otp(
         vertical=vertical,
         db=db,
     )
+
+
+class PhoneAlreadyRegistered(AuthError):
+    pass
+
+
+async def register_via_phone_otp(
+    phone: str, full_name: str | None, business_name: str, vertical: str, db: AsyncSession,
+) -> Session:
+    """
+    Create an account with no email at all - a phone number, already
+    proved over a call reading an OTP aloud (shared/auth/otp.py), is the
+    only identifier. Same account/business/BusinessDNA shape register()
+    builds, with its own uniqueness check (phone, not email) since there
+    is no email here to check. password_hash is still set (NOT NULL,
+    same generated-and-never-shown trick register_via_google uses) even
+    though this account is never meant to use it - a password reset would
+    still work if the person later adds an email and wants one.
+    """
+    existing = await db.execute(select(User).where(User.phone == phone))
+    if existing.scalar_one_or_none() is not None:
+        raise PhoneAlreadyRegistered("That phone number is already registered")
+
+    user = User(
+        email=None,
+        phone=phone,
+        phone_verified_at=_now(),
+        password_hash=hash_password(secrets.token_urlsafe(32)),
+        full_name=full_name,
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()
+
+    business = Business(name=business_name.strip(), vertical=vertical)
+    db.add(business)
+    await db.flush()
+
+    db.add(BusinessMember(business_id=business.id, user_id=user.id, role=BusinessRole.owner))
+    db.add(BusinessDNA(business_id=business.id, **seed_dna(vertical)))
+
+    session = await _issue_session(user, business, BusinessRole.owner.value, db)
+    logger.info("registered user=%s business=%s vertical=%s via phone", user.id, business.id, vertical)
+    return session
 
 
 class UserNotFound(AuthError):

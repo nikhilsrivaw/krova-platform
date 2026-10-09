@@ -20,7 +20,7 @@ router = APIRouter(prefix="/team", tags=["team"])
 class TeamMemberOut(BaseModel):
     user_id: str
     full_name: str | None
-    email: str
+    email: str | None
     role: str
 
 

@@ -48,7 +48,7 @@ class SessionResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user_id: str
-    email: str
+    email: str | None
     business_id: str | None
     business_name: str | None
     vertical: str | None
@@ -56,7 +56,7 @@ class SessionResponse(BaseModel):
 
 class MeResponse(BaseModel):
     user_id: str
-    email: str
+    email: str | None
     full_name: str | None
     # None until linked via /auth/account/phone/verify - see User.phone's
     # own docstring on why this is optional/additive rather than required.
@@ -210,9 +210,8 @@ class OtpLoginIn(BaseModel):
 
 
 class OtpRegisterIn(BaseModel):
-    # Email only - a phone number can log into an account but never
-    # create one, see shared/auth/otp.py's own module docstring on why.
-    destination: EmailStr
+    channel: Literal["email", "call"]
+    destination: str
     code: str = Field(min_length=4, max_length=8)
     full_name: str | None = Field(default=None, max_length=255)
     business_name: str = Field(min_length=1, max_length=255)
@@ -253,6 +252,8 @@ async def otp_login(body: OtpLoginIn, db: DbDep) -> SessionResponse:
 
 @router.post("/otp/register", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def otp_register(body: OtpRegisterIn, db: DbDep) -> SessionResponse:
+    """Either channel can create a brand-new account - see
+    shared/auth/otp.py's own module docstring."""
     if body.vertical not in verticals.keys():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -260,16 +261,25 @@ async def otp_register(body: OtpRegisterIn, db: DbDep) -> SessionResponse:
         )
 
     try:
-        await otp.verify(body.destination, "email", body.code, db)
+        await otp.verify(body.destination, body.channel, body.code, db)
     except otp.OtpError as exc:
         raise _otp_error(exc) from exc
 
+    destination = otp.normalise_destination(body.destination, body.channel)
     try:
-        session = await service.register_via_otp(
-            email=body.destination, full_name=body.full_name,
-            business_name=body.business_name, vertical=body.vertical, db=db,
-        )
+        if body.channel == "email":
+            session = await service.register_via_otp(
+                email=destination, full_name=body.full_name,
+                business_name=body.business_name, vertical=body.vertical, db=db,
+            )
+        else:
+            session = await service.register_via_phone_otp(
+                phone=destination, full_name=body.full_name,
+                business_name=body.business_name, vertical=body.vertical, db=db,
+            )
     except service.EmailAlreadyRegistered as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except service.PhoneAlreadyRegistered as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return _session_response(session)

@@ -36,7 +36,10 @@ class CurrentUser:
     """Who is making this request, and what they may act on."""
 
     id: uuid.UUID
-    email: str
+    # None for a phone-only account - see shared/db/models/identity.py's
+    # User.email docstring on the DB-level guarantee that at least one of
+    # email/phone is always set.
+    email: str | None
     business_id: uuid.UUID | None
     role: str | None
 

@@ -1026,7 +1026,9 @@ def _is_platform_admin(current_user: CurrentUserDep) -> bool:
         for e in settings.platform_admin_email.split(",")
         if e.strip()
     }
-    return current_user.email.lower() in admins
+    # A phone-only account (no email at all) is never a platform admin -
+    # there is nothing to compare against the allowlist.
+    return bool(current_user.email) and current_user.email.lower() in admins
 
 
 def _require_platform_admin(current_user: CurrentUserDep) -> None:

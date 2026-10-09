@@ -10,14 +10,14 @@ to exactly one identifier:
            infrastructure this codebase already has working, rather than
            adding a third messaging provider for one feature.
 
-Email can register a brand-new account (same shape as
-shared/auth/service.py's register_via_google - a random, never-shown
-password). Phone cannot: User.email is the one field every account is
-required to have (see User.phone's own docstring), so a phone number only
-ever logs into an account that already exists and already linked+verified
-that number via add_phone below. request()/verify() themselves are
-channel-agnostic; which of login/register/add-phone a successful verify
-leads to is the caller's decision, in services/api/routers/auth.py.
+Either channel can register a brand-new account (shared/auth/service.py's
+register_via_otp for email, register_via_phone_otp for phone - a
+generated, never-shown password either way, same trick register_via_google
+uses). A phone number can also be linked to an already-signed-in account
+that registered by some other means (Settings - see User.phone's own
+docstring) - request()/verify() are channel-agnostic either way; which of
+login/register/add-phone a successful verify leads to is the caller's
+decision, in services/api/routers/auth.py.
 """
 
 import hashlib

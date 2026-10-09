@@ -64,16 +64,21 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     __tablename__ = "users"
 
-    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+    # Optional - a user can register with a phone number alone (see
+    # shared/auth/service.py's register_via_phone_otp). A DB-level check
+    # constraint (ck_users_email_or_phone) is the actual guarantee that at
+    # least one of email/phone is always set - this nullability alone does
+    # not enforce that. Every place that reads User.email as a plain string
+    # (escalation_failsafe.py's owner-notify, the admin allowlist in
+    # voice_provisioning.py, CRM note authorship, the team list) was
+    # audited and updated for None when this went in.
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, unique=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Optional, added after account creation (Settings - shared/auth/otp.py)
-    # as an alternate way to log in once verified - email stays the one
-    # thing every account is required to have, so nothing that already
-    # assumes User.email is a real string (escalation_failsafe.py, the
-    # admin-email allowlist in voice_provisioning.py, CRM note authorship)
-    # had to change for this.
+    # Alternate identifier/login - can be the only one on a phone-only
+    # account, or added later (Settings - shared/auth/otp.py) to an
+    # account that already has an email.
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
     phone_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
