@@ -210,9 +210,18 @@ class OtpLoginIn(BaseModel):
 
 
 class OtpRegisterIn(BaseModel):
+    # Business Name, business type, full name and a password are always
+    # required - the same four fields the plain /register form asks for.
+    # What OTP adds on top is proof that the chosen email or phone number
+    # is real and belongs to this person, before the account is created -
+    # it is a verification gate, not a passwordless login mechanism, so
+    # this account is signed into afterwards the same way /login works
+    # (email+password), or with this same phone number read aloud again
+    # next time (otp/login's "call" channel) if they chose phone.
     channel: Literal["email", "call"]
     destination: str
     code: str = Field(min_length=4, max_length=8)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     full_name: str | None = Field(default=None, max_length=255)
     business_name: str = Field(min_length=1, max_length=255)
     vertical: str = Field(default="general")
@@ -252,8 +261,11 @@ async def otp_login(body: OtpLoginIn, db: DbDep) -> SessionResponse:
 
 @router.post("/otp/register", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def otp_register(body: OtpRegisterIn, db: DbDep) -> SessionResponse:
-    """Either channel can create a brand-new account - see
-    shared/auth/otp.py's own module docstring."""
+    """
+    Create an account - business name, business type, full name and a
+    real password, same as plain registration, plus proof (the code) that
+    the chosen email or phone number actually belongs to this person.
+    """
     if body.vertical not in verticals.keys():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -268,19 +280,21 @@ async def otp_register(body: OtpRegisterIn, db: DbDep) -> SessionResponse:
     destination = otp.normalise_destination(body.destination, body.channel)
     try:
         if body.channel == "email":
-            session = await service.register_via_otp(
-                email=destination, full_name=body.full_name,
+            session = await service.register(
+                email=destination, password=body.password, full_name=body.full_name,
                 business_name=body.business_name, vertical=body.vertical, db=db,
             )
         else:
             session = await service.register_via_phone_otp(
-                phone=destination, full_name=body.full_name,
+                phone=destination, password=body.password, full_name=body.full_name,
                 business_name=body.business_name, vertical=body.vertical, db=db,
             )
     except service.EmailAlreadyRegistered as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except service.PhoneAlreadyRegistered as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except PasswordTooWeak as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     return _session_response(session)
 

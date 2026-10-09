@@ -183,43 +183,20 @@ async def register_via_google(
     )
 
 
-async def register_via_otp(
-    email: str, full_name: str | None, business_name: str, vertical: str, db: AsyncSession,
-) -> Session:
-    """
-    Same shape as register_via_google - account, first business, sign the
-    person in - for someone who proved they own this inbox via an emailed
-    OTP (shared/auth/otp.py) rather than a password form or Google. Reuses
-    register() directly with a generated, never-shown password, exactly
-    like register_via_google's own docstring explains for why that is
-    safe (password reset is still a real, if unlikely, escape hatch).
-    """
-    return await register(
-        email=email,
-        password=secrets.token_urlsafe(32),
-        full_name=full_name,
-        business_name=business_name,
-        vertical=vertical,
-        db=db,
-    )
-
-
 class PhoneAlreadyRegistered(AuthError):
     pass
 
 
 async def register_via_phone_otp(
-    phone: str, full_name: str | None, business_name: str, vertical: str, db: AsyncSession,
+    phone: str, password: str, full_name: str | None, business_name: str, vertical: str, db: AsyncSession,
 ) -> Session:
     """
-    Create an account with no email at all - a phone number, already
-    proved over a call reading an OTP aloud (shared/auth/otp.py), is the
-    only identifier. Same account/business/BusinessDNA shape register()
-    builds, with its own uniqueness check (phone, not email) since there
-    is no email here to check. password_hash is still set (NOT NULL,
-    same generated-and-never-shown trick register_via_google uses) even
-    though this account is never meant to use it - a password reset would
-    still work if the person later adds an email and wants one.
+    register()'s sibling for a phone number instead of an email - same
+    account/business/BusinessDNA shape, with its own uniqueness check
+    (phone, not email) since there is no email here to check. The
+    password is the person's own choice, exactly like register() - the
+    OTP call (shared/auth/otp.py) only proves they own this phone number
+    before this runs; it is not what they sign in with afterwards.
     """
     existing = await db.execute(select(User).where(User.phone == phone))
     if existing.scalar_one_or_none() is not None:
@@ -229,7 +206,7 @@ async def register_via_phone_otp(
         email=None,
         phone=phone,
         phone_verified_at=_now(),
-        password_hash=hash_password(secrets.token_urlsafe(32)),
+        password_hash=hash_password(password),
         full_name=full_name,
         is_active=True,
     )
