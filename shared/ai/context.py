@@ -281,7 +281,14 @@ class AgentContext:
         if self.customer_since:
             lines.append(f"First contact: {self.customer_since}")
         if self.customer_summary:
-            lines.append(f"\nWhat you know about them:\n{self.customer_summary}")
+            lines.append(
+                f"\nWhat you know about them (from earlier contact on any channel - "
+                f"WhatsApp, Instagram, a prior call): background only. Use it to "
+                f"answer their question or personalise a reply, never to open the "
+                f"conversation by bringing it up yourself - only mention something "
+                f"from here if they ask about it or it is directly relevant to what "
+                f"they just said.\n{self.customer_summary}"
+            )
         if self.cases is not None:
             lines.append(
                 f"\nTheir case(s) with you - the only source of truth for status "
