@@ -89,20 +89,24 @@ def stt_connect_url(*, language: str = "auto") -> str:
         # fast buffers audio in 500ms windows instead of balanced's 1000ms
         # (confirmed via Sarvam's own docs, not guessed) - Sarvam's own
         # guidance recommends it specifically for conversational agents
-        # like this one, "minimal drop in accuracy" against balanced. This
-        # is the one endpointing/stream knob changed on this pass without
-        # a real call to verify against: silence_duration_ms/threshold/
-        # min_speech_duration_ms are also real, tunable params (Sarvam
-        # docs), but changing those without hearing a real call first
-        # risks repeating the TTS min_buffer_size mistake elsewhere in
-        # this file - tightened once on a guess, proven wrong on a real
-        # call, reverted. Left at Sarvam's own defaults.
+        # like this one, "minimal drop in accuracy" against balanced.
         "stream_type": "fast",
         # codemix reads Hindi/English mid-utterance as one language, matching
         # how a caller in this market actually talks rather than requiring
         # them to pick one.
         "mode": "codemix",
         "endpointing": "vad",
+        # Sarvam's own default - the length of silence that ends a turn.
+        # Raised from it on real call evidence (a 2026-10-09 call:
+        # "Can you tell me about" was finalised mid-sentence, cutting the
+        # caller off before "...car automation" - a brief thinking pause
+        # mid-question read as the turn ending). This is a documented,
+        # mid-call-adjustable param (Sarvam's realtime API docs), not the
+        # legacy frame-count one - 700ms trades a little more latency
+        # before the agent replies for not finalising on a normal pause.
+        # The same caution this file used to carry still applies: verify
+        # against another real call rather than trusting the number alone.
+        "silence_duration_ms": "700",
         "encoding": AUDIO_ENCODING,
         "sample_rate": str(SAMPLE_RATE),
     }
