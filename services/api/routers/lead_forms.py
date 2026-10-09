@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/forms", tags=["forms"])
 
 SOURCE = "form"
-FIELD_TYPES = {"name", "phone", "email", "text", "textarea", "select", "checkbox", "file"}
+FIELD_TYPES = {"name", "phone", "email", "text", "textarea", "select", "checkbox", "file", "date", "number", "url"}
 MAX_FIELDS = 20
 
 # Tighter than the chat widget's own 20/min (shared/channels/web/
