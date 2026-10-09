@@ -126,6 +126,21 @@ async def proxy_voice_adhoc_hangup(request: Request) -> Response:
     return await _proxy_http(request, f"/voice/adhoc-hangup{query}")
 
 
+@router.post("/voice/otp-answer")
+async def proxy_voice_otp_answer(request: Request) -> Response:
+    # The login/registration OTP call (shared/channels/voice/otp_call.py).
+    # Same failure as adhoc-answer above, same cause: the voice service had
+    # the route, this proxy did not, so Plivo got a 404 from the API and the
+    # code was never read aloud. otp_id rides in the query string.
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/otp-answer{query}")
+
+
+@router.post("/voice/otp-hangup")
+async def proxy_voice_otp_hangup(request: Request) -> Response:
+    return await _proxy_http(request, "/voice/otp-hangup")
+
+
 @router.post("/voice/cod-answer")
 async def proxy_voice_cod_answer(request: Request) -> Response:
     query = f"?{request.url.query}" if request.url.query else ""
