@@ -47,3 +47,6 @@ stripe==15.6.1
 boto3==1.43.97
 pywebpush==2.2.1
 openpyxl==3.1.5
+
+# Login/registration OTP by email - shared/integrations/gmail_smtp.py.
+aiosmtplib==5.1.3

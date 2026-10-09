@@ -205,6 +205,18 @@ class Settings(BaseSettings):
     postmark_account_token: str = Field(default="", alias="POSTMARK_ACCOUNT_TOKEN")
     postmark_server_token: str = Field(default="", alias="POSTMARK_SERVER_TOKEN")
 
+    # Login/registration OTP - two separate, Krova-level delivery channels,
+    # neither tied to any business's own connections. Gmail SMTP rather than
+    # Postmark for email (chosen for this low-volume, non-customer-facing
+    # use - see shared/integrations/gmail_smtp.py's own docstring); a
+    # dedicated Plivo number (not any business's own subaccount number) for
+    # the voice-call channel, dialled with the parent Plivo account
+    # (plivo_auth_id/token above) via shared/channels/voice/plivo_client.py's
+    # existing parent_auth().
+    gmail_smtp_email: str = Field(default="", alias="GMAIL_SMTP_EMAIL")
+    gmail_smtp_app_password: str = Field(default="", alias="GMAIL_SMTP_APP_PASSWORD")
+    otp_voice_from_number: str = Field(default="", alias="OTP_VOICE_FROM_NUMBER")
+
     # A Krova-owned, Postmark-verified sender address used ONLY for
     # internal-ops alerts to a business's own staff (e.g. the escalation
     # failsafe's email fallback, shared/care/escalation_failsafe.py) -

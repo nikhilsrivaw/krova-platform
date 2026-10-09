@@ -183,8 +183,80 @@ async def register_via_google(
     )
 
 
+async def register_via_otp(
+    email: str, full_name: str | None, business_name: str, vertical: str, db: AsyncSession,
+) -> Session:
+    """
+    Same shape as register_via_google - account, first business, sign the
+    person in - for someone who proved they own this inbox via an emailed
+    OTP (shared/auth/otp.py) rather than a password form or Google. Reuses
+    register() directly with a generated, never-shown password, exactly
+    like register_via_google's own docstring explains for why that is
+    safe (password reset is still a real, if unlikely, escape hatch).
+
+    Email only, never phone - see User.phone's own docstring on why a
+    phone number cannot create an account, only log into one that
+    already exists.
+    """
+    return await register(
+        email=email,
+        password=secrets.token_urlsafe(32),
+        full_name=full_name,
+        business_name=business_name,
+        vertical=vertical,
+        db=db,
+    )
+
+
 class UserNotFound(AuthError):
     pass
+
+
+async def login_via_identifier(destination: str, channel: str, db: AsyncSession) -> Session:
+    """
+    Sign in an existing account by verified email or phone - no password
+    check, shared/auth/otp.py's verify() already proved they own it. Same
+    "do not create an account here" rule login_via_google follows, for the
+    same reason: a bare login attempt must never silently spin up an
+    orphaned, un-onboarded business.
+    """
+    column = User.email if channel == "email" else User.phone
+    result = await db.execute(select(User).where(column == destination))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        noun = "email" if channel == "email" else "phone number"
+        raise UserNotFound(f"No Krova account uses that {noun} yet")
+
+    if not user.is_active:
+        raise AccountDisabled("This account has been disabled")
+
+    user.last_login_at = _now()
+
+    membership = await _primary_membership(user.id, db)
+    business, role = membership if membership else (None, None)
+
+    return await _issue_session(user, business, role, db)
+
+
+async def link_phone(user_id: uuid.UUID, phone: str, db: AsyncSession) -> None:
+    """
+    Attach a verified phone number to an already-signed-in account, so a
+    later login can use it (shared/auth/otp.py's "call" channel). Called
+    only after otp.verify() already proved ownership of this number over
+    the call that read the code aloud - never on the strength of the
+    number alone.
+    """
+    existing = await db.execute(select(User).where(User.phone == phone, User.id != user_id))
+    if existing.scalar_one_or_none() is not None:
+        raise AuthError("That phone number is already linked to a different account")
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise UserNotFound("Account not found")
+
+    user.phone = phone
+    user.phone_verified_at = _now()
 
 
 async def login_via_google(email: str, full_name: str | None, db: AsyncSession) -> Session:

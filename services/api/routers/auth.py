@@ -2,14 +2,14 @@
 Sign up, sign in, refresh, sign out.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from services.api.dependencies import CurrentUserDep, DbDep
-from shared.auth import google_oauth, service
+from shared.auth import google_oauth, otp, service
 from shared.auth.passwords import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
@@ -58,6 +58,10 @@ class MeResponse(BaseModel):
     user_id: str
     email: str
     full_name: str | None
+    # None until linked via /auth/account/phone/verify - see User.phone's
+    # own docstring on why this is optional/additive rather than required.
+    phone: str | None
+    phone_verified: bool
     business_id: str | None
     business_name: str | None
     vertical: str | None
@@ -185,6 +189,132 @@ async def logout(
     # Deliberately silent about whether the token existed. Signing out is not
     # a place to confirm whether a token is real.
     await service.revoke_session(refresh_token, db)
+
+
+# ── Passwordless login/registration (shared/auth/otp.py) ──────────────────
+
+
+def _otp_error(exc: otp.OtpError) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+class OtpRequestIn(BaseModel):
+    channel: Literal["email", "call"]
+    destination: str
+
+
+class OtpLoginIn(BaseModel):
+    channel: Literal["email", "call"]
+    destination: str
+    code: str = Field(min_length=4, max_length=8)
+
+
+class OtpRegisterIn(BaseModel):
+    # Email only - a phone number can log into an account but never
+    # create one, see shared/auth/otp.py's own module docstring on why.
+    destination: EmailStr
+    code: str = Field(min_length=4, max_length=8)
+    full_name: str | None = Field(default=None, max_length=255)
+    business_name: str = Field(min_length=1, max_length=255)
+    vertical: str = Field(default="general")
+
+
+@router.post("/otp/request", status_code=status.HTTP_204_NO_CONTENT)
+async def otp_request(body: OtpRequestIn, db: DbDep) -> None:
+    """
+    Send a login/registration code. Works the same whether or not an
+    account already exists at this destination - the frontend decides
+    whether to call /otp/login or /otp/register next based on what the
+    person is actually trying to do, same code either way.
+    """
+    try:
+        await otp.request(body.destination, body.channel, db, purpose="login_or_register")
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+
+
+@router.post("/otp/login", response_model=SessionResponse)
+async def otp_login(body: OtpLoginIn, db: DbDep) -> SessionResponse:
+    try:
+        await otp.verify(body.destination, body.channel, body.code, db)
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+
+    destination = otp.normalise_destination(body.destination, body.channel)
+    try:
+        session = await service.login_via_identifier(destination, body.channel, db)
+    except service.UserNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except service.AccountDisabled as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    return _session_response(session)
+
+
+@router.post("/otp/register", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
+async def otp_register(body: OtpRegisterIn, db: DbDep) -> SessionResponse:
+    if body.vertical not in verticals.keys():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown business type. Choose one of: {', '.join(sorted(verticals.keys()))}",
+        )
+
+    try:
+        await otp.verify(body.destination, "email", body.code, db)
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+
+    try:
+        session = await service.register_via_otp(
+            email=body.destination, full_name=body.full_name,
+            business_name=body.business_name, vertical=body.vertical, db=db,
+        )
+    except service.EmailAlreadyRegistered as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    return _session_response(session)
+
+
+class AddPhoneRequestIn(BaseModel):
+    phone: str
+
+
+class AddPhoneVerifyIn(BaseModel):
+    phone: str
+    code: str = Field(min_length=4, max_length=8)
+
+
+@router.post("/account/phone/request", status_code=status.HTTP_204_NO_CONTENT)
+async def account_phone_request(
+    body: AddPhoneRequestIn, current_user: CurrentUserDep, db: DbDep,
+) -> None:
+    """
+    Link a phone number to the signed-in account, so a future login can
+    use it. Places a call that reads the code aloud - never SMS, see
+    shared/auth/otp.py's own module docstring on why.
+    """
+    try:
+        await otp.request(body.phone, "call", db, purpose="add_phone")
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+
+
+@router.post("/account/phone/verify", response_model=MeResponse)
+async def account_phone_verify(
+    body: AddPhoneVerifyIn, current_user: CurrentUserDep, db: DbDep,
+) -> MeResponse:
+    try:
+        await otp.verify(body.phone, "call", body.code, db)
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+
+    phone = otp.normalise_destination(body.phone, "call")
+    try:
+        await service.link_phone(current_user.id, phone, db)
+    except service.AuthError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    return await me(current_user, db)
 
 
 # ── Google sign-in/sign-up ───────────────────────────────────────────────────
@@ -335,6 +465,8 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         user_id=str(current_user.id),
         email=current_user.email,
         full_name=user.full_name if user else None,
+        phone=user.phone if user else None,
+        phone_verified=bool(user and user.phone_verified_at),
         business_id=str(current_user.business_id) if current_user.business_id else None,
         business_name=business.name if business else None,
         vertical=business.vertical if business else None,
@@ -404,6 +536,8 @@ async def update_me(
         user_id=str(current_user.id),
         email=current_user.email,
         full_name=user.full_name if user else None,
+        phone=user.phone if user else None,
+        phone_verified=bool(user and user.phone_verified_at),
         business_id=str(current_user.business_id) if current_user.business_id else None,
         business_name=business.name if business else None,
         vertical=business.vertical if business else None,

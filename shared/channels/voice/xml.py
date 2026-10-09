@@ -63,6 +63,27 @@ def dial_response(number: str) -> str:
     )
 
 
+def speak_response(text: str) -> str:
+    """
+    Read fixed text aloud, then hang up - no <Stream>, no conversation.
+
+    For the one call shape that genuinely needs none of the AI pipeline:
+    reading out a login OTP (shared/auth/otp.py). Plivo's own default voice
+    (WOMAN, en-US) rather than a Polly voice + SSML - the account's voice
+    tier is not confirmed, and plain punctuation-spaced digits ("1. 2. 3.")
+    read clearly on any TTS engine without needing SSML support at all.
+    Explicit <Hangup/> rather than relying on undocumented behaviour for
+    what Plivo does once a Response has no more verbs.
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"  <Speak>{escape(text)}</Speak>\n"
+        "  <Hangup/>\n"
+        "</Response>"
+    )
+
+
 def copilot_response(
     staff_number: str,
     *,

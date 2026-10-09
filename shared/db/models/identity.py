@@ -68,6 +68,17 @@ class User(UUIDMixin, TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Optional, added after account creation (Settings - shared/auth/otp.py)
+    # as an alternate way to log in once verified - email stays the one
+    # thing every account is required to have, so nothing that already
+    # assumes User.email is a real string (escalation_failsafe.py, the
+    # admin-email allowlist in voice_provisioning.py, CRM note authorship)
+    # had to change for this.
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
+    phone_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
