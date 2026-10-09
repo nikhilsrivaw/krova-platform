@@ -113,7 +113,7 @@ _VALID_TRIGGERS = {
 _VALID_ACTIONS = {
     "whatsapp_followup", "create_escalation_task", "add_tag", "send_flow",
     "place_call", "send_sms", "send_email", "instagram_followup",
-    "instagram_comment_reply",
+    "instagram_comment_reply", "send_carousel",
 }
 
 # A generous ceiling, not a real product limit discovered anywhere - just
@@ -344,6 +344,20 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"{prefix}.action_config.{missing[0]} is required for send_flow",
+            )
+    if step.action_type == "send_carousel":
+        config = step.action_config or {}
+        kind = config.get("kind")
+        if kind not in ("instagram", "whatsapp"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{prefix}.action_config.kind must be instagram or whatsapp for send_carousel",
+            )
+        needed = "carousel_id" if kind == "instagram" else "template_name"
+        if not config.get(needed):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{prefix}.action_config.{needed} is required for a {kind} send_carousel",
             )
     if step.action_type == "place_call" and not (step.action_config or {}).get("reason"):
         raise HTTPException(

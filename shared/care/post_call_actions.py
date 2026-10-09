@@ -541,6 +541,10 @@ _NO_ACTION_DETAIL = {
     "send_sms": "no phone number on this customer, or SMS is not configured",
     "send_email": "no email address on this customer, or no email sender is connected",
     "send_flow": "the flow is missing, not published, or the customer has no WhatsApp number",
+    "send_carousel": (
+        "the carousel is missing or not sendable (a WhatsApp one must be an approved template "
+        "with no variables), or the customer can't be reached on that channel"
+    ),
     "add_tag": "this customer already carries that tag",
 }
 
@@ -768,6 +772,9 @@ async def _run_step_action(
     if action_type == "send_flow":
         return await _send_flow(business_id, customer_id, action_config or {}, db, context=context, call_id=call_id)
 
+    if action_type == "send_carousel":
+        return await _send_carousel(business_id, customer_id, action_config or {}, db)
+
     if action_type == "place_call":
         return await _place_call(business_id, customer_id, action_config or {}, db)
 
@@ -953,6 +960,206 @@ async def _send_instagram_followup(business_id: uuid.UUID, customer_id: uuid.UUI
         identity_kind=IdentityKind.instagram, identity_value=to,
         external_id=sent.external_id or None, text=message, occurred_at=datetime.now(timezone.utc),
         connection_id=connection.id, enqueue_analysis=False, db=db,
+    )
+    return True
+
+
+async def _send_carousel(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession) -> bool:
+    """
+    Send a carousel the business already built, to the customer who fired
+    the rule. Two kinds, picked in the rule:
+
+      instagram - a saved InstagramCarousel (Instagram page -> Saved
+                  carousels). A free-form Generic Template, so it needs
+                  no Meta review - but Instagram only delivers inside the
+                  24-hour window, so a time-based trigger firing later can
+                  be refused (logged, returns False).
+      whatsapp  - an APPROVED carousel message template. Sendable outside
+                  the window too, since it is a template.
+
+    A WhatsApp carousel with {{variables}} is skipped rather than guessed
+    at: a rule has no per-customer values for a card's text the way a
+    campaign's audience does, and sending Meta a blank placeholder just
+    delivers the literal {{1}}.
+    """
+    kind = config.get("kind")
+    if kind == "instagram":
+        return await _send_instagram_carousel(business_id, customer_id, config, db)
+    if kind == "whatsapp":
+        return await _send_whatsapp_carousel(business_id, customer_id, config, db)
+    logger.warning("send_carousel rule for business=%s has no valid kind, skipping", business_id)
+    return False
+
+
+async def _send_instagram_carousel(
+    business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession,
+) -> bool:
+    from datetime import datetime, timezone
+
+    from shared.channels import ingest
+    from shared.channels.instagram.client import (
+        GenericTemplateButton,
+        GenericTemplateElement,
+        InstagramClient,
+        InstagramSendError,
+    )
+    from shared.db.models import (
+        Channel,
+        ChannelConnection,
+        ConnectionStatus,
+        CustomerIdentity,
+        Direction,
+        IdentityKind,
+        InstagramCarousel,
+    )
+
+    try:
+        carousel_id = uuid.UUID(str(config.get("carousel_id")))
+    except ValueError:
+        logger.warning("send_carousel rule for business=%s has an invalid carousel_id, skipping", business_id)
+        return False
+    carousel = await db.get(InstagramCarousel, carousel_id)
+    if carousel is None or carousel.business_id != business_id:
+        logger.warning("send_carousel rule for business=%s points at a missing carousel, skipping", business_id)
+        return False
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.instagram,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        logger.info("send_carousel rule skipped business=%s: no Instagram connection", business_id)
+        return False
+
+    to = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.instagram,
+            )
+        )
+    ).scalars().first()
+    if not to:
+        logger.info("send_carousel rule skipped business=%s customer=%s: no Instagram id on file", business_id, customer_id)
+        return False
+
+    client = InstagramClient.for_connection(connection)
+    elements = [
+        GenericTemplateElement(
+            title=e.get("title", ""), subtitle=e.get("subtitle"), image_url=e.get("image_url"),
+            buttons=[GenericTemplateButton(**b) for b in e.get("buttons", [])],
+        )
+        for e in (carousel.elements or [])
+    ]
+    try:
+        sent = await client.send_generic_template(to, elements)
+    except InstagramSendError:
+        logger.exception("send_carousel rule failed business=%s customer=%s", business_id, customer_id)
+        return False
+
+    await ingest.ingest(
+        business_id=business_id, channel=Channel.instagram, direction=Direction.outbound,
+        identity_kind=IdentityKind.instagram, identity_value=to,
+        external_id=sent.external_id or None, text=f"[Carousel: {carousel.name}]",
+        occurred_at=datetime.now(timezone.utc), connection_id=connection.id,
+        enqueue_analysis=False, db=db,
+    )
+    return True
+
+
+async def _send_whatsapp_carousel(
+    business_id: uuid.UUID, customer_id: uuid.UUID, config: dict, db: AsyncSession,
+) -> bool:
+    from datetime import datetime, timezone
+
+    from shared.auth.encryption import decrypt
+    from shared.channels import ingest
+    from shared.channels.whatsapp import templates as wa_templates
+    from shared.channels.whatsapp.client import CarouselSendCard, WhatsAppClient, WhatsAppError
+    from shared.db.models import (
+        Channel,
+        ChannelConnection,
+        ConnectionStatus,
+        CustomerIdentity,
+        Direction,
+        IdentityKind,
+        MessageTemplate,
+        TemplateStatus,
+    )
+
+    name = str(config.get("template_name") or "").strip()
+    language = str(config.get("template_language") or "en").strip()
+    template = (
+        await db.execute(
+            select(MessageTemplate).where(
+                MessageTemplate.business_id == business_id,
+                MessageTemplate.name == name,
+                MessageTemplate.language == language,
+            )
+        )
+    ).scalars().first()
+    if template is None or template.status != TemplateStatus.approved:
+        logger.warning("send_carousel rule for business=%s names a missing/unapproved template %r, skipping", business_id, name)
+        return False
+
+    components = template.components if isinstance(template.components, list) else []
+    carousel = next((c for c in components if isinstance(c, dict) and c.get("type") == "CAROUSEL"), None)
+    cards = (carousel or {}).get("cards") or []
+    media_ids = list((template.extra or {}).get("carousel_media_ids") or [])
+    if not cards or len(media_ids) != len(cards):
+        logger.warning("send_carousel rule for business=%s: template %r is not a usable carousel, skipping", business_id, name)
+        return False
+
+    card_bodies = [
+        next((c.get("text", "") for c in card.get("components", []) if c.get("type") == "BODY"), "")
+        for card in cards
+    ]
+    if wa_templates.variables_in(template.body_text or "") or any(wa_templates.variables_in(b) for b in card_bodies):
+        logger.warning("send_carousel rule for business=%s: template %r has variables, skipping", business_id, name)
+        return False
+
+    phone = (
+        await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.customer_id == customer_id, CustomerIdentity.kind == IdentityKind.phone,
+            )
+        )
+    ).scalars().first()
+    if phone is None:
+        return False
+
+    connection = (
+        await db.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.business_id == business_id,
+                ChannelConnection.channel == Channel.whatsapp,
+                ChannelConnection.status == ConnectionStatus.active,
+            )
+        )
+    ).scalars().first()
+    if connection is None or not connection.access_token:
+        return False
+
+    client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
+    try:
+        sent = await client.send_template(
+            phone, template.name, template.language,
+            carousel_cards=[CarouselSendCard(media_id=m) for m in media_ids],
+        )
+    except WhatsAppError:
+        logger.exception("send_carousel rule failed business=%s customer=%s", business_id, customer_id)
+        return False
+
+    await ingest.ingest(
+        business_id=business_id, channel=Channel.whatsapp, direction=Direction.outbound,
+        identity_kind=IdentityKind.phone, identity_value=phone,
+        external_id=sent.external_id, text=template.body_text or f"[Carousel: {template.name}]",
+        occurred_at=datetime.now(timezone.utc), connection_id=connection.id,
+        enqueue_analysis=False, db=db,
     )
     return True
 
