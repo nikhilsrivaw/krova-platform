@@ -146,15 +146,17 @@ REPLY_TOOL = {
             "share_carousel": {
                 "type": "string",
                 "description": (
-                    "Instagram only. The exact name of one carousel from "
-                    "'Available Instagram carousels' to send - set it only when "
-                    "the customer is asking what's available or about something "
-                    "one specific listed carousel directly answers, and only on "
-                    "Instagram (never on WhatsApp or any other channel - omit "
-                    "there even if a carousel would have fit). Omit entirely if "
-                    "no carousel is listed, if none of them fit, or if this "
-                    "customer is not on Instagram. Never invent a name that was "
-                    "not shown to you, and never send one unprompted."
+                    "Instagram and WhatsApp only. The exact name of one carousel "
+                    "from 'Available Instagram carousels' (when this conversation "
+                    "is on Instagram) or 'Available WhatsApp carousels' (when it "
+                    "is on WhatsApp) to send - set it only when the customer is "
+                    "asking what's available or about something one specific "
+                    "listed carousel directly answers. Use the list that matches "
+                    "this conversation's channel, never the other one, and omit "
+                    "it on any other channel even if a carousel would have fit. "
+                    "Omit entirely if no carousel is listed for this channel or "
+                    "none of them fit. Never invent a name that was not shown to "
+                    "you, and never send one unprompted."
                 ),
             },
             "cancel_appointment_at": {
@@ -255,12 +257,13 @@ share_catalog to true when the customer is actually asking what's \
 available - never send it unprompted, and never in place of answering a \
 specific question they asked directly.
 
-If the business details list Available Instagram carousels, and this \
-conversation is on Instagram, set share_carousel to one carousel's exact \
-name when it genuinely matches what the customer is asking - same \
-restraint as share_catalog: never unprompted, never in place of answering \
-their actual question, and never on any channel other than Instagram even \
-if a carousel would otherwise fit.
+If the business details list Available Instagram carousels and this \
+conversation is on Instagram, or list Available WhatsApp carousels and this \
+conversation is on WhatsApp, set share_carousel to one carousel's exact name \
+from the list for this channel when it genuinely matches what the customer \
+is asking - same restraint as share_catalog: never unprompted, never in \
+place of answering their actual question, and never on any channel other \
+than those two even if a carousel would otherwise fit.
 
 Use what you know about the customer. If they have an outstanding payment or \
 you promised them something, that is context worth using - naturally, not \

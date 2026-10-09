@@ -35,7 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.auth.encryption import decrypt
-from shared.channels import ingest
+from shared.channels import carousel_send, ingest
 from shared.channels.instagram.client import InstagramClient, InstagramSendError
 from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
 from shared.db.models import (
@@ -164,6 +164,7 @@ async def send_draft(
     db: AsyncSession,
     *,
     reviewed_by_user_id: uuid.UUID | None,
+    send_carousel: bool = True,
 ) -> DraftSendResult:
     """
     Send a pending draft's final_body and mark it sent.
@@ -172,6 +173,13 @@ async def send_draft(
     the business's own `act` autonomy setting approved it, not a person.
     Caller is responsible for status/expiry checks before calling this - see
     approve()'s own checks, which happen before this runs.
+
+    If the AI chose a carousel to go with this reply (draft.extra
+    ["share_carousel"]) it is sent right after the text - the same here whether
+    the business is on act mode or a person is approving the draft. A person
+    can leave it out with `send_carousel=False`. The carousel never fails the
+    send: the reply has already gone, so a carousel that cannot is logged, and
+    whether it went is recorded on the draft.
     """
     text = draft.final_body
     if not text:
@@ -208,4 +216,21 @@ async def send_draft(
         "draft sent business=%s draft=%s channel=%s auto=%s",
         business_id, draft.id, draft.channel, reviewed_by_user_id is None,
     )
+
+    carousel_name = (draft.extra or {}).get("share_carousel")
+    if carousel_name and send_carousel:
+        try:
+            went = await carousel_send.share_named_carousel(
+                business_id=business_id, customer_id=draft.customer_id,
+                channel=draft.channel, name=carousel_name, db=db,
+            )
+        except Exception:  # noqa: BLE001 - the reply already sent; see the docstring
+            logger.warning(
+                "carousel %r not sent with draft=%s", carousel_name, draft.id, exc_info=True,
+            )
+            went = False
+        # A new dict, not an in-place edit - SQLAlchemy only sees a JSONB
+        # column change when the attribute is reassigned.
+        draft.extra = {**(draft.extra or {}), "carousel_sent": went}
+
     return DraftSendResult(draft=draft, message_id=draft.sent_message_id)

@@ -30,12 +30,6 @@ from shared.ai import context as agent_context
 from shared.ai.client import AIError
 from shared.auth.encryption import decrypt
 from shared.billing import usage
-from shared.channels.instagram.client import (
-    GenericTemplateButton,
-    GenericTemplateElement,
-    InstagramClient,
-    InstagramSendError,
-)
 from shared.channels.send_draft import DraftSendError, send_draft
 from shared.channels.whatsapp.client import SERVICE_WINDOW, WhatsAppClient, WhatsAppError
 from shared.db.models import (
@@ -51,7 +45,6 @@ from shared.db.models import (
     DraftAction,
     DraftStatus,
     IdentityKind,
-    InstagramCarousel,
     IntakeChannel,
     Job,
     Message,
@@ -191,75 +184,6 @@ async def _try_share_catalog(*, business: Business, customer: Customer, db: Asyn
         await client.send_catalog_message(phone, f"Here's what's available at {business.name}:")
     except WhatsAppError as exc:
         logger.warning("catalog share failed business=%s: %s", business.id, exc)
-
-
-async def _try_share_carousel(
-    *, business: Business, customer: Customer, carousel_name: str, db: AsyncSession
-) -> None:
-    """
-    Same "log and move on" contract as _try_share_catalog above - this
-    never blocks or fails the reply that already sent. Instagram only
-    (the caller already gates on channel == "instagram" before calling
-    this); there is no WhatsApp fallback to accidentally use the way
-    _try_share_catalog's WABA lookup implicitly has one, since a saved
-    InstagramCarousel has no WhatsApp equivalent at all.
-    """
-    carousel = (
-        await db.execute(
-            select(InstagramCarousel).where(
-                InstagramCarousel.business_id == business.id,
-                InstagramCarousel.name == carousel_name,
-            )
-        )
-    ).scalars().first()
-    if carousel is None:
-        # The model named a carousel that does not exist - a prompt-following
-        # miss worth knowing about, not a customer-visible failure, since the
-        # reply text itself already sent regardless.
-        logger.warning(
-            "share_carousel named unknown carousel=%r business=%s", carousel_name, business.id,
-        )
-        return
-
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == business.id,
-                ChannelConnection.channel == Channel.instagram,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
-    if connection is None or not connection.access_token:
-        return
-
-    igsid = (
-        await db.execute(
-            select(CustomerIdentity.value).where(
-                CustomerIdentity.customer_id == customer.id,
-                CustomerIdentity.kind == IdentityKind.instagram,
-            ).limit(1)
-        )
-    ).scalar_one_or_none()
-    if igsid is None:
-        return
-
-    client = InstagramClient.for_connection(connection)
-    elements = [
-        GenericTemplateElement(
-            title=e.get("title", ""),
-            subtitle=e.get("subtitle"),
-            image_url=e.get("image_url"),
-            buttons=[GenericTemplateButton(**b) for b in e.get("buttons", [])],
-        )
-        for e in (carousel.elements or [])
-    ]
-    try:
-        await client.send_generic_template(igsid, elements)
-    except InstagramSendError as exc:
-        logger.warning(
-            "carousel share failed business=%s carousel=%s: %s", business.id, carousel_name, exc,
-        )
 
 
 async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageDraft | None:
@@ -450,6 +374,15 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         # outlives it is worse than none - it would be approved and then fail.
         expires_at=message.occurred_at + SERVICE_WINDOW,
         cost_paise=proposal.cost_paise,
+        # The carousel the AI chose to go with this reply. Kept on the draft so it
+        # goes out whenever the reply does - sent by send_draft itself, whether
+        # that is act/conditional mode right now or a person approving it later.
+        extra=(
+            {"share_carousel": proposal.share_carousel}
+            if proposal.action == "reply" and proposal.share_carousel
+            and channel in ("whatsapp", "instagram")
+            else {}
+        ),
     )
     db.add(draft)
     await db.flush()
@@ -509,11 +442,6 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         else:
             if proposal.share_catalog:
                 await _try_share_catalog(business=business, customer=customer, db=db)
-            if proposal.share_carousel and channel == "instagram":
-                await _try_share_carousel(
-                    business=business, customer=customer,
-                    carousel_name=proposal.share_carousel, db=db,
-                )
 
     # `conditional` - the middle ground between draft and act. Nothing
     # sends unless the business's own auto_send_rules are on AND an
@@ -555,11 +483,6 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
             else:
                 if proposal.share_catalog:
                     await _try_share_catalog(business=business, customer=customer, db=db)
-                if proposal.share_carousel and channel == "instagram":
-                    await _try_share_carousel(
-                        business=business, customer=customer,
-                        carousel_name=proposal.share_carousel, db=db,
-                    )
         else:
             logger.info(
                 "conditional autonomy held draft=%s pending: %s",

@@ -58,12 +58,17 @@ class DraftOut(BaseModel):
     expires_at: str | None
     expired: bool
     created_at: str
+    # The carousel the AI wants to send along with this reply, if any - goes
+    # out right after the text on approval unless the person turns it off.
+    share_carousel: str | None = None
 
 
 class ApproveBody(BaseModel):
     # What the person is actually sending. Absent means send the agent's words
     # unchanged.
     body: str | None = Field(default=None, max_length=4096)
+    # False = send the reply but not the carousel the AI suggested with it.
+    send_carousel: bool = True
 
 
 class RejectBody(BaseModel):
@@ -102,6 +107,7 @@ async def _out(draft: MessageDraft, db: DbDep) -> DraftOut:
         expires_at=expires.isoformat() if expires else None,
         expired=bool(expires and expires < now),
         created_at=draft.created_at.isoformat(),
+        share_carousel=(draft.extra or {}).get("share_carousel"),
     )
 
 
@@ -195,7 +201,8 @@ async def approve(
 
     try:
         await send_draft(
-            draft, current_user.business, db, reviewed_by_user_id=current_user.id
+            draft, current_user.business, db, reviewed_by_user_id=current_user.id,
+            send_carousel=body.send_carousel,
         )
     except DraftSendError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

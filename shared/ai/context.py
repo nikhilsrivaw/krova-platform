@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
 from shared.care import ledger_queries
+from shared.channels.whatsapp.carousel_media import usable_whatsapp_carousel_media
 from shared.db.models import (
     Appointment,
     AppointmentStatus,
@@ -45,6 +46,8 @@ from shared.db.models import (
     InsuranceClaim,
     KnowledgeItem,
     Message,
+    MessageTemplate,
+    TemplateStatus,
     Order,
     Property,
 )
@@ -165,6 +168,10 @@ class AgentContext:
     # above, not customer-level. Empty for a business with none saved,
     # which reads to the model as "nothing to offer", not "ask a human".
     instagram_carousels: list[dict] = field(default_factory=list)
+    # The WhatsApp equivalent: APPROVED carousel message templates with no
+    # {{variables}} (shared/channels/whatsapp/carousel_media.py - the same test
+    # the sender uses, so the model is never offered one that would be refused).
+    whatsapp_carousels: list[dict] = field(default_factory=list)
     recent: list[dict] = field(default_factory=list)
     open_commitments: list[dict] = field(default_factory=list)
     # Who pays for this customer, and who they pay for - with what is still
@@ -244,6 +251,16 @@ class AgentContext:
                 + "\n".join(
                     f"- {c['name']}: {c['description']}" if c["description"] else f"- {c['name']}"
                     for c in self.instagram_carousels
+                )
+            )
+
+        if self.whatsapp_carousels:
+            lines.append(
+                "\nAvailable WhatsApp carousels (share_carousel, WhatsApp only - "
+                "set it to the name exactly as written here):\n"
+                + "\n".join(
+                    f"- {c['name']}: {c['description']}" if c["description"] else f"- {c['name']}"
+                    for c in self.whatsapp_carousels
                 )
             )
 
@@ -452,6 +469,21 @@ async def build(
         .order_by(InstagramCarousel.name)
     )
     carousel_items = list(carousels.scalars().all())
+
+    wa_templates_result = await db.execute(
+        select(MessageTemplate)
+        .where(MessageTemplate.business_id == business_id, MessageTemplate.status == TemplateStatus.approved)
+        .order_by(MessageTemplate.name)
+    )
+    # One entry per name: the same template can exist in several languages, and
+    # the model picks by name alone (the sender chooses the language).
+    whatsapp_carousel_items = list(
+        {
+            t.name: t
+            for t in wa_templates_result.scalars().all()
+            if usable_whatsapp_carousel_media(t) is not None
+        }.values()
+    )
 
     commitments = await db.execute(
         select(Commitment)
@@ -703,6 +735,10 @@ async def build(
         ],
         instagram_carousels=[
             {"name": c.name, "description": c.description} for c in carousel_items
+        ],
+        whatsapp_carousels=[
+            {"name": t.name, "description": (t.body_text or "").strip()[:140]}
+            for t in whatsapp_carousel_items
         ],
         customer_name=customer.display_name if customer else None,
         customer_summary=intelligence.summary if intelligence else None,
