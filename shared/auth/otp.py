@@ -97,13 +97,20 @@ async def _send_call_code(destination: str, otp_id: uuid.UUID) -> None:
         raise OtpError("Phone verification is not configured on this server")
     base = settings.public_base_url.rstrip("/")
     try:
-        await plivo_client.make_call(
+        request_uuid = await plivo_client.make_call(
             auth_id=settings.plivo_auth_id,
             auth_token=settings.plivo_auth_token,
             from_number=settings.otp_voice_from_number,
             to_number=destination,
             answer_url=f"{base}/voice/otp-answer?otp_id={otp_id}",
-            hangup_url=f"{base}/voice/otp-hangup",
+            hangup_url=f"{base}/voice/otp-hangup?otp_id={otp_id}",
+        )
+        # Plivo accepting the request only means it was queued - whether
+        # the phone rang is the hangup webhook's to say (otp_call.py).
+        # request_uuid is what to search for in Plivo's own call logs.
+        logger.info(
+            "otp call queued to=%s from=%s otp_id=%s plivo_request=%s",
+            destination, settings.otp_voice_from_number, otp_id, request_uuid,
         )
     except plivo_client.PlivoError as exc:
         logger.error("could not place otp call to=%s: %s", destination, exc)

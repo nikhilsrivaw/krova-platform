@@ -138,7 +138,8 @@ async def proxy_voice_otp_answer(request: Request) -> Response:
 
 @router.post("/voice/otp-hangup")
 async def proxy_voice_otp_hangup(request: Request) -> Response:
-    return await _proxy_http(request, "/voice/otp-hangup")
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/otp-hangup{query}")
 
 
 @router.post("/voice/cod-answer")

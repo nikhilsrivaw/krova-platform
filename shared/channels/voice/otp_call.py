@@ -80,7 +80,26 @@ async def otp_answer(
 
 @router.post("/voice/otp-hangup")
 async def otp_hangup(request: Request) -> dict:
-    """Nothing to record - a failed/unanswered OTP call just leaves the
-    code unsent; the person retries past otp.py's own resend cooldown.
-    Exists only because Plivo's Call API requires a hangup_url."""
+    """
+    Nothing to persist - a failed or unanswered OTP call just leaves the
+    code unsent, and the person retries past otp.py's own resend cooldown.
+    Exists because Plivo's Call API requires a hangup_url.
+
+    What it does log is Plivo's own account of how the call ended. Without
+    this, "the OTP call never arrived" was undiagnosable from our side:
+    the API logged a successful request, then a hangup, and nothing in
+    between to say whether the phone never rang, was declined, or was
+    blocked before connecting. Plivo sends CallStatus / HangupCause /
+    HangupCauseCode / Duration on every ended call.
+    """
+    body = await request.form()
+    logger.info(
+        "otp call ended otp_id=%s to=%s status=%s cause=%s code=%s duration=%s",
+        request.query_params.get("otp_id"),
+        body.get("To"),
+        body.get("CallStatus"),
+        body.get("HangupCauseName") or body.get("HangupCause"),
+        body.get("HangupCauseCode"),
+        body.get("Duration"),
+    )
     return {"status": "ok"}
