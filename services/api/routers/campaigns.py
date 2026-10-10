@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.campaigns import audience as audience_module
 from shared.channels import ingest
@@ -289,7 +289,7 @@ async def preview(
 
 @router.post("", response_model=CampaignOut, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
-    body: CampaignIn, current_user: CurrentUserDep, db: DbDep
+    body: CampaignIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> CampaignOut:
     """Save a campaign. Nothing sends until it is started."""
     template = await _template(
@@ -396,7 +396,7 @@ async def _owned_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDep, 
     "/{campaign_id}/steps", response_model=CampaignStepOut, status_code=status.HTTP_201_CREATED
 )
 async def add_campaign_step(
-    campaign_id: uuid.UUID, body: CampaignStepIn, current_user: CurrentUserDep, db: DbDep
+    campaign_id: uuid.UUID, body: CampaignStepIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> CampaignStepOut:
     """
     Add one follow-up step to a not-yet-sent campaign - a drip sequence is
@@ -486,7 +486,7 @@ async def list_campaign_steps(
 
 @router.delete("/{campaign_id}/steps/{step_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_campaign_step(
-    campaign_id: uuid.UUID, step_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+    campaign_id: uuid.UUID, step_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep
 ) -> None:
     campaign = await _owned_campaign(campaign_id, current_user, db)
     if campaign.status != CampaignStatus.draft:
@@ -501,7 +501,7 @@ async def delete_campaign_step(
 
 @router.post("/{campaign_id}/send", response_model=CampaignOut)
 async def send_campaign(
-    campaign_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+    campaign_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep
 ) -> CampaignOut:
     """
     Send it.

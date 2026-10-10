@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
 from shared.channels.whatsapp import account as meta
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus
@@ -154,7 +154,7 @@ class ProfilePictureOut(BaseModel):
 
 @router.post("/profile/picture", response_model=ProfilePictureOut)
 async def update_profile_picture(
-    current_user: CurrentUserDep, db: DbDep, file: UploadFile = File(...),
+    current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile = File(...),
 ) -> ProfilePictureOut:
     """The icon customers see next to every message from this number -
     see AccountClient.update_profile_picture's own docstring for why this
@@ -178,7 +178,7 @@ async def update_profile_picture(
 
 @router.post("/profile", response_model=ProfileOut)
 async def update_profile(
-    body: ProfileIn, current_user: CurrentUserDep, db: DbDep
+    body: ProfileIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> ProfileOut:
     connection = await _connection(current_user.business, db)
     client = _client(connection)
@@ -329,7 +329,7 @@ async def readiness(current_user: CurrentUserDep, db: DbDep) -> ReadinessOut:
 
 @router.post("/request-code", status_code=status.HTTP_202_ACCEPTED)
 async def request_code(
-    body: CodeRequest, current_user: CurrentUserDep, db: DbDep
+    body: CodeRequest, current_user: OwnerOrAdminDep, db: DbDep
 ) -> dict:
     """
     Send a verification code to the number.
@@ -353,7 +353,7 @@ async def request_code(
 
 @router.post("/verify-code")
 async def verify_code(
-    body: CodeSubmit, current_user: CurrentUserDep, db: DbDep
+    body: CodeSubmit, current_user: OwnerOrAdminDep, db: DbDep
 ) -> dict:
     connection = await _connection(current_user.business, db)
     try:
@@ -364,7 +364,7 @@ async def verify_code(
 
 
 @router.post("/two-step-pin")
-async def set_pin(body: PinBody, current_user: CurrentUserDep, db: DbDep) -> dict:
+async def set_pin(body: PinBody, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     """
     Set the number's two-step verification PIN.
 

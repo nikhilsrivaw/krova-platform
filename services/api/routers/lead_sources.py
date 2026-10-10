@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
 from shared.care import post_call_actions
@@ -84,7 +84,7 @@ async def list_lead_sources(current_user: CurrentUserDep, db: DbDep) -> list[Lea
 
 
 @router.post("/{key}/token", response_model=LeadSourceTokenOut)
-async def generate_lead_source_token(key: str, current_user: CurrentUserDep, db: DbDep) -> LeadSourceTokenOut:
+async def generate_lead_source_token(key: str, current_user: OwnerOrAdminDep, db: DbDep) -> LeadSourceTokenOut:
     platform = BY_KEY.get(key)
     if platform is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown lead source")

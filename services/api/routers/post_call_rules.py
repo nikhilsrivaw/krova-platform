@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.care.post_call_actions import (
     CONDITION_FIELDS,
     MAX_CONDITIONS_PER_STEP,
@@ -379,7 +379,7 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
 
 
 @router.post("", response_model=PostCallRuleOut, status_code=status.HTTP_201_CREATED)
-async def create_rule(body: PostCallRuleIn, current_user: CurrentUserDep, db: DbDep) -> PostCallRuleOut:
+async def create_rule(body: PostCallRuleIn, current_user: OwnerOrAdminDep, db: DbDep) -> PostCallRuleOut:
     _validate(body)
     first = body.steps[0]
     rule = PostCallActionRule(
@@ -419,7 +419,7 @@ async def _owned_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDe
 
 @router.patch("/{rule_id}", response_model=PostCallRuleOut)
 async def update_rule(
-    rule_id: uuid.UUID, body: PostCallRuleIn, current_user: CurrentUserDep, db: DbDep
+    rule_id: uuid.UUID, body: PostCallRuleIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> PostCallRuleOut:
     _validate(body)
     rule = await _owned_rule(rule_id, current_user, db)
@@ -470,7 +470,7 @@ async def update_rule(
 
 
 @router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_rule(rule_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     rule = await _owned_rule(rule_id, current_user, db)
     await db.delete(rule)
     await db.commit()

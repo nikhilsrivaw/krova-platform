@@ -10,7 +10,7 @@ ledger still shows where each lead originated.
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.db.models import Business
 from shared.leads import intake
 from shared.leads.justdial_parse import parse_lead
@@ -39,7 +39,7 @@ def _check_source(source: str) -> str:
 
 @router.post("/import")
 async def import_leads(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     file: UploadFile = File(...),
     source: str = Form(...),

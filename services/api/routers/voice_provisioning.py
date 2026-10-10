@@ -18,7 +18,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, sta
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
 from shared.channels.voice import compliance, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
@@ -80,7 +80,7 @@ class SubaccountOut(BaseModel):
 
 
 @router.post("/subaccount", response_model=SubaccountOut, status_code=status.HTTP_201_CREATED)
-async def create_subaccount(current_user: CurrentUserDep, db: DbDep) -> SubaccountOut:
+async def create_subaccount(current_user: OwnerOrAdminDep, db: DbDep) -> SubaccountOut:
     """
     A business's own slice of Plivo. Idempotent: calling this twice returns
     the existing subaccount rather than creating a second one.
@@ -177,7 +177,7 @@ class EndUserOut(BaseModel):
 
 
 @router.post("/compliance/end-user", response_model=EndUserOut)
-async def create_end_user(current_user: CurrentUserDep, db: DbDep) -> EndUserOut:
+async def create_end_user(current_user: OwnerOrAdminDep, db: DbDep) -> EndUserOut:
     """Register this business as a Plivo KYC identity - a prerequisite for documents."""
     row = await _require_provisioning(current_user.business, db)
     if row.end_user_id:
@@ -203,7 +203,7 @@ class DocumentOut(BaseModel):
 
 @router.post("/compliance/documents", response_model=DocumentOut)
 async def upload_document(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     document_type_id: str = Form(...),
     alias: str = Form(...),
@@ -266,7 +266,7 @@ class ApplicationOut(BaseModel):
 
 
 @router.post("/compliance/application", response_model=ApplicationOut)
-async def submit_application(body: ApplicationIn, current_user: CurrentUserDep, db: DbDep) -> ApplicationOut:
+async def submit_application(body: ApplicationIn, current_user: OwnerOrAdminDep, db: DbDep) -> ApplicationOut:
     """
     Bundle every uploaded document into an application and submit it.
 
@@ -339,7 +339,7 @@ async def compliance_status(current_user: CurrentUserDep, db: DbDep) -> Applicat
 
 
 @router.post("/compliance/resubmit", response_model=ApplicationOut)
-async def resubmit_application(current_user: CurrentUserDep, db: DbDep) -> ApplicationOut:
+async def resubmit_application(current_user: OwnerOrAdminDep, db: DbDep) -> ApplicationOut:
     """
     After a rejection: swap in whatever documents have been uploaded since
     (via POST /compliance/documents again) and send the same application
@@ -475,7 +475,7 @@ class BuyOut(BaseModel):
 
 
 @router.post("/numbers/buy", response_model=BuyOut, status_code=status.HTTP_201_CREATED)
-async def buy_number(body: BuyIn, current_user: CurrentUserDep, db: DbDep) -> BuyOut:
+async def buy_number(body: BuyIn, current_user: OwnerOrAdminDep, db: DbDep) -> BuyOut:
     """
     Buy a number, wire it to Krova's voice pipeline, and connect it.
 
@@ -533,7 +533,7 @@ async def buy_number(body: BuyIn, current_user: CurrentUserDep, db: DbDep) -> Bu
 
 
 @router.post("/numbers/{number}/release", status_code=status.HTTP_204_NO_CONTENT)
-async def release_number(number: str, current_user: CurrentUserDep, db: DbDep) -> None:
+async def release_number(number: str, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     """
     Give a number back - a business that churns stops being billed the
     monthly rental from here on. The connection is marked disconnected
@@ -798,7 +798,7 @@ class AgentSettingsIn(BaseModel):
 
 @router.patch("/agent-settings", response_model=AgentSettingsOut)
 async def update_agent_settings(
-    body: AgentSettingsIn, current_user: CurrentUserDep, db: DbDep
+    body: AgentSettingsIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> AgentSettingsOut:
     """
     Every field is optional and only what's sent gets changed - a business
@@ -1070,7 +1070,7 @@ def _number_request_out(row: NumberRequest) -> NumberRequestOut:
 
 @router.post("/number-requests", response_model=NumberRequestOut, status_code=status.HTTP_201_CREATED)
 async def create_number_request(
-    body: NumberRequestIn, current_user: CurrentUserDep, db: DbDep
+    body: NumberRequestIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> NumberRequestOut:
     if body.request_type not in VALID_NUMBER_REQUEST_TYPES:
         raise HTTPException(
@@ -1126,7 +1126,7 @@ class NumberRequestUpdateIn(BaseModel):
 
 @router.patch("/number-requests/{request_id}", response_model=NumberRequestOut)
 async def update_number_request(
-    request_id: uuid.UUID, body: NumberRequestUpdateIn, current_user: CurrentUserDep, db: DbDep
+    request_id: uuid.UUID, body: NumberRequestUpdateIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> NumberRequestOut:
     _require_platform_admin(current_user)
 

@@ -14,7 +14,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth import tokens
 from shared.auth.encryption import encrypt
 from shared.auth.tokens import TokenError
@@ -85,7 +85,7 @@ async def whatsapp_signup_config(current_user: CurrentUserDep) -> SignupConfig:
 
 @router.post("/whatsapp/embedded-signup", response_model=ConnectionOut)
 async def whatsapp_embedded_signup(
-    body: EmbeddedSignupBody, current_user: CurrentUserDep, db: DbDep
+    body: EmbeddedSignupBody, current_user: OwnerOrAdminDep, db: DbDep
 ) -> ConnectionOut:
     """
     Finish connecting a business's WhatsApp account.
@@ -236,7 +236,7 @@ class AdTrackingIn(BaseModel):
 
 
 @router.post("/whatsapp/ad-tracking")
-async def set_ad_tracking(body: AdTrackingIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+async def set_ad_tracking(body: AdTrackingIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     result = await db.execute(
         select(ChannelConnection).where(
             ChannelConnection.business_id == current_user.business,
@@ -268,7 +268,7 @@ class CatalogIdIn(BaseModel):
 
 
 @router.post("/whatsapp/catalog-id")
-async def set_catalog_id(body: CatalogIdIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+async def set_catalog_id(body: CatalogIdIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     result = await db.execute(
         select(ChannelConnection).where(
             ChannelConnection.business_id == current_user.business,
@@ -319,7 +319,7 @@ async def get_payment_config(current_user: CurrentUserDep, db: DbDep) -> dict:
 
 @router.post("/whatsapp/payment-config")
 async def set_payment_config(
-    body: PaymentConfigIn, current_user: CurrentUserDep, db: DbDep
+    body: PaymentConfigIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> dict:
     result = await db.execute(
         select(ChannelConnection).where(
@@ -349,7 +349,7 @@ async def set_payment_config(
 
 
 @router.delete("/whatsapp", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_whatsapp(current_user: CurrentUserDep, db: DbDep) -> None:
+async def disconnect_whatsapp(current_user: OwnerOrAdminDep, db: DbDep) -> None:
     """
     Give the account back.
 

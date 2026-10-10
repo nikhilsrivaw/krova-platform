@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
 from shared.care import post_call_actions
@@ -72,7 +72,7 @@ async def get_email_leads_settings(current_user: CurrentUserDep, db: DbDep) -> E
 
 
 @router.post("/token", response_model=EmailLeadsSettingsOut)
-async def generate_email_leads_token(current_user: CurrentUserDep, db: DbDep) -> EmailLeadsSettingsOut:
+async def generate_email_leads_token(current_user: OwnerOrAdminDep, db: DbDep) -> EmailLeadsSettingsOut:
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")

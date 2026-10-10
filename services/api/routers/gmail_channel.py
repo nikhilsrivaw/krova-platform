@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import encrypt
 from shared.channels.email import backfill, gmail
 from shared.config.settings import settings
@@ -201,7 +201,7 @@ async def gmail_callback(
 
 
 @router.post("/backfill", response_model=BackfillSummary)
-async def run_backfill_now(current_user: CurrentUserDep, db: DbDep) -> BackfillSummary:
+async def run_backfill_now(current_user: OwnerOrAdminDep, db: DbDep) -> BackfillSummary:
     """
     Read history immediately rather than waiting for the queued job.
 

@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared import verticals
 from shared.auth.encryption import decrypt, encrypt
 from shared.channels import ingest
@@ -147,7 +147,7 @@ async def get_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) 
 
 
 @router.post("", response_model=FlowOut, status_code=status.HTTP_201_CREATED)
-async def create_flow(body: FlowIn, current_user: CurrentUserDep, db: DbDep) -> FlowOut:
+async def create_flow(body: FlowIn, current_user: OwnerOrAdminDep, db: DbDep) -> FlowOut:
     """
     Author a new flow: create it on Meta, upload its screens, and store what
     Meta made of it. Left in DRAFT - publish_flow is a separate, deliberate
@@ -185,7 +185,7 @@ async def create_flow(body: FlowIn, current_user: CurrentUserDep, db: DbDep) -> 
 
 
 @router.post("/{flow_id}/publish", response_model=FlowOut)
-async def publish_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> FlowOut:
+async def publish_flow(flow_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> FlowOut:
     flow = await db.get(WhatsAppFlow, flow_id)
     if flow is None or flow.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Flow not found")
@@ -209,7 +209,7 @@ async def publish_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbD
 
 
 @router.post("/{flow_id}/deprecate", response_model=FlowOut)
-async def deprecate_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> FlowOut:
+async def deprecate_flow(flow_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> FlowOut:
     """
     Retire a published flow - found genuinely unwired during a wiring
     audit: flows_api.deprecate_flow (the Graph API call) has existed
@@ -237,7 +237,7 @@ async def deprecate_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: D
 
 
 @router.post("/{flow_id}/refresh", response_model=FlowOut)
-async def refresh_flow(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> FlowOut:
+async def refresh_flow(flow_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> FlowOut:
     """
     Re-read a flow's real status and validation state from Meta - also
     found unwired during a wiring audit (flows_api.get_flow_status
@@ -273,7 +273,7 @@ class LiveDataOut(BaseModel):
 
 
 @router.post("/{flow_id}/enable-live-data", response_model=LiveDataOut)
-async def enable_live_data(flow_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> LiveDataOut:
+async def enable_live_data(flow_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> LiveDataOut:
     """
     Point this flow at KROVA's own data_exchange endpoint (see services/
     api/routers/flow_exchange.py) - what turns a static form into one that

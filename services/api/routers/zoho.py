@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import encrypt
 from shared.config.settings import settings
 from shared.db.models.zoho import ZohoConnection
@@ -128,7 +128,7 @@ async def zoho_status(current_user: CurrentUserDep, db: DbDep) -> ZohoStatusOut:
 
 
 @router.post("/sync")
-async def zoho_sync(current_user: CurrentUserDep, db: DbDep) -> dict:
+async def zoho_sync(current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     connection = await _connection_for(db, current_user.business)
     if connection is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Zoho Books is not connected")
@@ -139,7 +139,7 @@ async def zoho_sync(current_user: CurrentUserDep, db: DbDep) -> dict:
 
 
 @router.delete("/connection", status_code=status.HTTP_204_NO_CONTENT)
-async def zoho_disconnect(current_user: CurrentUserDep, db: DbDep) -> None:
+async def zoho_disconnect(current_user: OwnerOrAdminDep, db: DbDep) -> None:
     connection = await _connection_for(db, current_user.business)
     if connection is not None:
         await db.delete(connection)

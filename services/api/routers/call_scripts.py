@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.db.models import CallScript, CallScriptResponse, Customer
 
 router = APIRouter(prefix="/call-scripts", tags=["call-scripts"])
@@ -61,7 +61,7 @@ def _validate(body: CallScriptIn) -> None:
 
 
 @router.post("", response_model=CallScriptOut, status_code=status.HTTP_201_CREATED)
-async def create_script(body: CallScriptIn, current_user: CurrentUserDep, db: DbDep) -> CallScriptOut:
+async def create_script(body: CallScriptIn, current_user: OwnerOrAdminDep, db: DbDep) -> CallScriptOut:
     _validate(body)
     script = CallScript(
         business_id=current_user.business,
@@ -83,7 +83,7 @@ async def _owned_script(script_id: uuid.UUID, current_user: CurrentUserDep, db: 
 
 @router.patch("/{script_id}", response_model=CallScriptOut)
 async def update_script(
-    script_id: uuid.UUID, body: CallScriptIn, current_user: CurrentUserDep, db: DbDep
+    script_id: uuid.UUID, body: CallScriptIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> CallScriptOut:
     _validate(body)
     script = await _owned_script(script_id, current_user, db)
@@ -95,7 +95,7 @@ async def update_script(
 
 
 @router.delete("/{script_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_script(script_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_script(script_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     script = await _owned_script(script_id, current_user, db)
     await db.delete(script)
     await db.commit()

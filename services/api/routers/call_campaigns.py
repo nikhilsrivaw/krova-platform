@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.campaigns import audience as audience_module
 from shared.db import queue
 from shared.db.models import (
@@ -181,7 +181,7 @@ def _out(campaign: CallCampaign) -> CallCampaignOut:
 
 
 @router.post("", response_model=CallCampaignOut, status_code=status.HTTP_201_CREATED)
-async def create_call_campaign(body: CallCampaignIn, current_user: CurrentUserDep, db: DbDep) -> CallCampaignOut:
+async def create_call_campaign(body: CallCampaignIn, current_user: OwnerOrAdminDep, db: DbDep) -> CallCampaignOut:
     try:
         audience = Audience(body.audience)
     except ValueError:
@@ -308,7 +308,7 @@ async def _check_number_series(campaign: CallCampaign, business: Business | None
 
 
 @router.post("/{campaign_id}/send", response_model=CallCampaignOut)
-async def send_call_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> CallCampaignOut:
+async def send_call_campaign(campaign_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> CallCampaignOut:
     """
     Resolve the audience once, write one CallCampaignRecipient per person,
     enqueue one call_campaign_dial job per recipient, and return

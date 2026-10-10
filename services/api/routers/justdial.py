@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
 from shared.care import post_call_actions
@@ -82,7 +82,7 @@ async def get_justdial_settings(current_user: CurrentUserDep, db: DbDep) -> Just
 
 
 @router.post("/token", response_model=JustdialSettingsOut)
-async def generate_justdial_token(current_user: CurrentUserDep, db: DbDep) -> JustdialSettingsOut:
+async def generate_justdial_token(current_user: OwnerOrAdminDep, db: DbDep) -> JustdialSettingsOut:
     if not app_settings.public_base_url:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "PUBLIC_BASE_URL is not configured on the server"

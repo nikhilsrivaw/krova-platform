@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
 from shared.channels.whatsapp import migration as meta
 from shared.db.models import Channel, ChannelConnection, ConnectionStatus
@@ -130,7 +130,7 @@ async def readiness(current_user: CurrentUserDep, db: DbDep) -> ReadinessOut:
 
 
 @router.post("/start", response_model=StartOut)
-async def start(body: StartIn, current_user: CurrentUserDep, db: DbDep) -> StartOut:
+async def start(body: StartIn, current_user: OwnerOrAdminDep, db: DbDep) -> StartOut:
     """
     Claim the number onto the client's WABA.
 
@@ -159,7 +159,7 @@ async def start(body: StartIn, current_user: CurrentUserDep, db: DbDep) -> Start
 
 
 @router.post("/request-code", status_code=status.HTTP_202_ACCEPTED)
-async def request_code(body: CodeIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+async def request_code(body: CodeIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     connection, waba_id = await _waba(current_user.business, db)
     try:
         await _client(connection, waba_id).request_code(
@@ -178,7 +178,7 @@ async def request_code(body: CodeIn, current_user: CurrentUserDep, db: DbDep) ->
 
 
 @router.post("/verify-code")
-async def verify_code(body: VerifyIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+async def verify_code(body: VerifyIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     connection, waba_id = await _waba(current_user.business, db)
     try:
         await _client(connection, waba_id).verify_code(body.phone_number_id, body.code)
@@ -188,7 +188,7 @@ async def verify_code(body: VerifyIn, current_user: CurrentUserDep, db: DbDep) -
 
 
 @router.post("/finish", response_model=FinishOut)
-async def finish(body: FinishIn, current_user: CurrentUserDep, db: DbDep) -> FinishOut:
+async def finish(body: FinishIn, current_user: OwnerOrAdminDep, db: DbDep) -> FinishOut:
     """
     Register the number and store the connection.
 

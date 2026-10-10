@@ -35,7 +35,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.channels.web import guardrails
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead, LeadForm
@@ -204,7 +204,7 @@ async def list_forms(current_user: CurrentUserDep, db: DbDep) -> list[FormOut]:
 
 
 @router.post("", response_model=FormOut, status_code=status.HTTP_201_CREATED)
-async def create_form(body: FormIn, current_user: CurrentUserDep, db: DbDep) -> FormOut:
+async def create_form(body: FormIn, current_user: OwnerOrAdminDep, db: DbDep) -> FormOut:
     _validate_fields(body.fields)
     form = LeadForm(
         business_id=current_user.business,
@@ -221,7 +221,7 @@ async def create_form(body: FormIn, current_user: CurrentUserDep, db: DbDep) -> 
 
 
 @router.patch("/{form_id}", response_model=FormOut)
-async def update_form(form_id: uuid.UUID, body: FormIn, current_user: CurrentUserDep, db: DbDep) -> FormOut:
+async def update_form(form_id: uuid.UUID, body: FormIn, current_user: OwnerOrAdminDep, db: DbDep) -> FormOut:
     form = await _owned_form(form_id, current_user, db)
     _validate_fields(body.fields)
     form.title = body.title
@@ -234,7 +234,7 @@ async def update_form(form_id: uuid.UUID, body: FormIn, current_user: CurrentUse
 
 
 @router.delete("/{form_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_form(form_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_form(form_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     form = await _owned_form(form_id, current_user, db)
     # Past submissions (inbound_leads rows) are kept - they are independent
     # rows, not foreign-keyed to this form, same as every other lead source.
@@ -244,7 +244,7 @@ async def delete_form(form_id: uuid.UUID, current_user: CurrentUserDep, db: DbDe
 
 @router.post("/{form_id}/logo", response_model=FormOut)
 async def upload_form_logo(
-    form_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep, file: UploadFile = File(...),
+    form_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile = File(...),
 ) -> FormOut:
     form = await _owned_form(form_id, current_user, db)
     content = await file.read()

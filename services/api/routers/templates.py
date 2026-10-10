@@ -19,7 +19,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.ai import carousel_draft
 from shared.auth.encryption import decrypt
 from shared.channels.whatsapp import media_upload
@@ -318,7 +318,7 @@ async def list_templates(
 
 @router.post("", response_model=TemplateOut, status_code=status.HTTP_201_CREATED)
 async def create_template(
-    body: TemplateIn, current_user: CurrentUserDep, db: DbDep
+    body: TemplateIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> TemplateOut:
     """
     Submit a template to Meta for review.
@@ -348,7 +348,7 @@ async def create_template(
 @router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_template(
     template_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     all_languages: bool = Query(
         default=False,
