@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from services.api import voice_proxy
 from services.api.widget_cors import WidgetCORSMiddleware
+from services.api.audit_middleware import ActivityLogMiddleware
 from services.api.routers import (
     account,
     analytics,
@@ -65,6 +66,7 @@ from services.api.routers import (
     scheduling,
     signals,
     team,
+    team_activity,
     templates,
     trust,
     voice_provisioning,
@@ -141,6 +143,7 @@ app.add_middleware(
 # widget_cors.py's own docstring for why this can't just be one more
 # origin in that static list.
 app.add_middleware(WidgetCORSMiddleware)
+app.add_middleware(ActivityLogMiddleware)
 
 
 @app.exception_handler(Exception)
@@ -197,6 +200,7 @@ app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(trust.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)
+app.include_router(team_activity.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)
 app.include_router(flows.router, prefix=API_PREFIX)
 app.include_router(canned_responses.router, prefix=API_PREFIX)

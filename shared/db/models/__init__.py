@@ -3,6 +3,7 @@
 from shared.db.base import Base
 from shared.db.models.billing import AiShadowRun, UsageEvent, UsageEventType
 from shared.db.models.push_subscription import PushSubscription
+from shared.db.models.activity import ActivityLog
 from shared.db.models.command_audit import CommandAudit
 from shared.db.models.canned_response import CannedResponse
 from shared.db.models.case import Case, CaseStatus
@@ -206,6 +207,7 @@ __all__ = [
     "UsageEventType",
     "AiShadowRun",
     "PushSubscription",
+    "ActivityLog",
     "CommandAudit",
     "User",
     "VoiceProvisioning",

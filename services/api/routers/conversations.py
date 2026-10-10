@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.audit import activity
 from shared.channels.whatsapp.client import SERVICE_WINDOW, within_service_window
 from shared.db.models import (
     BusinessMember,
@@ -361,4 +362,5 @@ async def assign_conversation(
         )
 
     customer.assigned_to_user_id = target_id
+    activity.note(assigned_to=str(target_id))
     return {"customer_id": str(customer.id), "assigned_to_user_id": str(target_id)}

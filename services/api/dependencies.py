@@ -117,6 +117,14 @@ async def get_current_user(
             role = found.value if hasattr(found, "value") else str(found)
 
     request.state.business_id = business_id
+    if business_id is not None:
+        # Who is acting, for the activity log (services/api/audit_middleware.py).
+        # Only set once membership is confirmed - an unconfirmed claim is not an actor.
+        from shared.audit.activity import label_for
+
+        request.state.actor = {
+            "user_id": user.id, "business_id": business_id, "role": role, "label": label_for(user),
+        }
     return CurrentUser(
         id=user.id, email=user.email, business_id=business_id, role=role
     )

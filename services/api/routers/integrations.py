@@ -117,7 +117,7 @@ async def google_calendar_callback(
 
 
 @router.get("/google-calendar", response_model=CalendarStatusOut)
-async def google_calendar_status(current_user: CurrentUserDep, db: DbDep) -> CalendarStatusOut:
+async def google_calendar_status(current_user: OwnerOrAdminDep, db: DbDep) -> CalendarStatusOut:
     result = await db.execute(
         select(CalendarConnection).where(
             CalendarConnection.business_id == current_user.business,
@@ -182,7 +182,7 @@ def _github_out(c: GitHubConnection) -> GitHubConnectionOut:
 
 
 @router.get("/github", response_model=GitHubConnectionOut | None)
-async def github_status(current_user: CurrentUserDep, db: DbDep) -> GitHubConnectionOut | None:
+async def github_status(current_user: OwnerOrAdminDep, db: DbDep) -> GitHubConnectionOut | None:
     result = await db.execute(
         select(GitHubConnection).where(GitHubConnection.business_id == current_user.business)
     )
@@ -261,7 +261,7 @@ def _email_out(c: EmailSendConnection) -> EmailConnectionOut:
 
 
 @router.get("/email-connection", response_model=EmailConnectionOut | None)
-async def email_connection_status(current_user: CurrentUserDep, db: DbDep) -> EmailConnectionOut | None:
+async def email_connection_status(current_user: OwnerOrAdminDep, db: DbDep) -> EmailConnectionOut | None:
     """
     Also re-polls Postmark for a not-yet-verified signature, so the
     settings screen reflects a confirmation click without a separate
@@ -354,7 +354,7 @@ def _stripe_webhook_url(webhook_token: str) -> str:
 
 
 @router.get("/stripe", response_model=StripeConnectionOut | None)
-async def stripe_status(current_user: CurrentUserDep, db: DbDep) -> StripeConnectionOut | None:
+async def stripe_status(current_user: OwnerOrAdminDep, db: DbDep) -> StripeConnectionOut | None:
     result = await db.execute(
         select(StripeConnection).where(StripeConnection.business_id == current_user.business)
     )
@@ -480,7 +480,7 @@ def _validate_format(fmt: str) -> None:
 
 
 @router.get("/webhooks", response_model=list[WebhookOut])
-async def list_webhooks(current_user: CurrentUserDep, db: DbDep) -> list[WebhookOut]:
+async def list_webhooks(current_user: OwnerOrAdminDep, db: DbDep) -> list[WebhookOut]:
     result = await db.execute(
         select(OutboundWebhook).where(OutboundWebhook.business_id == current_user.business)
     )
@@ -556,7 +556,7 @@ def _api_key_out(k: ApiKey, *, reveal: str | None = None) -> ApiKeyOut:
 
 
 @router.get("/api-keys", response_model=list[ApiKeyOut])
-async def list_api_keys(current_user: CurrentUserDep, db: DbDep) -> list[ApiKeyOut]:
+async def list_api_keys(current_user: OwnerOrAdminDep, db: DbDep) -> list[ApiKeyOut]:
     result = await db.execute(select(ApiKey).where(ApiKey.business_id == current_user.business))
     return [_api_key_out(k) for k in result.scalars().all()]
 

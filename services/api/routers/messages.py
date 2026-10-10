@@ -53,6 +53,7 @@ from shared.db.models import (
     TemplateStatus,
 )
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
+from shared.audit import activity
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -194,6 +195,7 @@ async def send_text(
     """
     try:
         to = normalise_phone(body.to)
+        activity.note(to=activity.mask_phone(to), channel="whatsapp")
     except InvalidIdentifier as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -251,6 +253,7 @@ async def send_template(
     """
     try:
         to = normalise_phone(body.to)
+        activity.note(to=activity.mask_phone(to), channel="whatsapp")
     except InvalidIdentifier as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

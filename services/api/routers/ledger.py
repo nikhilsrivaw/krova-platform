@@ -26,7 +26,7 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
 from shared.db.models import (
@@ -788,7 +788,7 @@ async def import_customers(
 
 @router.get("/export/tally")
 async def export_tally_receipts(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     date_from: datetime | None = Query(default=None, alias="from"),
     date_to: datetime | None = Query(default=None, alias="to"),

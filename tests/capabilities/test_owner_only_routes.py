@@ -83,6 +83,25 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/email-leads/token"), ("POST", "/zoho/sync"), ("DELETE", "/zoho/connection"),
 ]}
 
+# What staff may not READ either: business-wide numbers and money, the voice KYC
+# file, and the integration screens (webhook URLs and keys often carry secrets).
+LOCKED_READS = {(m, _P + path) for m, path in [
+    ("GET", "/analytics/overview"), ("GET", "/analytics/team"), ("GET", "/analytics/agent"),
+    ("GET", "/analytics/kept"), ("GET", "/analytics/channels"), ("GET", "/analytics/response-speed"),
+    ("GET", "/analytics/receivables"), ("GET", "/analytics/trust-report"),
+    ("GET", "/ledger/export/tally"),
+    ("GET", "/migration/whatsapp/readiness"),
+    ("GET", "/voice-onboarding/compliance/state"), ("GET", "/voice-onboarding/compliance/requirements"),
+    ("GET", "/voice-onboarding/compliance/status"), ("GET", "/voice-onboarding/numbers/owned"),
+    ("GET", "/voice-onboarding/numbers/search"), ("GET", "/voice-onboarding/number-requests"),
+    ("GET", "/voice-onboarding/number-requests/all"),
+    ("GET", "/integrations/google-calendar"), ("GET", "/integrations/github"),
+    ("GET", "/integrations/email-connection"), ("GET", "/integrations/stripe"),
+    ("GET", "/integrations/webhooks"), ("GET", "/integrations/api-keys"),
+    # the owner's record of what each person did
+    ("GET", "/team/activity"), ("GET", "/team/activity/summary"),
+]}
+
 # What staff do all day - one customer at a time - must stay open to them.
 OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/messages/text"), ("POST", "/messages/template"), ("POST", "/messages/interactive-buttons"),
@@ -96,6 +115,8 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/templates/sync"),
     ("POST", "/knowledge"),
     ("POST", "/queue/check-in"),
+    ("GET", "/conversations"), ("GET", "/ledger/commitments"), ("GET", "/team"),
+    ("GET", "/escalations"), ("GET", "/voice-onboarding/logs"),
 ]}
 
 
@@ -113,7 +134,7 @@ def _guarded_routes():
 
 
 def test_every_sensitive_route_requires_the_owner_or_an_admin():
-    missing = LOCKED - _guarded_routes()
+    missing = (LOCKED | LOCKED_READS) - _guarded_routes()
     assert not missing, f"no owner/admin guard on: {sorted(missing)}"
 
 

@@ -123,7 +123,7 @@ class ComplianceStateOut(BaseModel):
 
 
 @router.get("/compliance/state", response_model=ComplianceStateOut)
-async def compliance_state(current_user: CurrentUserDep, db: DbDep) -> ComplianceStateOut:
+async def compliance_state(current_user: OwnerOrAdminDep, db: DbDep) -> ComplianceStateOut:
     """
     Everything the KYC wizard needs to redraw itself correctly after a page
     reload, before any application has been submitted (applicationStatus
@@ -154,7 +154,7 @@ class RequirementOut(BaseModel):
 
 @router.get("/compliance/requirements", response_model=RequirementOut)
 async def get_requirements(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     country_iso2: str = "IN",
     number_type: str = "local",
@@ -309,7 +309,7 @@ async def submit_application(body: ApplicationIn, current_user: OwnerOrAdminDep,
 
 
 @router.get("/compliance/status", response_model=ApplicationOut)
-async def compliance_status(current_user: CurrentUserDep, db: DbDep) -> ApplicationOut:
+async def compliance_status(current_user: OwnerOrAdminDep, db: DbDep) -> ApplicationOut:
     """
     Poll Plivo for a decision and sync it into our own record.
 
@@ -385,7 +385,7 @@ class OwnedNumberOut(BaseModel):
 
 
 @router.get("/numbers/owned", response_model=list[OwnedNumberOut])
-async def list_owned_numbers(current_user: CurrentUserDep, db: DbDep) -> list[OwnedNumberOut]:
+async def list_owned_numbers(current_user: OwnerOrAdminDep, db: DbDep) -> list[OwnedNumberOut]:
     """
     Every number Plivo says this subaccount owns, cross-checked against
     Krova's own ChannelConnection rows - see plivo_client.list_owned_numbers's
@@ -425,7 +425,7 @@ async def list_owned_numbers(current_user: CurrentUserDep, db: DbDep) -> list[Ow
 
 @router.get("/numbers/search")
 async def search_numbers(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     country_iso: str = "IN",
     number_type: str = "local",
@@ -1097,7 +1097,7 @@ async def create_number_request(
 
 
 @router.get("/number-requests", response_model=list[NumberRequestOut])
-async def list_own_number_requests(current_user: CurrentUserDep, db: DbDep) -> list[NumberRequestOut]:
+async def list_own_number_requests(current_user: OwnerOrAdminDep, db: DbDep) -> list[NumberRequestOut]:
     rows = (
         await db.execute(
             select(NumberRequest)
@@ -1109,7 +1109,7 @@ async def list_own_number_requests(current_user: CurrentUserDep, db: DbDep) -> l
 
 
 @router.get("/number-requests/all", response_model=list[NumberRequestOut])
-async def list_all_number_requests(current_user: CurrentUserDep, db: DbDep) -> list[NumberRequestOut]:
+async def list_all_number_requests(current_user: OwnerOrAdminDep, db: DbDep) -> list[NumberRequestOut]:
     """The platform operator's own queue - every business's requests, not just current_user's."""
     _require_platform_admin(current_user)
     rows = (

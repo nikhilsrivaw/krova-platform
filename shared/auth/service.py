@@ -28,6 +28,7 @@ from shared.db.models import (
     RefreshToken,
     User,
 )
+from shared.audit import activity
 from shared.verticals import seed_dna
 from shared.utils.logging import get_logger
 
@@ -67,9 +68,14 @@ def _now() -> datetime:
 
 
 async def _issue_session(
-    user: User, business: Business | None, role: str | None, db: AsyncSession
+    user: User, business: Business | None, role: str | None, db: AsyncSession,
+    *, record_login: bool = True,
 ) -> Session:
     """Mint an access token and persist a refresh token for this sign-in."""
+    if record_login:
+        # The one place every way of signing in passes through. A refresh is not
+        # a new sign-in (resume_session passes record_login=False).
+        activity.add_login(db, user=user, business=business, role=role)
     access = create_access_token(
         user.id,
         business_id=business.id if business else None,
@@ -303,7 +309,8 @@ async def login_via_google(email: str, full_name: str | None, db: AsyncSession) 
     membership = await _primary_membership(user.id, db)
     business, role = membership if membership else (None, None)
 
-    return await _issue_session(user, business, role, db)
+    # Not recorded here: the Google callback discards this session and the real sign-in is resume_session (the handoff exchange).
+    return await _issue_session(user, business, role, db, record_login=False)
 
 
 async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
@@ -385,7 +392,8 @@ async def refresh_session(refresh_token: str, db: AsyncSession) -> Session:
     membership = await _primary_membership(user.id, db)
     business, role = membership if membership else (None, None)
 
-    return await _issue_session(user, business, role, db)
+    # A refresh keeps an existing sign-in alive; it is not a new one.
+    return await _issue_session(user, business, role, db, record_login=False)
 
 
 async def revoke_session(refresh_token: str, db: AsyncSession) -> None:

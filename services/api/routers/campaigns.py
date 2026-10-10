@@ -43,6 +43,7 @@ from shared.db.models import (
     TemplateStatus,
     WhatsAppFlow,
 )
+from shared.audit import activity
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -699,6 +700,10 @@ async def send_campaign(
     logger.info(
         "campaign %s: %s sent, %s failed, %s held for tomorrow",
         campaign.id, campaign.sent_count, campaign.failed_count, held_back,
+    )
+    activity.note(
+        recipients=campaign.recipients, sent=campaign.sent_count, failed=campaign.failed_count,
+        held_for_tomorrow=held_back, template=campaign.template_name,
     )
     return _out(campaign)
 

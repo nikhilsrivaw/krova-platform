@@ -42,6 +42,7 @@ from shared.db.models import (
     ChannelConnection,
     ConnectionStatus,
 )
+from shared.audit import activity
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -348,6 +349,7 @@ async def send_call_campaign(campaign_id: uuid.UUID, current_user: OwnerOrAdminD
             "call_campaign_dial", {"recipient_id": str(row.id)}, db
         )
 
+    activity.note(recipients=len(result.recipients), skipped=len(result.skipped), purpose=campaign.purpose)
     campaign.recipients = len(result.recipients)
     campaign.sent_count = len(result.recipients)  # jobs enqueued - see CallCampaign.sent_count's own docstring
     campaign.skipped_count = len(result.skipped)

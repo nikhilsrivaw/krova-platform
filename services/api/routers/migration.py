@@ -106,7 +106,7 @@ def _fail(exc: meta.MigrationError) -> HTTPException:
 
 
 @router.get("/readiness", response_model=ReadinessOut)
-async def readiness(current_user: CurrentUserDep, db: DbDep) -> ReadinessOut:
+async def readiness(current_user: OwnerOrAdminDep, db: DbDep) -> ReadinessOut:
     """
     What has to be true before starting, and who fixes each one.
 

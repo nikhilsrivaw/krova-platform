@@ -36,6 +36,7 @@ from shared.db.models import (
     Message,
     MessageDraft,
 )
+from shared.audit import activity
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -212,6 +213,10 @@ async def approve(
     except DraftSendError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    activity.note(
+        edited=draft.edited_body is not None, with_carousel=bool((draft.extra or {}).get("carousel_sent")),
+        channel=draft.channel,
+    )
     logger.info(
         "draft approved and sent business=%s draft=%s edited=%s",
         current_user.business,

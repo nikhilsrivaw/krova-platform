@@ -25,7 +25,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.care import response_metrics
 from shared.db.models import (
     BusinessMember,
@@ -164,7 +164,7 @@ def _money(paise: int) -> str:
 
 
 @router.get("/receivables", response_model=Receivables)
-async def receivables(current_user: CurrentUserDep, db: DbDep) -> Receivables:
+async def receivables(current_user: OwnerOrAdminDep, db: DbDep) -> Receivables:
     """
     What you are owed, by how late it is.
 
@@ -255,7 +255,7 @@ async def receivables(current_user: CurrentUserDep, db: DbDep) -> Receivables:
 
 @router.get("/kept", response_model=Kept)
 async def kept_promises(
-    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=90, le=365)
+    current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=90, le=365)
 ) -> Kept:
     """
     Whether the business keeps its own word.
@@ -315,7 +315,7 @@ async def kept_promises(
 
 @router.get("/channels", response_model=list[ChannelActivity])
 async def channel_activity(
-    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+    current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> list[ChannelActivity]:
     """
     Where business actually happens.
@@ -358,7 +358,7 @@ async def channel_activity(
 
 @router.get("/response-speed", response_model=ResponseSpeed)
 async def response_speed(
-    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+    current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> ResponseSpeed:
     """
     How fast this business replies, and what it costs them when they don't.
@@ -409,7 +409,7 @@ async def response_speed(
 
 @router.get("/agent", response_model=AgentPerformance)
 async def agent_performance(
-    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+    current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> AgentPerformance:
     """
     How the agent is doing, measured honestly.
@@ -483,7 +483,7 @@ async def agent_performance(
 
 @router.get("/trust-report", response_model=TrustReport)
 async def trust_report(
-    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+    current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> TrustReport:
     """
     Real evidence, not a marketing claim - see TrustReport's own
@@ -533,7 +533,7 @@ async def trust_report(
 
 @router.get("/team", response_model=TeamPerformance)
 async def team_performance(
-    current_user: CurrentUserDep, db: DbDep, days: int = Query(default=30, le=365)
+    current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> TeamPerformance:
     """
     How the humans on this business's team are actually doing - not the AI.
@@ -639,7 +639,7 @@ async def team_performance(
 
 
 @router.get("/overview")
-async def overview(current_user: CurrentUserDep, db: DbDep) -> dict:
+async def overview(current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     """
     The one call a dashboard makes.
 
