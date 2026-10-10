@@ -37,6 +37,7 @@ def make(staff="919999900000"):
 
     route = SimpleNamespace(
         business_id="b", staff_phone_number=staff, connection_id="c", greeting="hi",
+        keypad_menu=None, language="en-IN",
     )
     pipe = CallPipeline(
         route=route, caller_phone="+91 90000 00000", provider_call_id="call-1",
@@ -234,3 +235,135 @@ def test_a_call_over_the_time_limit_is_ended(monkeypatch):
 
     assert "time limit" in spoken[0]
     assert state.ended == 1
+
+
+# ── the keypad menu a business builds ───────────────────────────────────────
+
+from shared.channels.voice import keypad_menu as km  # noqa: E402
+
+
+def _digits(n):
+    return "".join(ch for ch in n if ch.isdigit())
+
+
+def _menu(**over):
+    base = {
+        "enabled": True, "intro": "",
+        "options": [
+            {"digit": "1", "label": "our team", "action": "transfer", "number": "98100 00001"},
+            {"digit": "2", "label": "our address", "action": "say", "message": "We are at 12 Market Road."},
+            {"digit": "0", "label": "the owner", "action": "transfer", "number": "98100 00002"},
+        ],
+    }
+    base.update(over)
+    return base
+
+
+def test_menu_is_cleaned_and_numbers_normalised():
+    menu = km.clean(_menu(), _digits)
+    assert [o["digit"] for o in menu["options"]] == ["1", "2", "0"]
+    assert menu["options"][0]["number"] == "9810000001"
+
+
+@pytest.mark.parametrize("change,fragment", [
+    ({"options": []}, "at least one key"),
+    ({"options": [{"digit": "x", "label": "a", "action": "ai"}]}, "single digit"),
+    ({"options": [{"digit": "1", "label": "a", "action": "ai"}, {"digit": "1", "label": "b", "action": "ai"}]}, "twice"),
+    ({"options": [{"digit": "1", "label": "", "action": "ai"}]}, "short name"),
+    ({"options": [{"digit": "1", "label": "a", "action": "transfer"}]}, "phone number"),
+    ({"options": [{"digit": "1", "label": "a", "action": "say"}]}, "what the agent should say"),
+    ({"options": [{"digit": "1", "label": "a", "action": "fly"}]}, "what the key does"),
+])
+def test_bad_menus_are_refused_with_a_readable_reason(change, fragment):
+    with pytest.raises(km.MenuError) as err:
+        km.clean(_menu(**change), _digits)
+    assert fragment in str(err.value)
+
+
+def test_prompt_is_built_from_the_keys_unless_the_owner_wrote_their_own():
+    menu = km.clean(_menu(), _digits)
+    text = km.spoken_prompt(menu)
+    assert "Press 1 for our team." in text and "Press 2 for our address." in text
+    assert text.endswith("Or just tell me how I can help.")
+    menu["intro"] = "Dial 1 for sales."
+    assert km.spoken_prompt(menu) == "Dial 1 for sales."
+    assert km.spoken_prompt({"enabled": False, "options": menu["options"]}) == ""
+
+
+def _with_menu(menu):
+    pipe, spoken, state = make()
+    pipe.route.keypad_menu = km.clean(menu, _digits)
+    pipe.route.language = "en-IN"
+    return pipe, spoken, state
+
+
+def test_greeting_announces_the_menu():
+    pipe, spoken, _ = _with_menu(_menu())
+    asyncio.run(pipe.start())
+    assert spoken[0].startswith("hi Press 1 for our team.")
+
+
+def test_menu_key_transfers_to_that_keys_own_number(monkeypatch):
+    pipe, spoken, _ = _with_menu(_menu())
+    seen = {}
+
+    async def fake_try(self, target=None):
+        seen["target"] = target
+        return True
+
+    monkeypatch.setattr(CallPipeline, "_try_transfer", fake_try)
+    monkeypatch.setattr(agent := __import__("shared.ai.agent", fromlist=["x"]), "notify_escalation",
+                        lambda *a, **k: asyncio.sleep(0))
+
+    async def go():
+        await pipe.on_dtmf("1")
+        await pipe._reply_task
+
+    asyncio.run(go())
+    assert seen["target"] == "9810000001"
+    assert spoken[0] == "Connecting you to our team. One moment."
+
+
+def test_menu_key_can_just_read_a_message():
+    pipe, spoken, state = _with_menu(_menu())
+
+    async def go():
+        await pipe.on_dtmf("2")
+        await pipe._reply_task
+
+    asyncio.run(go())
+    assert spoken == ["We are at 12 Market Road."]
+    assert state.ended == 0
+
+
+def test_a_key_the_menu_does_not_use_is_answered_not_ignored():
+    pipe, spoken, _ = _with_menu(_menu())
+
+    async def go():
+        await pipe.on_dtmf("7")
+        await pipe._reply_task
+
+    asyncio.run(go())
+    assert spoken == ["Sorry, that option isn't available."]
+
+
+def test_with_no_menu_only_zero_does_anything():
+    pipe, spoken, _ = make()
+    calls = []
+
+    async def fake_transfer(self, **kw):
+        calls.append("t")
+
+    async def go():
+        CallPipeline.request_transfer = fake_transfer
+        await pipe.on_dtmf("5")
+        assert pipe._reply_task is None
+        await pipe.on_dtmf("0")
+        await pipe._reply_task
+
+    original = CallPipeline.request_transfer
+    try:
+        asyncio.run(go())
+    finally:
+        CallPipeline.request_transfer = original
+    assert calls == ["t"] and spoken == []

@@ -171,6 +171,7 @@ for _m, _p, _a, _s in [
     ("POST", "/voice-onboarding/compliance/resubmit", "voice_setup", "Resubmitted the voice KYC application"),
     ("POST", "/voice-onboarding/numbers/buy", "number_bought", "Bought a phone number"),
     ("POST", "/voice-onboarding/numbers/{number}/release", "number_released", "Released a phone number"),
+    ("PUT", "/voice-onboarding/keypad-menu", "keypad_menu_changed", "Changed the phone keypad menu"),
     ("PATCH", "/voice-onboarding/agent-settings", "voice_agent_changed", "Changed the voice agent's settings"),
     ("POST", "/voice-onboarding/number-requests", "voice_setup", "Requested a phone number"),
     ("PATCH", "/voice-onboarding/number-requests/{request_id}", "voice_setup", "Updated a phone number request"),

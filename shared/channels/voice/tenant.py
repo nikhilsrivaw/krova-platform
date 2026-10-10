@@ -117,6 +117,8 @@ class VoiceRoute:
     # see relay.py's own use of this for the owner voice interface. None
     # (the default) means no owner number is configured, same as today.
     owner_phone: str | None
+    # The business's keypad menu (shared/channels/voice/keypad_menu.py), or None.
+    keypad_menu: dict | None = None
 
 
 def _build_route(business: Business, connection: ChannelConnection) -> VoiceRoute:
@@ -137,6 +139,7 @@ def _build_route(business: Business, connection: ChannelConnection) -> VoiceRout
         copilot_mode=bool(extra.get("copilot_mode", False)),
         copilot_live_suggestions=bool(extra.get("copilot_live_suggestions", False)),
         owner_phone=business.owner_phone,
+        keypad_menu=extra.get("keypad_menu") or None,
     )
 
 

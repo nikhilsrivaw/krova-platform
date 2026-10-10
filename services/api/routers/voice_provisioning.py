@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
-from shared.channels.voice import compliance, plivo_client, sarvam
+from shared.channels.voice import compliance, keypad_menu, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
 from shared.channels.voice.tenant import (
     FEMALE_SPEAKERS,
@@ -790,6 +790,58 @@ async def get_agent_settings(current_user: CurrentUserDep, db: DbDep) -> AgentSe
     connection = await _voice_connection(current_user.business, db)
     business = await db.get(Business, current_user.business)
     return _agent_settings_out(connection, business)
+
+
+class KeypadOptionIO(BaseModel):
+    digit: str
+    label: str
+    action: str  # transfer | say | ai
+    number: str | None = None
+    message: str | None = None
+
+
+class KeypadMenuIO(BaseModel):
+    enabled: bool = False
+    intro: str = ""
+    options: list[KeypadOptionIO] = []
+
+
+class KeypadMenuOut(KeypadMenuIO):
+    # What a caller will hear after the greeting, so the owner can read it back.
+    preview: str = ""
+
+
+def _menu_out(connection: ChannelConnection) -> KeypadMenuOut:
+    extra = connection.extra or {}
+    menu = extra.get("keypad_menu") or {"enabled": False, "intro": "", "options": []}
+    return KeypadMenuOut(
+        enabled=bool(menu.get("enabled")),
+        intro=menu.get("intro") or "",
+        options=[KeypadOptionIO(**o) for o in menu.get("options") or []],
+        preview=keypad_menu.spoken_prompt(menu, extra.get("language", "en-IN")),
+    )
+
+
+@router.get("/keypad-menu", response_model=KeypadMenuOut)
+async def get_keypad_menu(current_user: OwnerOrAdminDep, db: DbDep) -> KeypadMenuOut:
+    return _menu_out(await _voice_connection(current_user.business, db))
+
+
+@router.put("/keypad-menu", response_model=KeypadMenuOut)
+async def put_keypad_menu(body: KeypadMenuIO, current_user: OwnerOrAdminDep, db: DbDep) -> KeypadMenuOut:
+    """Replace the whole menu: the screen always sends every key, so what you see is what is stored."""
+    connection = await _voice_connection(current_user.business, db)
+    try:
+        menu = keypad_menu.clean(body.model_dump(), normalise_phone)
+    except keypad_menu.MenuError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    connection.extra = {**(connection.extra or {}), "keypad_menu": menu}
+    await db.commit()
+    logger.info(
+        "voice keypad menu saved business=%s enabled=%s keys=%s",
+        current_user.business, menu["enabled"], [o["digit"] for o in menu["options"]],
+    )
+    return _menu_out(connection)
 
 
 class AgentSettingsIn(BaseModel):

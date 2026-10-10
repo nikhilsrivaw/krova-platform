@@ -41,7 +41,7 @@ from shared.ai import context as agent_context
 from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels import ingest
-from shared.channels.voice import plivo_client
+from shared.channels.voice import keypad_menu, plivo_client
 from shared.channels.voice.tenant import VoiceRoute
 from shared.config.settings import settings
 from shared.db.models import (
@@ -323,7 +323,12 @@ class CallPipeline:
             finally:
                 self._opening_protected = False
             return
-        await self._say_stream(_single_chunk(self.route.greeting), record=True)
+        greeting = self.route.greeting
+        if self.mode == "customer":
+            prompt = keypad_menu.spoken_prompt(self.route.keypad_menu, self.route.language)
+            if prompt:
+                greeting = f"{greeting} {prompt}"
+        await self._say_stream(_single_chunk(greeting), record=True)
 
     async def on_transcript(self, text: str, *, is_final: bool, language: str | None = None) -> None:
         """
@@ -1066,11 +1071,37 @@ class CallPipeline:
 
     async def on_dtmf(self, digit: str) -> None:
         """Keypad 0 means "a person". Stop whatever is being said first, then transfer."""
-        if digit != "0":
+        menu = self.route.keypad_menu if self.mode == "customer" else None
+        option = keypad_menu.option_for(menu, digit)
+        if option is None and digit != "0" and not keypad_menu.is_live(menu):
             return
         self._last_activity = time.monotonic()
         await self._barge_in()
-        self._reply_task = asyncio.create_task(self.request_transfer())
+        if option is None and digit != "0":
+            # A key the menu does not use: say so rather than leave the caller in silence.
+            self._reply_task = asyncio.create_task(
+                self._say_stream(_single_chunk("Sorry, that option isn't available."), record=False)
+            )
+            return
+        if option is None:
+            # 0 with no key of its own keeps its original meaning: reach a person.
+            self._reply_task = asyncio.create_task(self.request_transfer())
+            return
+        logger.info("voice menu key call=%s digit=%s action=%s", self.provider_call_id, digit, option["action"])
+        if option["action"] == "transfer":
+            self._reply_task = asyncio.create_task(self.request_transfer(
+                number=option["number"],
+                reason=f"Caller pressed {digit}: {option['label']}",
+                line=f"Connecting you to {option['label']}. One moment.",
+            ))
+        elif option["action"] == "say":
+            self._reply_task = asyncio.create_task(
+                self._say_stream(_single_chunk(option["message"]), record=True)
+            )
+        else:
+            self._reply_task = asyncio.create_task(
+                self._say_stream(_single_chunk("Sure, go ahead. I'm listening."), record=False)
+            )
 
     async def _say_goodbye(self, line: str) -> bool:
         """Say a closing line, let it play out, then end the call. False if the caller spoke over it."""
@@ -1117,7 +1148,9 @@ class CallPipeline:
                     return
                 self._idle_prompted = False
 
-    async def request_transfer(self) -> None:
+    async def request_transfer(
+        self, *, number: str | None = None, reason: str | None = None, line: str | None = None,
+    ) -> None:
         """
         The caller pressed the keypad's escape-hatch digit (0) asking for a
         person, independent of anything the AI itself decided - Plivo
@@ -1141,26 +1174,27 @@ class CallPipeline:
             call_row = await self.db.get(Call, self.call_row_id)
             if call_row is not None:
                 call_row.escalated = True
-                call_row.escalation_reason = "Caller asked to reach a person"
+                call_row.escalation_reason = reason or "Caller asked to reach a person"
 
         await agent_module.notify_escalation(
-            self.route.business_id, reason="Caller asked to reach a person",
+            self.route.business_id, reason=reason or "Caller asked to reach a person",
             customer_id=self.customer_id, channel="voice", db=self.db,
         )
 
-        if self.route.staff_phone_number:
+        target = number or self.route.staff_phone_number
+        if target:
             # Speak first, then wait for the line to finish playing: the
             # transfer cuts the audio stream, so anything not yet heard is lost.
             self._audio_bytes_sent = 0
             self._audio_started_at = None
             await self._say_stream(
                 _single_chunk(
-                    "Let me connect you to someone who can help with that right now."
+                    line or "Let me connect you to someone who can help with that right now."
                 ),
                 record=True,
             )
             await self._wait_for_line_playback()
-            if await self._try_transfer():
+            if await self._try_transfer(target):
                 return
 
         await self._say_stream(
@@ -1195,7 +1229,7 @@ class CallPipeline:
         last = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
         return bool(_PERSON_REQUEST.search(last or "") or _CONTACT_REQUEST.search(last or ""))
 
-    async def _try_transfer(self) -> bool:
+    async def _try_transfer(self, target: str | None = None) -> bool:
         """
         Ask Plivo to bridge this live call to the business's configured
         staff number, via its Live Call Modification API.
@@ -1229,7 +1263,7 @@ class CallPipeline:
 
         aleg_url = (
             f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?"
-            f"{urlencode({'number': f'+{self.route.staff_phone_number}'})}"
+            f"{urlencode({'number': f'+{target or self.route.staff_phone_number}'})}"
         )
         try:
             await plivo_client.transfer_call(
@@ -1244,7 +1278,7 @@ class CallPipeline:
 
         logger.info(
             "call transfer triggered call=%s to=+%s",
-            self.provider_call_id, self.route.staff_phone_number,
+            self.provider_call_id, target or self.route.staff_phone_number,
         )
         if self.end_stream is not None:
             await self.end_stream()
