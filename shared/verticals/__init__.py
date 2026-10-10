@@ -69,8 +69,21 @@ def available() -> list[dict[str, str]]:
     already on it. They are hidden here, still loadable, and migrated
     deliberately rather than by removal.
     """
+    from shared.verticals.capability_info import SWITCHABLE
+
     return [
-        {"key": t["key"], "label": t["label"], "summary": t["summary"]}
+        {
+            "key": t["key"],
+            "label": t["label"],
+            "summary": t["summary"],
+            # What this type switches on, in the owner's words - so the screen
+            # that asks "what kind of business are you?" can also say what that
+            # answer gives them. Only the modules an owner can see and switch;
+            # conversation_intelligence is on for everyone.
+            "features": [
+                SWITCHABLE[cap].label for cap in t.get("capabilities", []) if cap in SWITCHABLE
+            ],
+        }
         for t in sorted(_load_all().values(), key=lambda t: t["key"] != FALLBACK)
         if t.get("selectable", True)
     ]

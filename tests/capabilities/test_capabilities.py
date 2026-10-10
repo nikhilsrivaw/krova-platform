@@ -169,3 +169,13 @@ def test_no_capability_a_template_declares_is_missing_from_the_features_list():
     assert declared - {"conversation_intelligence"} <= set(SWITCHABLE), (
         declared - {"conversation_intelligence"} - set(SWITCHABLE)
     )
+
+
+def test_the_type_picker_says_what_each_type_includes():
+    by_key = {v["key"]: v for v in verticals.available()}
+
+    assert by_key["b2b"]["features"] == ["Quotations", "Product feedback loop"]
+    assert "Walk-in queue" in by_key["local_service"]["features"]
+    assert "Appointments & staff calendar" in by_key["programs"]["features"]
+    assert "Orders & products" in by_key["commerce"]["features"]
+    assert all(isinstance(v["features"], list) for v in by_key.values())
