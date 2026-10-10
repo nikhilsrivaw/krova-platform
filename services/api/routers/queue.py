@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared import verticals
+from shared.commands.tools import WRITE_ROLES
 from shared.db.models import Business, Customer, IntakeChannel, QueueEntry, QueueStatus, Shift, ShiftSession
 from shared.integrations import google_calendar
 from shared.scheduling import notify, queue_booking
@@ -123,16 +124,16 @@ async def update_queue_settings(
     auth.py's UpdateMeRequest already gives: Business.settings is the
     storage, not an arbitrary-JSONB write surface.
     """
+    if current_user.role not in WRITE_ROLES:
+        # It adds or removes the whole Queue module and renames its words -
+        # configuration, so the owner's or an admin's, like every other
+        # write that changes how the business runs.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner or an admin can change queue settings.")
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
 
     settings = {**(business.settings or {})}
-
-    if body.enabled is not None:
-        overrides = dict(settings.get("capability_overrides") or {})
-        overrides["opd_queue"] = body.enabled
-        settings["capability_overrides"] = overrides
 
     queue_cfg = dict(settings.get("queue") or {})
     if body.labels is not None:
@@ -148,6 +149,10 @@ async def update_queue_settings(
         settings["queue"] = queue_cfg
 
     business.settings = settings
+    if body.enabled is not None:
+        # After the settings assignment above: set_capability works on
+        # business.settings, so it has to see the queue config already in it.
+        verticals.set_capability(business, "opd_queue", body.enabled)
     await db.commit()
     logger.info("queue settings updated for business=%s", current_user.business)
     return _settings_out(business)

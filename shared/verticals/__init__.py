@@ -119,6 +119,36 @@ def capabilities_for(business: "Business") -> list[str]:
     return caps
 
 
+def template_capabilities(business: "Business") -> list[str]:
+    """What this business's vertical starts with, before any of its own overrides."""
+    return list(get(business.vertical).get("capabilities", []))
+
+
+def set_capability(business: "Business", capability: str, enabled: bool) -> None:
+    """
+    Switch one capability on or off for this business.
+
+    Stored as an override, and an override that merely repeats what the
+    vertical already gives is removed rather than kept - otherwise the day
+    the business changes its vertical, a stale "off" would silently pin down
+    a capability its new vertical was meant to bring.
+
+    Assigns a fresh `settings` dict: Business.settings is a JSONB column, and
+    SQLAlchemy only notices a change when the attribute is reassigned.
+    """
+    settings = dict(business.settings or {})
+    overrides = dict(settings.get("capability_overrides") or {})
+    if enabled == (capability in template_capabilities(business)):
+        overrides.pop(capability, None)
+    else:
+        overrides[capability] = enabled
+    if overrides:
+        settings["capability_overrides"] = overrides
+    else:
+        settings.pop("capability_overrides", None)
+    business.settings = settings
+
+
 def has_capability(business: "Business", capability: str) -> bool:
     """
     Whether this business gets a given capability - Scheduling, Voice
@@ -132,6 +162,58 @@ def has_capability(business: "Business", capability: str) -> bool:
     knowing or caring which vertical it is.
     """
     return capability in capabilities_for(business)
+
+
+def apply_vertical_change(business: "Business", dna, new_key: str) -> bool:
+    """
+    Move a business to another vertical and keep everything that follows from
+    it consistent. Returns True if the vertical actually changed.
+
+    Changing `business.vertical` alone used to leave the business half in the
+    old type and half in the new: capabilities, labels and escalate-keywords
+    are read from the template on every request and switch at once, while the
+    AI's own summary, tone and policies live in BusinessDNA, which was seeded
+    once at signup and never again. The agent then followed the old type's
+    rules with the new type's keywords.
+
+    So the template-owned parts of the DNA are re-seeded from the new
+    template - summary, tone, policies and the template's known gaps. What the
+    business or the system added is left alone: the gaps learned from real
+    escalations, offerings, pricing notes and opening hours. A DNA whose
+    `source` is no longer "template" has been edited by a person and is not
+    touched at all.
+
+    Capability overrides that merely repeat the new vertical's default are
+    dropped, for the same reason set_capability drops them.
+    """
+    if business.vertical == new_key:
+        return False
+    get(new_key)  # raises UnknownVertical before anything is changed
+    business.vertical = new_key
+
+    defaults = set(get(new_key).get("capabilities", []))
+    settings = dict(business.settings or {})
+    overrides = {
+        cap: enabled
+        for cap, enabled in (settings.get("capability_overrides") or {}).items()
+        if enabled != (cap in defaults)
+    }
+    if overrides:
+        settings["capability_overrides"] = overrides
+    else:
+        settings.pop("capability_overrides", None)
+    business.settings = settings
+
+    if dna is not None and dna.source == "template":
+        seed = seed_dna(new_key)
+        dna.summary = seed["summary"]
+        dna.tone = seed["tone"]
+        dna.policies = seed["policies"]
+        known = dict(dna.known_gaps or {})
+        known["from_template"] = seed["known_gaps"]["from_template"]
+        known.setdefault("learned", [])
+        dna.known_gaps = known
+    return True
 
 
 def seed_dna(key: str) -> dict:

@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.channels.send_draft import DraftSendError, send_draft
+from shared.commands.tools import WRITE_ROLES
 from shared.db.models import (
     Business,
     Customer,
@@ -266,6 +267,10 @@ async def set_autonomy(
     public promise is human-in-the-loop, so moving off `draft` has to be a
     decision someone made, with a record of when.
     """
+    if current_user.role not in WRITE_ROLES:
+        # The autonomy level decides what the AI may do to customers without a person
+        # looking - the owner's or an admin's call, not any team member's.
+        raise HTTPException(status_code=403, detail="Only the owner or an admin can change how much the AI does on its own.")
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -341,6 +346,10 @@ async def get_auto_send_rules(current_user: CurrentUserDep, db: DbDep) -> AutoSe
 async def update_auto_send_rules(
     body: AutoSendRulesIn, current_user: CurrentUserDep, db: DbDep
 ) -> AutoSendRulesOut:
+    if current_user.role not in WRITE_ROLES:
+        # The auto-send rules decide what the AI may do to customers without a person
+        # looking - the owner's or an admin's call, not any team member's.
+        raise HTTPException(status_code=403, detail="Only the owner or an admin can change the auto-send rules.")
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status_code=404, detail="Business not found")

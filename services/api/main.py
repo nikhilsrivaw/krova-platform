@@ -23,6 +23,7 @@ from services.api.routers import (
     call_campaigns,
     call_scripts,
     campaigns,
+    capabilities,
     canned_responses,
     commands,
     owner,
@@ -182,6 +183,7 @@ app.include_router(properties.router, prefix=API_PREFIX)
 app.include_router(cases.router, prefix=API_PREFIX)
 app.include_router(signals.router, prefix=API_PREFIX)
 app.include_router(queue.router, prefix=API_PREFIX)
+app.include_router(capabilities.router, prefix=API_PREFIX)
 app.include_router(insurance_claims.router, prefix=API_PREFIX)
 app.include_router(integrations.router, prefix=API_PREFIX)
 app.include_router(public_api.router, prefix=API_PREFIX)

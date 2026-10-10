@@ -23,8 +23,9 @@ from shared.auth.tokens import (
     decode_google_oauth_state,
 )
 from shared.config.settings import settings
-from shared.db.models import Business, User
+from shared.db.models import Business, BusinessDNA, User
 from shared import verticals
+from shared.commands.tools import WRITE_ROLES
 from shared.verticals import labels
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -541,11 +542,42 @@ async def update_me(
         if current_user.business_id
         else None
     )
+
+    if business is not None:
+        current_settings = business.settings or {}
+        # Settings' Save sends the whole form, business fields included, so the
+        # check is on what would actually CHANGE - otherwise a team member
+        # fixing their own name would be refused for re-sending the business
+        # name they did not touch.
+        changes_business = (
+            (body.business_name is not None and body.business_name != business.name)
+            or (body.vertical is not None and body.vertical != business.vertical)
+            or (
+                body.google_review_url is not None
+                and body.google_review_url != (current_settings.get("google_review_url") or "")
+            )
+            or (
+                body.proactive_deadline_calls_enabled is not None
+                and body.proactive_deadline_calls_enabled
+                != bool(current_settings.get("proactive_deadline_calls_enabled"))
+            )
+        )
+        if changes_business and current_user.role not in WRITE_ROLES:
+            # A person's own name is theirs to change; the business's name,
+            # type and settings are the owner's or an admin's - changing the
+            # type switches whole modules and the AI's rules for everyone.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the owner or an admin can change the business's details.",
+            )
+
     if business is not None:
         if body.business_name is not None:
             business.name = body.business_name
         if body.vertical is not None:
-            business.vertical = body.vertical
+            verticals.apply_vertical_change(
+                business, await db.get(BusinessDNA, business.id), body.vertical
+            )
         if body.google_review_url is not None:
             business.settings = {**(business.settings or {}), "google_review_url": body.google_review_url}
         if body.proactive_deadline_calls_enabled is not None:
