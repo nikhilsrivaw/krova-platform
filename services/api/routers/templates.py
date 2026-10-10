@@ -23,6 +23,7 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.ai import carousel_draft
 from shared.auth.encryption import decrypt
 from shared.channels.whatsapp import media_upload
+from shared.channels.whatsapp import template_service
 from shared.channels.whatsapp import templates as meta
 from shared.db.models import (
     Business,
@@ -292,40 +293,18 @@ async def create_template(
     draft = _draft(body)
 
     try:
-        name = meta.normalise_name(body.name)
-        result = await meta.TemplateClient(
-            decrypt(connection.access_token), waba_id
-        ).create(draft)
+        template = await template_service.submit(
+            db, business_id=current_user.business, connection=connection, waba_id=waba_id,
+            draft=draft,
+            extra=(
+                {"carousel_media_ids": [c.media_id for c in body.carousel_cards]}
+                if body.carousel_cards else {}
+            ),
+        )
     except meta.TemplateError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
-
-    now = datetime.now(timezone.utc)
-    template = MessageTemplate(
-        business_id=current_user.business,
-        connection_id=connection.id,
-        external_id=result.get("id"),
-        name=name,
-        language=body.language,
-        category=TemplateCategory(body.category),
-        # Meta returns its own status; anything other than APPROVED starts
-        # as pending review.
-        status=(
-            TemplateStatus.approved
-            if result.get("status") == "APPROVED"
-            else TemplateStatus.pending
-        ),
-        components=draft.to_components(),
-        body_text=body.body,
-        submitted_at=now,
-        extra=(
-            {"carousel_media_ids": [c.media_id for c in body.carousel_cards]}
-            if body.carousel_cards else {}
-        ),
-    )
-    db.add(template)
-    await db.flush()
     return _out(template)
 
 

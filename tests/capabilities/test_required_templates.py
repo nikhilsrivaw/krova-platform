@@ -1,0 +1,257 @@
+import asyncio
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
+os.environ.setdefault("JWT_SECRET", "test-secret")
+
+from fastapi import HTTPException  # noqa: E402
+
+from services.api.routers import capabilities as caps_router  # noqa: E402
+from shared.channels.whatsapp import required_templates as rt  # noqa: E402
+from shared.channels.whatsapp import template_service  # noqa: E402
+from shared.channels.whatsapp import templates as meta  # noqa: E402
+from shared.db.models import Channel, ClaimStatus, TemplateStatus  # noqa: E402
+from shared.scheduling import notify  # noqa: E402
+from shared.verticals.capability_info import SWITCHABLE  # noqa: E402
+
+VARIABLE = re.compile(r"\{\{\s*(\d+)\s*\}\}")
+
+
+# ── the catalogue is internally sound ───────────────────────────────────────
+
+@pytest.mark.parametrize("t", rt.CATALOGUE, ids=lambda t: t.name)
+def test_every_template_is_well_formed(t):
+    numbers = [int(n) for n in VARIABLE.findall(t.body)]
+    assert numbers == list(range(1, len(numbers) + 1)), "variables must appear as {{1}}, {{2}}, ... in order"
+    assert len(t.variables) == len(numbers) == len(t.examples)
+    assert not t.body.lstrip().startswith("{{") and not t.body.rstrip().endswith("}}"), (
+        "Meta refuses a body that starts or ends with a variable"
+    )
+    assert t.category in ("UTILITY", "MARKETING")
+    assert t.capability in SWITCHABLE
+    assert t.purpose and (t.one_click or t.note), "a template KROVA cannot create must say why"
+
+
+@pytest.mark.parametrize("t", [t for t in rt.CATALOGUE if t.one_click], ids=lambda t: t.name)
+def test_every_one_click_template_builds_valid_meta_components(t):
+    components = t.draft().to_components()  # also runs Meta's own length/shape checks
+    body = next(c for c in components if c["type"] == "BODY")
+    if t.examples:
+        assert body["example"]["body_text"] == [list(t.examples)]
+
+
+def test_only_real_promotions_are_filed_as_marketing():
+    marketing = {t.name for t in rt.CATALOGUE if t.category == "MARKETING"}
+    assert marketing == {"abandoned_cart_recovery", "repeat_purchase_nudge", "onboarding_nudge", "expansion_nudge"}
+
+
+def test_names_are_unique_and_are_ones_the_senders_really_look_for():
+    assert len(rt.BY_NAME) == len(rt.CATALOGUE)
+    constants = {
+        value for name, value in vars(notify).items()
+        if name.endswith("_TEMPLATE_NAME") and isinstance(value, str)
+    }
+    assert set(rt.BY_NAME) <= constants, set(rt.BY_NAME) - constants
+
+
+# ── drift guard: the wording has the variable count the sender passes ───────
+
+def _business():
+    return SimpleNamespace(
+        id=uuid.uuid4(), name="Sharma Clinic", vertical="local_service", settings=None,
+        timezone="Asia/Kolkata",
+    )
+
+
+def _customer():
+    return SimpleNamespace(id=uuid.uuid4(), display_name="Asha", preferred_language=None)
+
+
+class _MsgDb:
+    async def get(self, _model, _id):
+        return SimpleNamespace(channel=Channel.whatsapp)
+
+
+def test_every_template_has_the_variable_count_its_sender_passes(monkeypatch):
+    sent = {}
+
+    async def fake_send(db, *, business, customer, template_name, body_params, plain_text):
+        sent[template_name] = body_params
+        return True
+
+    monkeypatch.setattr(notify, "_send", fake_send)
+    biz, cust = _business(), _customer()
+    when = datetime(2026, 5, 12, 10, 0, tzinfo=timezone.utc)
+    doctor = SimpleNamespace(name="Dr. Sharma")
+    claim = SimpleNamespace(insurer_or_tpa_name="Star Health", status=ClaimStatus.approved)
+    commitment = SimpleNamespace(
+        bug_fix_notified_at=None, description="Export broken", source_message_ids=[uuid.uuid4()],
+    )
+
+    async def run():
+        await notify.send_confirmation(None, business=biz, customer=cust, doctor=doctor, starts_at=when)
+        await notify.send_reminder(None, business=biz, customer=cust, doctor=doctor, starts_at=when)
+        await notify.send_recall_reminder(None, business=biz, customer=cust)
+        await notify.send_queue_checkin(None, business=biz, customer=cust, queue_number=12)
+        await notify.send_queue_turn_near(None, business=biz, customer=cust, queue_number=12, tokens_ahead=3)
+        await notify.send_claim_status_update(None, business=biz, customer=cust, claim=claim)
+        await notify.send_cod_confirmation(None, business=biz, customer=cust, order_number="1042", total_paise=149900)
+        await notify.send_abandoned_cart_recovery(None, business=biz, customer=cust, checkout_url="https://x/y")
+        await notify.send_repeat_purchase_nudge(None, business=biz, customer=cust)
+        await notify.send_ndr_reschedule_request(None, business=biz, customer=cust, order_number="1042")
+        await notify.send_bug_fixed_notification(_MsgDb(), business=biz, customer=cust, commitment=commitment)
+        await notify.send_onboarding_nudge(None, business=biz, customer=cust)
+        await notify.send_expansion_nudge(None, business=biz, customer=cust)
+        await notify.send_payment_failed_reminder(None, business=biz, customer=cust, invoice_url="https://x/pay")
+
+    asyncio.run(run())
+
+    assert set(sent) == set(rt.BY_NAME), set(rt.BY_NAME) ^ set(sent)
+    for name, params in sent.items():
+        expected = len(meta.variables_in(rt.BY_NAME[name].body))
+        assert len(params) == expected, f"{name}: sender passes {len(params)} values, template has {expected} variables"
+
+
+# ── readiness ───────────────────────────────────────────────────────────────
+
+def _row(name, status, reason=None):
+    return SimpleNamespace(name=name, status=status, rejection_reason=reason)
+
+
+class _Db:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def execute(self, *_a, **_k):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self.rows))
+
+
+def _states(rows):
+    return asyncio.run(rt.statuses(_Db(rows), uuid.uuid4()))
+
+
+def test_a_template_nobody_made_is_missing():
+    assert _states([])["appointment_reminder"] == ("missing", None)
+
+
+def test_approved_beats_pending_beats_rejected_across_languages():
+    rows = [
+        _row("appointment_reminder", TemplateStatus.rejected, "policy"),
+        _row("appointment_reminder", TemplateStatus.approved),
+        _row("recall_reminder", TemplateStatus.rejected, "no good"),
+        _row("recall_reminder", TemplateStatus.pending),
+    ]
+    states = _states(rows)
+    assert states["appointment_reminder"][0] == "approved"
+    assert states["recall_reminder"][0] == "pending"
+
+
+def test_a_rejected_template_carries_metas_reason():
+    states = _states([_row("queue_turn_near", TemplateStatus.rejected, "variable at end")])
+    assert states["queue_turn_near"] == ("rejected", "variable at end")
+
+
+# ── creating the missing ones ───────────────────────────────────────────────
+
+@pytest.fixture
+def meta_calls(monkeypatch):
+    submitted: list[str] = []
+    control = {"refuse": set(), "state": {}}
+
+    async def fake_connection(db, business_id):
+        return SimpleNamespace(id=uuid.uuid4()), "waba"
+
+    async def fake_submit(db, *, business_id, connection, waba_id, draft, extra=None):
+        if draft.name in control["refuse"]:
+            raise meta.TemplateError("Meta said no")
+        submitted.append(draft.name)
+
+    async def fake_statuses(db, business_id):
+        return {name: control["state"].get(name, ("missing", None)) for name in rt.BY_NAME}
+
+    monkeypatch.setattr(template_service, "get_connection", fake_connection)
+    monkeypatch.setattr(template_service, "submit", fake_submit)
+    monkeypatch.setattr(rt, "statuses", fake_statuses)
+    return SimpleNamespace(submitted=submitted, control=control)
+
+
+def test_only_the_missing_one_click_templates_are_submitted(meta_calls):
+    meta_calls.control["state"] = {
+        "ndr_reschedule_request": ("pending", None),
+        "repeat_purchase_nudge": ("rejected", "x"),
+    }
+    report = asyncio.run(rt.create_missing(None, uuid.uuid4(), "order_sync"))
+
+    assert report.created == ["abandoned_cart_recovery"]
+    # Even a rejected one is left alone: resubmitting the same name is refused,
+    # and a rejection needs a person to read why.
+    assert sorted(report.already_there) == ["ndr_reschedule_request", "repeat_purchase_nudge"]
+    assert report.needs_manual == ["cod_confirmation"]
+    assert meta_calls.submitted == ["abandoned_cart_recovery"]
+
+
+def test_one_refusal_from_meta_does_not_stop_the_rest(meta_calls):
+    meta_calls.control["refuse"] = {"appointment_confirmed"}
+    report = asyncio.run(rt.create_missing(None, uuid.uuid4(), "scheduling"))
+
+    assert report.created == ["appointment_reminder"]
+    assert report.failed == [{"name": "appointment_confirmed", "error": "Meta said no"}]
+
+
+def test_a_feature_with_no_templates_creates_nothing(meta_calls):
+    report = asyncio.run(rt.create_missing(None, uuid.uuid4(), "quotations"))
+    assert report.created == report.already_there == report.needs_manual == []
+    assert meta_calls.submitted == []
+
+
+# ── the endpoints ───────────────────────────────────────────────────────────
+
+def _user(role):
+    return SimpleNamespace(id=uuid.uuid4(), role=role, business=uuid.uuid4())
+
+
+def test_an_agent_cannot_create_templates():
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(caps_router.create_missing_templates("scheduling", _user("agent"), SimpleNamespace()))
+    assert err.value.status_code == 403
+
+
+def test_creating_templates_for_an_unknown_feature_is_a_404():
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(caps_router.create_missing_templates("nope", _user("owner"), SimpleNamespace()))
+    assert err.value.status_code == 404
+
+
+def test_without_whatsapp_the_owner_is_told_so(monkeypatch):
+    async def not_ready(db, business_id, capability):
+        raise template_service.WhatsAppNotReady("Connect WhatsApp before creating templates")
+
+    monkeypatch.setattr(rt, "create_missing", not_ready)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(caps_router.create_missing_templates("scheduling", _user("owner"), SimpleNamespace()))
+    assert err.value.status_code == 409 and "Connect WhatsApp" in err.value.detail
+
+
+def test_the_list_shows_each_features_template_state(monkeypatch):
+    from tests.capabilities.test_capabilities import _FakeDb, _business, _user as list_user
+
+    async def no_whatsapp(db, business_id):
+        raise template_service.WhatsAppNotReady("x")
+
+    monkeypatch.setattr(template_service, "get_connection", no_whatsapp)
+
+    business = _business("local_service")
+    db = _FakeDb(business, templates=[_row("appointment_reminder", TemplateStatus.approved)])
+    rows = {r.key: r for r in asyncio.run(caps_router.list_capabilities(list_user("owner"), db))}
+
+    needs = {t.name: t for t in rows["scheduling"].templates}
+    assert needs["appointment_reminder"].status == "approved"
+    assert needs["appointment_confirmed"].status == "missing"
+    assert rows["quotations"].templates == []
+    assert rows["scheduling"].can_create_templates is False

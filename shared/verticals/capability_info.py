@@ -53,7 +53,7 @@ _CAPABILITIES = (
         "quotations",
         "Quotations",
         "Every quote you send is tracked, chased before it goes stale, and closed as won or lost.",
-        ("Quotations page", "Follow-up reminders on quotes that go quiet"),
+        ("Quotations page", "Your team is reminded to chase a quote that goes quiet - KROVA never messages the buyer on its own"),
         None,
     ),
     CapabilityInfo(
@@ -62,7 +62,8 @@ _CAPABILITIES = (
         "Orders from your store flow in, so the AI can answer where an order is and nudge on COD and abandoned carts.",
         ("Orders and Products pages",
          "Order status in AI replies",
-         "COD confirmation, abandoned-cart and reorder nudges"),
+         "COD confirmation, abandoned-cart and reorder nudges",
+         "Rescheduling when a delivery attempt fails"),
         "Connect your store so orders start arriving.",
     ),
     CapabilityInfo(
@@ -98,9 +99,9 @@ _CAPABILITIES = (
         "Product feedback loop",
         "For a software product: bug reports, feature requests and usage milestones turn into follow-ups.",
         ("GitHub, outbound email and Stripe dunning integrations in Settings",
-         "Onboarding drop-off and expansion nudges",
-         "A trust report on the AI's replies"),
-        "Connect GitHub / Stripe if you use them.",
+         "The customer is told when the GitHub issue behind a promised fix closes",
+         "Onboarding drop-off and upgrade nudges, from usage events your product sends"),
+        "Send usage events from your product through the public API for the nudges; connect GitHub / Stripe if you use them.",
     ),
     CapabilityInfo(
         "care_recall",

@@ -79,13 +79,33 @@ def test_every_entry_says_what_it_gives():
 
 # ── the endpoints ───────────────────────────────────────────────────────────
 
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+
 class _FakeDb:
-    def __init__(self, business):
+    """get/commit for the business row; execute() returns the template rows given (none by default)."""
+
+    def __init__(self, business, templates=()):
         self.business = business
+        self.templates = list(templates)
         self.committed = False
 
     async def get(self, _model, _id):
         return self.business
+
+    async def execute(self, *_a, **_k):
+        return _Rows(self.templates)
 
     async def commit(self):
         self.committed = True
