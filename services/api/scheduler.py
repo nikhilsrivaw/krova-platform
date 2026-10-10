@@ -496,6 +496,21 @@ async def check_deadline_calls() -> None:
         logger.exception("deadline call sweep failed")
 
 
+async def check_reply_times() -> None:
+    """Remind the chat's owner (then the supervisors) when a customer has waited past the first-reply target."""
+    from shared.care import reply_sla
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await reply_sla.check_reply_times(db)
+            await db.commit()
+            if sent:
+                logger.info("sent %s reply-time reminder(s)", sent)
+    except Exception:
+        logger.exception("reply-time sweep failed")
+
+
 async def sync_zoho_books() -> None:
     """
     Pull open Zoho Books invoices for every connected business, once a day.
@@ -727,6 +742,14 @@ def build() -> AsyncIOScheduler:
         reclaim_stalled_jobs,
         IntervalTrigger(minutes=5),
         id="reclaim_stalled_jobs",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        check_reply_times,
+        IntervalTrigger(minutes=2),
+        id="check_reply_times",
         replace_existing=True,
         misfire_grace_time=300,
     )

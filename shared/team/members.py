@@ -286,3 +286,32 @@ async def remove_member(
     if user is not None and user.username is not None and int(others.scalar_one()) == 0:
         user.is_active = False
     return released
+
+
+async def transfer_ownership(
+    db: AsyncSession, *, business_id: uuid.UUID, owner_id: uuid.UUID, actor_role: str | None,
+    password: str, to_user_id: uuid.UUID,
+) -> None:
+    """
+    Hand the business to an existing admin; the old owner becomes an admin.
+
+    Needs the owner's own password again - a left-open phone must not be able to
+    give the business away. Only to an admin (promote first), so ownership never
+    jumps straight to someone the owner has not already trusted with settings.
+    """
+    from shared.auth.passwords import verify_password
+
+    if actor_role != "owner":
+        raise TeamError("Only the owner can transfer ownership.", 403)
+    if to_user_id == owner_id:
+        raise TeamError("You already own this business.", 400)
+    me = await db.get(User, owner_id)
+    if me is None or not verify_password(password, me.password_hash):
+        raise TeamError("Your password is incorrect.", 403)
+    target = await _membership(business_id, to_user_id, db)
+    if role_value(target.role) != "admin":
+        raise TeamError("Make them an admin first, then transfer ownership.", 400)
+    mine = await _membership(business_id, owner_id, db)
+    target.role = BusinessRole.owner
+    mine.role = BusinessRole.admin
+    await db.flush()

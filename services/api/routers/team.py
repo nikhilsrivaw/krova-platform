@@ -38,6 +38,7 @@ class TeamMemberOut(BaseModel):
     last_login_at: datetime | None = None
     must_change_password: bool | None = None
     locked: bool | None = None
+    available: bool = True
 
 
 @router.get("", response_model=list[TeamMemberOut])
@@ -57,6 +58,7 @@ async def list_team(current_user: CurrentUserDep, db: DbDep) -> list[TeamMemberO
             full_name=user.full_name,
             email=user.email,
             role=members.role_value(member.role),
+            available=bool(member.available),
         )
         if supervisor:
             item.team_id = user.username
@@ -182,6 +184,8 @@ async def remove_member(user_id: uuid.UUID, current_user: OwnerOrAdminDep, db: D
 class TeamSettings(BaseModel):
     auto_assign_on_reply: bool = True
     agent_visibility: Literal["all", "assigned"] = "all"
+    routing: Literal["manual", "round_robin"] = "manual"
+    sla_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
 @router.get("/settings", response_model=TeamSettings)
@@ -196,7 +200,8 @@ async def put_team_settings(body: TeamSettings, current_user: OwnerOrAdminDep, d
     if business is None:
         raise HTTPException(404, "Business not found")
     value = team_settings.write(
-        business, auto_assign_on_reply=body.auto_assign_on_reply, agent_visibility=body.agent_visibility
+        business, auto_assign_on_reply=body.auto_assign_on_reply, agent_visibility=body.agent_visibility,
+        routing=body.routing, sla_minutes=body.sla_minutes,
     )
     activity.note(**{k: str(v).lower() for k, v in value.items()})
     return TeamSettings(**value)
@@ -235,3 +240,39 @@ async def my_work(current_user: CurrentUserDep, db: DbDep) -> MyWork:
         )
     )
     return MyWork(chats=chats, drafts_waiting=drafts, escalations=escalations, cases=cases)
+
+
+class AvailabilityIn(BaseModel):
+    available: bool
+
+
+@router.put("/me/availability")
+async def set_my_availability(body: AvailabilityIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+    """Away = no new chats routed to me. My existing chats stay mine."""
+    member = (await db.execute(
+        select(BusinessMember).where(
+            BusinessMember.business_id == current_user.business, BusinessMember.user_id == current_user.id)
+    )).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(404, "Not on this team")
+    member.available = body.available
+    activity.note(available=str(body.available).lower())
+    return {"available": member.available}
+
+
+class TransferIn(BaseModel):
+    user_id: uuid.UUID
+    password: str = Field(min_length=1, max_length=256)
+
+
+@router.post("/transfer-ownership")
+async def transfer_ownership(body: TransferIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
+    try:
+        await members.transfer_ownership(
+            db, business_id=current_user.business, owner_id=current_user.id,
+            actor_role=current_user.role, password=body.password, to_user_id=body.user_id,
+        )
+    except members.TeamError as exc:
+        raise _http(exc) from exc
+    activity.note(new_owner=str(body.user_id))
+    return {"new_owner": str(body.user_id), "you_are_now": "admin"}

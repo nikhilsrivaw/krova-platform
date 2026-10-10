@@ -182,6 +182,18 @@ async def ingest(
     if customer.last_contact_at is None or occurred_at > customer.last_contact_at:
         customer.last_contact_at = occurred_at
 
+    # Round-robin routing (a business opt-in): a chat nobody owns goes to the next
+    # available agent. Inside a savepoint so a routing problem can never lose the message.
+    if direction == Direction.inbound and customer.assigned_to_user_id is None:
+        try:
+            from shared.team import routing
+
+            async with db.begin_nested():
+                await routing.route_new_chat(db, business_id=business_id, customer_id=customer.id)
+            await db.refresh(customer)
+        except Exception:
+            logger.exception("routing failed business=%s customer=%s", business_id, customer.id)
+
     # Inbound only, matching "webhook volume" the way AiSensy/Interakt/
     # Gupshup meter it - an inbound message is what actually arrives as a
     # webhook and costs Krova a processing cycle; an outbound send is

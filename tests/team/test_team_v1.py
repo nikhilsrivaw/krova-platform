@@ -339,9 +339,9 @@ def test_team_settings_default_and_round_trip():
     from shared.team import settings as ts
 
     biz = SimpleNamespace(settings={})
-    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all"}
+    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all", "routing": "manual", "sla_minutes": None}
     ts.write(biz, auto_assign_on_reply=False, agent_visibility="assigned")
-    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned"}
+    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned", "routing": "manual", "sla_minutes": None}
     with pytest.raises(ValueError):
         ts.write(biz, auto_assign_on_reply=True, agent_visibility="nobody")
     assert ts.read(SimpleNamespace(settings={"team": {"agent_visibility": "junk"}}))["agent_visibility"] == "all"
@@ -371,3 +371,95 @@ def test_targeted_push_only_reaches_the_named_people(monkeypatch):
     assert asyncio.run(web_push.send_to_users(None, business_id=uuid.uuid4(), user_ids=[A], payload={})) == 1
     assert seen["ids"] == [A]
     assert asyncio.run(web_push.send_to_users(None, business_id=uuid.uuid4(), user_ids=[], payload={})) == 0
+
+
+# ── routing, reply-time reminders, ownership transfer ───────────────────────
+
+def test_reply_time_stages():
+    from shared.care.reply_sla import stage_for
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    m = timedelta(minutes=1)
+    assert stage_for(5 * m, 15, None, None, t0) is None
+    assert stage_for(15 * m, 15, None, None, t0) == "owner"
+    assert stage_for(16 * m, 15, t0 + m, None, t0) is None          # already told, once
+    assert stage_for(30 * m, 15, t0 + m, None, t0) == "supervisors"  # twice the target
+    assert stage_for(31 * m, 15, t0 + m, t0 + 20 * m, t0) is None    # already escalated
+    # a newer customer message restarts the clock
+    assert stage_for(15 * m, 15, t0 - 60 * m, t0 - 30 * m, t0) == "owner"
+
+
+def test_settings_carry_routing_and_target():
+    from shared.team import settings as ts
+
+    biz = SimpleNamespace(settings={})
+    assert ts.read(biz)["routing"] == "manual" and ts.read(biz)["sla_minutes"] is None
+    ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", routing="round_robin", sla_minutes=15)
+    assert ts.read(biz)["routing"] == "round_robin" and ts.read(biz)["sla_minutes"] == 15
+    with pytest.raises(ValueError):
+        ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", routing="random")
+    with pytest.raises(ValueError):
+        ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", sla_minutes=0)
+
+
+def test_routing_is_off_unless_the_business_turns_it_on(monkeypatch):
+    from shared.team import routing
+
+    class Db:
+        async def get(self, model, key, **_):
+            return SimpleNamespace(settings={})
+
+    async def boom(*_a, **_k):
+        raise AssertionError("must not pick anyone")
+
+    monkeypatch.setattr(routing, "pick_agent", boom)
+    assert asyncio.run(routing.route_new_chat(Db(), business_id=uuid.uuid4(), customer_id=uuid.uuid4())) is None
+
+
+def test_routing_with_no_available_agent_leaves_the_chat_unowned(monkeypatch):
+    from shared.team import routing
+
+    class Db:
+        async def get(self, model, key, **_):
+            return SimpleNamespace(settings={"team": {"routing": "round_robin"}})
+
+    async def nobody(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(routing, "pick_agent", nobody)
+    assert asyncio.run(routing.route_new_chat(Db(), business_id=uuid.uuid4(), customer_id=uuid.uuid4())) is None
+
+
+def test_ownership_transfer_rules():
+    class Db:
+        def __init__(self, role_of, password_ok=True):
+            self.role_of, self.password_ok = role_of, password_ok
+
+        async def get(self, model, key, **_):
+            return SimpleNamespace(password_hash=hash_password("right-password-1"))
+
+        async def execute(self, stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: self.members.pop(0))
+
+        async def flush(self):
+            pass
+
+    def run(role, pw, target_role, to=B):
+        target = SimpleNamespace(role=target_role)
+        mine = SimpleNamespace(role="owner")
+        db = Db(None)
+        db.members = [target, mine]
+        asyncio.run(members.transfer_ownership(
+            db, business_id=uuid.uuid4(), owner_id=A, actor_role=role, password=pw, to_user_id=to))
+        return target, mine
+
+    target, mine = run("owner", "right-password-1", members.BusinessRole.admin)
+    assert target.role == members.BusinessRole.owner and mine.role == members.BusinessRole.admin
+    with pytest.raises(members.TeamError):
+        run("admin", "right-password-1", members.BusinessRole.admin)            # only the owner
+    with pytest.raises(members.TeamError):
+        run("owner", "wrong-password-1", members.BusinessRole.admin)            # password again
+    with pytest.raises(members.TeamError):
+        run("owner", "right-password-1", members.BusinessRole.agent)            # must be an admin first
+    with pytest.raises(members.TeamError):
+        run("owner", "right-password-1", members.BusinessRole.admin, to=A)      # not yourself

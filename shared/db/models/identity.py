@@ -210,6 +210,11 @@ class BusinessMember(UUIDMixin, TimestampMixin, Base):
         EnumType(BusinessRole, 20), nullable=False, default=BusinessRole.owner
     )
 
+    # "Away" people are skipped when new chats are routed. Their own switch.
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # When this person was last handed a routed chat - round-robin picks whoever is longest ago.
+    last_routed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     business: Mapped["Business"] = relationship(back_populates="members")
     user: Mapped["User"] = relationship(back_populates="memberships")
 
@@ -275,6 +280,10 @@ class Customer(UUIDMixin, TimestampMixin, Base):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Reply-time alerts (shared/care/reply_sla.py): stamped when the owner, then the
+    # supervisors, were told this customer's latest message has waited too long.
+    sla_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # A business's own funnel step ("New", "Qualified", "Won"), free text and
     # set by hand. Unlike everything in customer_tags this is never inferred -
