@@ -42,6 +42,8 @@ from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels import ingest
 from shared.channels.voice import keypad_menu, plivo_client
+from shared.care import post_call_actions
+from shared.identity import resolver
 from shared.channels.voice.tenant import VoiceRoute
 from shared.config.settings import settings
 from shared.db.models import (
@@ -1088,6 +1090,7 @@ class CallPipeline:
             self._reply_task = asyncio.create_task(self.request_transfer())
             return
         logger.info("voice menu key call=%s digit=%s action=%s", self.provider_call_id, digit, option["action"])
+        await self._fire_keypad_rules(digit, option)
         if option["action"] == "transfer":
             self._reply_task = asyncio.create_task(self.request_transfer(
                 number=option["number"],
@@ -1102,6 +1105,32 @@ class CallPipeline:
             self._reply_task = asyncio.create_task(
                 self._say_stream(_single_chunk("Sure, go ahead. I'm listening."), record=False)
             )
+
+    async def _fire_keypad_rules(self, digit: str, option: dict) -> None:
+        """Tell the business's automations which key was pressed. Never allowed to disturb the call."""
+        try:
+            if self.customer_id is None and self.caller_phone not in ("", "unknown"):
+                # Pressing a key before saying anything: the caller is still a person
+                # to the business, so find or create them from their number.
+                resolution = await resolver.resolve(
+                    self.route.business_id, IdentityKind.phone, self.caller_phone, self.db,
+                )
+                self.customer_id = resolution.customer.id
+                await self.db.commit()
+            if self.customer_id is None:
+                return
+            await post_call_actions.apply_rules(
+                self.db, business_id=self.route.business_id, trigger_type="keypad.pressed",
+                customer_id=self.customer_id, call_id=self.call_row_id, channel="voice",
+                context={"digit": digit, "key_name": option["label"], "action": option["action"]},
+            )
+            await self.db.commit()
+        except Exception:
+            logger.exception("keypad automations failed call=%s", self.provider_call_id)
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
 
     async def _say_goodbye(self, line: str) -> bool:
         """Say a closing line, let it play out, then end the call. False if the caller spoke over it."""

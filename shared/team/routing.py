@@ -36,6 +36,48 @@ async def pick_agent(db: AsyncSession, business_id: uuid.UUID) -> BusinessMember
     return rows.scalar_one_or_none()
 
 
+async def assign(
+    db: AsyncSession, *, business_id: uuid.UUID, customer_id: uuid.UUID, user_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """
+    Give an unowned chat to a named team member, or (user_id None) to the next available
+    agent whatever the business's routing setting says - an automation asked for it
+    explicitly. Returns who got it, or None (nobody available, not on the team, or
+    somebody took it first).
+    """
+    if user_id is None:
+        member = await pick_agent(db, business_id)
+    else:
+        member = (await db.execute(
+            select(BusinessMember).where(
+                BusinessMember.business_id == business_id, BusinessMember.user_id == user_id,
+            )
+        )).scalar_one_or_none()
+    if member is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    won = await db.execute(
+        update(Customer)
+        .where(
+            Customer.id == customer_id, Customer.business_id == business_id,
+            Customer.assigned_to_user_id.is_(None),
+        )
+        .values(assigned_to_user_id=member.user_id, assigned_at=now)
+        .returning(Customer.id)
+    )
+    if won.first() is None:
+        return None
+    member.last_routed_at = now
+    customer = await db.get(Customer, customer_id)
+    await conflict.notify(
+        db, business_id=business_id, user_id=member.user_id,
+        title="Chat assigned to you", body=(customer.display_name if customer else None) or "A customer",
+        url=f"/app/inbox/{customer_id}",
+    )
+    return member.user_id
+
+
 async def route_new_chat(db: AsyncSession, *, business_id: uuid.UUID, customer_id: uuid.UUID) -> uuid.UUID | None:
     """Hand an unowned chat to the next available agent. Returns who got it, or None."""
     business = await db.get(Business, business_id)

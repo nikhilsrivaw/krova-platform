@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.care import post_call_actions
 from shared.db.models import Business, BusinessMember, BusinessRole, Channel, Customer, Direction, Message
 from shared.integrations import web_push
 from shared.team import settings as team_settings
@@ -86,6 +87,18 @@ async def check_reply_times(db: AsyncSession) -> int:
             try:
                 if stage == "owner":
                     customer.sla_alerted_at = now
+                    # The business's own automations hear about it too (first alert only).
+                    try:
+                        await post_call_actions.apply_rules(
+                            db, business_id=business.id, trigger_type="reply.overdue",
+                            customer_id=customer.id, channel=latest.channel.value,
+                            context={
+                                "minutes_waiting": int((now - inbound_at).total_seconds() // 60),
+                                "assigned": customer.assigned_to_user_id is not None,
+                            },
+                        )
+                    except Exception:
+                        logger.exception("reply.overdue automations failed business=%s", business.id)
                     if customer.assigned_to_user_id:
                         await web_push.send_to_users(
                             db, business_id=business.id, user_ids=[customer.assigned_to_user_id], payload=payload)

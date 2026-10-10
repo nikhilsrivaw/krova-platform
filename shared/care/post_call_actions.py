@@ -116,6 +116,12 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
         "days_overdue", "kind", "direction", "amount_paise", "amount_outstanding_paise", "description",
     ),
     "quotation.aging": ("days_open", "status", "amount_paise", "reference"),
+    # minutes_waiting is how long the customer's latest message has gone unanswered;
+    # assigned is whether a team member owns the chat.
+    "reply.overdue": ("minutes_waiting", "assigned"),
+    # digit is the key pressed ("0"-"9"), key_name the name the owner gave it, action
+    # what it does (transfer / say / ai).
+    "keypad.pressed": ("digit", "key_name", "action"),
     # days_since_customer_message counts only what the CUSTOMER sent -
     # Customer.last_contact_at is not used because it also moves when the
     # business messages them, so a reminder nobody answered would make a
@@ -781,6 +787,15 @@ async def _run_step_action(
     if action_type == "send_sms":
         return await _send_sms(business_id, customer_id, action_config or {}, db)
 
+    if action_type == "notify_team":
+        return await _notify_team(db, business_id, customer, action_config or {}, context)
+
+    if action_type == "assign_to_agent":
+        return await _assign_to_agent(db, business_id, customer, action_config or {})
+
+    if action_type == "set_stage":
+        return await _set_stage(customer, action_config or {})
+
     if action_type == "send_email":
         return await _send_email(business_id, customer_id, action_config or {}, db)
 
@@ -791,6 +806,70 @@ async def _run_step_action(
 # The actions that reach a person on a channel, and so can be pointed at
 # the payer. add_tag and create_escalation_task are about the customer
 # themselves, and an Instagram comment reply belongs to whoever commented.
+# Who a notify_team step can alert.
+NOTIFY_TARGETS = frozenset({"owner", "admins", "assigned", "everyone"})
+
+
+async def _notify_team(db: AsyncSession, business_id: uuid.UUID, customer: Customer, config: dict, context: dict) -> bool:
+    """Push a message to the owner / admins / the chat's owner / everyone with the app."""
+    from shared.db.models import BusinessMember, BusinessRole
+    from shared.integrations import web_push
+
+    message = _resolve_tokens(config.get("message") or "", context).strip()
+    if not message:
+        return False
+    payload = {
+        "title": customer.display_name or "Automation",
+        "body": message[:140],
+        "url": f"/app/inbox/{customer.id}",
+    }
+    target = config.get("to")
+    if target == "everyone":
+        sent = await web_push.send_to_business(db, business_id=business_id, payload=payload)
+    else:
+        roles = (BusinessRole.owner,) if target == "owner" else (BusinessRole.owner, BusinessRole.admin)
+        users: list[uuid.UUID] = []
+        if target == "assigned" and customer.assigned_to_user_id:
+            users = [customer.assigned_to_user_id]
+        else:
+            # "assigned" with nobody assigned falls back to the admins, so an alert is never lost.
+            rows = await db.execute(
+                select(BusinessMember.user_id).where(
+                    BusinessMember.business_id == business_id, BusinessMember.role.in_(roles),
+                )
+            )
+            users = list(rows.scalars().all())
+        sent = await web_push.send_to_users(db, business_id=business_id, user_ids=users, payload=payload)
+    if not sent:
+        raise NoRecipient("nobody has the app installed to receive the alert")
+    return True
+
+
+async def _assign_to_agent(db: AsyncSession, business_id: uuid.UUID, customer: Customer, config: dict) -> bool:
+    """Hand the chat to a team member, or to whoever is next in line. Never takes a chat someone already owns."""
+    from shared.team import routing
+
+    if customer.assigned_to_user_id is not None:
+        raise NoRecipient("the chat already has an owner")
+    target = config.get("to")
+    assigned = await routing.assign(
+        db, business_id=business_id, customer_id=customer.id,
+        user_id=None if target == "round_robin" else uuid.UUID(str(target)),
+    )
+    if assigned is None:
+        raise NoRecipient("nobody available to take the chat")
+    return True
+
+
+async def _set_stage(customer: Customer, config: dict) -> bool:
+    """Move the customer along the business's own pipeline. Does not itself trigger stage-change rules, so two rules can never loop."""
+    stage = (config.get("stage") or "").strip()[:60]
+    if not stage:
+        return False
+    customer.stage = stage
+    return True
+
+
 PAYER_ACTIONS = frozenset({"whatsapp_followup", "send_sms", "send_email", "place_call", "send_flow"})
 
 

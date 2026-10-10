@@ -38,6 +38,7 @@ from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.care.post_call_actions import (
     CONDITION_FIELDS,
     MAX_CONDITIONS_PER_STEP,
+    NOTIFY_TARGETS,
     OPERATORS,
     RUN_LOG_RETENTION_DAYS,
     describe_delay,
@@ -106,6 +107,9 @@ _VALID_TRIGGERS = {
     WebhookEventType.customer_inactive.value,
     WebhookEventType.customer_stage_changed.value,
     WebhookEventType.customer_date_approaching.value,
+    # A customer has waited too long for a reply / a caller pressed a phone-menu key.
+    WebhookEventType.reply_overdue.value,
+    WebhookEventType.keypad_pressed.value,
     # escalation_rate_detected / account_health_detected deliberately
     # excluded - business-level signals with no customer_id, so a rule on
     # either could never actually fire (see shared/care/signal_dispatch.py).
@@ -114,6 +118,8 @@ _VALID_ACTIONS = {
     "whatsapp_followup", "create_escalation_task", "add_tag", "send_flow",
     "place_call", "send_sms", "send_email", "instagram_followup",
     "instagram_comment_reply", "send_carousel",
+    # Inside the business: alert people, hand the chat to someone, move the pipeline.
+    "notify_team", "assign_to_agent", "set_stage",
 }
 
 # A generous ceiling, not a real product limit discovered anywhere - just
@@ -364,6 +370,35 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_config.reason is required for place_call",
         )
+    if step.action_type == "notify_team":
+        config = step.action_config or {}
+        if config.get("to") not in NOTIFY_TARGETS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{prefix}.action_config.to must be one of {sorted(NOTIFY_TARGETS)}",
+            )
+        if not (config.get("message") or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{prefix}.action_config.message is required for notify_team",
+            )
+    if step.action_type == "assign_to_agent":
+        target = (step.action_config or {}).get("to")
+        if target != "round_robin":
+            try:
+                uuid.UUID(str(target))
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{prefix}.action_config.to must be round_robin or a team member",
+                ) from None
+    if step.action_type == "set_stage":
+        stage = ((step.action_config or {}).get("stage") or "").strip()
+        if not stage or len(stage) > 60:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{prefix}.action_config.stage is required for set_stage (60 characters at most)",
+            )
     if step.action_type == "send_sms" and not (step.action_config or {}).get("message"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -629,6 +664,7 @@ _PREVIEW_FIELD = {
     "send_flow": "body",
     "create_escalation_task": "reason",
     "place_call": "reason",
+    "notify_team": "message",
 }
 
 

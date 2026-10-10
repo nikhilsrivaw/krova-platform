@@ -299,6 +299,11 @@ class WebhookEventType(str, enum.Enum):
     commitment_due_soon = "commitment.due_soon"
     commitment_overdue = "commitment.overdue"
     quotation_aging = "quotation.aging"
+    # A chat's newest customer message has waited past the business's reply-time target
+    # (shared/care/reply_sla.py). Automation-only, like the date triggers.
+    reply_overdue = "reply.overdue"
+    # A caller pressed a key on the phone menu (shared/channels/voice/keypad_menu.py).
+    keypad_pressed = "keypad.pressed"
     # "This customer has gone quiet" - fired daily by the same sweep for
     # every customer who has ever messaged, carrying how many days since
     # they last wrote, since either side last wrote, and since their last
