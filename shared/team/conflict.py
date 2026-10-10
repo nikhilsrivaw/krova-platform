@@ -79,6 +79,31 @@ async def member_count(business_id: uuid.UUID, db: AsyncSession) -> int:
     return int(result.scalar_one())
 
 
+async def _auto_assign_on(business_id: uuid.UUID, db: AsyncSession) -> bool:
+    from shared.db.models import Business
+    from shared.team import settings as team_settings
+
+    business = await db.get(Business, business_id)
+    return team_settings.read(business)["auto_assign_on_reply"] if business else True
+
+
+async def notify(
+    db: AsyncSession, *, business_id: uuid.UUID, user_id: uuid.UUID | None, title: str, body: str, url: str
+) -> None:
+    """Best-effort push to one person. Never raises: a missed ping must not undo the action."""
+    if user_id is None:
+        return
+    try:
+        from shared.integrations import web_push
+
+        await web_push.send_to_users(
+            db, business_id=business_id, user_ids=[user_id],
+            payload={"title": title, "body": body[:140], "url": url},
+        )
+    except Exception:
+        pass
+
+
 async def _name_of(user_id: uuid.UUID, db: AsyncSession) -> str:
     user = await db.get(User, user_id)
     if user is None:
@@ -103,6 +128,9 @@ async def guard_reply(
         return Verdict.mine  # not ours to judge; the send path reports a missing customer
 
     verdict = decide(customer.assigned_to_user_id, actor_id, actor_role)
+
+    if verdict is Verdict.claim and not await _auto_assign_on(business_id, db):
+        return Verdict.mine  # the business turned first-reply ownership off
 
     if verdict is Verdict.claim:
         now = datetime.now(timezone.utc)

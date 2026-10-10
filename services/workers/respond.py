@@ -392,6 +392,21 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     db.add(draft)
     await db.flush()
 
+    # A chat somebody owns pings that person about its draft, not the whole team.
+    if proposal.action == "reply" and autonomy in ("draft", "conditional"):
+        try:
+            from shared.db.models import Customer
+            from shared.team import conflict as team_conflict
+
+            owner_of_chat = await db.get(Customer, message.customer_id)
+            if owner_of_chat is not None and owner_of_chat.assigned_to_user_id:
+                await team_conflict.notify(
+                    db, business_id=message.business_id, user_id=owner_of_chat.assigned_to_user_id,
+                    title="Reply waiting for you", body=(proposal.message or "")[:140], url="/app/approvals",
+                )
+        except Exception:
+            logger.exception("draft ping failed business=%s", message.business_id)
+
     if proposal.action == "escalate" and autonomy == "act" and channel in ("whatsapp", "instagram"):
         holding = MessageDraft(
             business_id=message.business_id,

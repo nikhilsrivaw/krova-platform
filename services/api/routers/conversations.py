@@ -99,6 +99,14 @@ def _window(last_inbound: datetime | None) -> tuple[bool, str | None]:
     return within_service_window(last_inbound), closes.isoformat()
 
 
+async def _agents_see_only_theirs(current_user, db) -> bool:
+    from shared.db.models import Business
+    from shared.team import settings as team_settings
+
+    business = await db.get(Business, current_user.business)
+    return bool(business) and team_settings.read(business)["agent_visibility"] == "assigned"
+
+
 @router.get("", response_model=list[ConversationSummary])
 async def list_conversations(
     current_user: CurrentUserDep,
@@ -120,6 +128,10 @@ async def list_conversations(
     business_id = current_user.business
 
     conditions = [Customer.business_id == business_id]
+    if current_user.role not in ("owner", "admin") and await _agents_see_only_theirs(current_user, db):
+        conditions.append(
+            (Customer.assigned_to_user_id == current_user.id) | Customer.assigned_to_user_id.is_(None)
+        )
     if not include_private:
         conditions.append(Customer.is_private == False)  # noqa: E712
 
@@ -247,6 +259,12 @@ async def get_thread(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
         )
+    if (
+        current_user.role not in ("owner", "admin")
+        and customer.assigned_to_user_id not in (None, current_user.id)
+        and await _agents_see_only_theirs(current_user, db)
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This chat is with a teammate.")
 
     rows = await db.execute(
         select(Message)
@@ -366,6 +384,12 @@ async def assign_conversation(
     customer.assigned_to_user_id = target_id
     customer.assigned_at = datetime.now(timezone.utc)
     activity.note(assigned_to=str(target_id))
+    if target_id != current_user.id:
+        await conflict.notify(
+            db, business_id=current_user.business, user_id=target_id,
+            title="A chat was assigned to you", body=customer.display_name or "A customer",
+            url=f"/app/inbox/{customer.id}",
+        )
     return {"customer_id": str(customer.id), "assigned_to_user_id": str(target_id)}
 
 
@@ -380,6 +404,11 @@ async def take_over_conversation(
     previous = await conflict.take_over(
         db, business_id=current_user.business, customer_id=customer_id, actor_id=current_user.id
     )
+    if previous and previous != current_user.id:
+        await conflict.notify(
+            db, business_id=current_user.business, user_id=previous,
+            title="A teammate took over a chat", body="It is no longer yours.", url=f"/app/inbox/{customer_id}",
+        )
     return {
         "customer_id": str(customer_id),
         "assigned_to_user_id": str(current_user.id),

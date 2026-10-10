@@ -331,3 +331,43 @@ def test_a_handed_over_password_can_only_be_used_to_replace_it():
     src = inspect.getsource(dependencies.get_current_user)
     assert "must_change_password" in src and "password_change_required" in src
     assert dependencies._PASSWORD_PENDING_OK == ("/auth/me", "/auth/change-password", "/auth/logout")
+
+
+# ── team settings ───────────────────────────────────────────────────────────
+
+def test_team_settings_default_and_round_trip():
+    from shared.team import settings as ts
+
+    biz = SimpleNamespace(settings={})
+    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all"}
+    ts.write(biz, auto_assign_on_reply=False, agent_visibility="assigned")
+    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned"}
+    with pytest.raises(ValueError):
+        ts.write(biz, auto_assign_on_reply=True, agent_visibility="nobody")
+    assert ts.read(SimpleNamespace(settings={"team": {"agent_visibility": "junk"}}))["agent_visibility"] == "all"
+
+
+def test_unowned_chat_is_not_claimed_when_auto_assign_is_off(monkeypatch):
+    async def off(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(conflict, "_auto_assign_on", off)
+    c = _customer()
+    db = FakeDb(c)
+    assert _guard(db, c, A, "agent") is Verdict.mine
+    assert db.updates == 0 and c.assigned_to_user_id is None
+
+
+def test_targeted_push_only_reaches_the_named_people(monkeypatch):
+    from shared.integrations import web_push
+
+    seen = {}
+
+    async def fake(db, *, business_id, payload, user_ids=None):
+        seen["ids"] = user_ids
+        return 1
+
+    monkeypatch.setattr(web_push, "send_to_business", fake)
+    assert asyncio.run(web_push.send_to_users(None, business_id=uuid.uuid4(), user_ids=[A], payload={})) == 1
+    assert seen["ids"] == [A]
+    assert asyncio.run(web_push.send_to_users(None, business_id=uuid.uuid4(), user_ids=[], payload={})) == 0

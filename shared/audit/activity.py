@@ -108,6 +108,7 @@ _add("POST", "/messages/instagram/publish", "instagram_post_published", "Publish
 _add("POST", "/approvals/{draft_id}/approve", "draft_approved", "Approved an AI reply", WORK)
 _add("POST", "/approvals/{draft_id}/reject", "draft_rejected", "Rejected an AI reply", WORK)
 _add("POST", "/conversations/{customer_id}/assign", "conversation_assigned", "Assigned a conversation", WORK)
+_add("PUT", "/team/settings", "team_settings_changed", "Changed team settings", CONFIG)
 _add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
 _add("POST", "/escalations/{escalation_id}/claim", "escalation_claimed", "Took an escalation", WORK)
 _add("POST", "/escalations/{escalation_id}/release", "escalation_released", "Handed an escalation back", WORK)

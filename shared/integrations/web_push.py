@@ -40,14 +40,26 @@ def _send_one(sub: dict, payload: dict) -> int | None:
         return status or 0
 
 
-async def send_to_business(db: AsyncSession, *, business_id: uuid.UUID, payload: dict) -> int:
-    """Push to every installed app of this business. Returns how many were sent."""
+async def send_to_users(
+    db: AsyncSession, *, business_id: uuid.UUID, user_ids: list[uuid.UUID], payload: dict
+) -> int:
+    """Push only to these people's installed apps (an assigned chat pings its owner, not everyone)."""
+    if not user_ids:
+        return 0
+    return await send_to_business(db, business_id=business_id, payload=payload, user_ids=user_ids)
+
+
+async def send_to_business(
+    db: AsyncSession, *, business_id: uuid.UUID, payload: dict, user_ids: list[uuid.UUID] | None = None
+) -> int:
+    """Push to every installed app of this business (or just `user_ids`). Returns how many were sent."""
     if not settings.vapid_private_key:
         return 0
 
-    rows = (await db.execute(
-        select(PushSubscription).where(PushSubscription.business_id == business_id)
-    )).scalars().all()
+    query = select(PushSubscription).where(PushSubscription.business_id == business_id)
+    if user_ids is not None:
+        query = query.where(PushSubscription.user_id.in_(user_ids))
+    rows = (await db.execute(query)).scalars().all()
     if not rows:
         return 0
 

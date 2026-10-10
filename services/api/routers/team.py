@@ -17,12 +17,13 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
-from shared.db.models import Business, BusinessMember, User
+from shared.db.models import Business, BusinessMember, Case, CaseStatus, DraftStatus, Customer, Escalation, MessageDraft, User
 from shared.team import members
+from shared.team import settings as team_settings
 
 router = APIRouter(prefix="/team", tags=["team"])
 
@@ -176,3 +177,61 @@ async def remove_member(user_id: uuid.UUID, current_user: OwnerOrAdminDep, db: D
         raise _http(exc) from exc
     activity.note(member=str(user_id), released=released)
     return {"removed": str(user_id), "released": released}
+
+
+class TeamSettings(BaseModel):
+    auto_assign_on_reply: bool = True
+    agent_visibility: Literal["all", "assigned"] = "all"
+
+
+@router.get("/settings", response_model=TeamSettings)
+async def get_team_settings(current_user: CurrentUserDep, db: DbDep) -> TeamSettings:
+    business = await db.get(Business, current_user.business)
+    return TeamSettings(**team_settings.read(business))
+
+
+@router.put("/settings", response_model=TeamSettings)
+async def put_team_settings(body: TeamSettings, current_user: OwnerOrAdminDep, db: DbDep) -> TeamSettings:
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(404, "Business not found")
+    value = team_settings.write(
+        business, auto_assign_on_reply=body.auto_assign_on_reply, agent_visibility=body.agent_visibility
+    )
+    activity.note(**{k: str(v).lower() for k, v in value.items()})
+    return TeamSettings(**value)
+
+
+class MyWork(BaseModel):
+    chats: int
+    drafts_waiting: int
+    escalations: int
+    cases: int
+
+
+@router.get("/my-work", response_model=MyWork)
+async def my_work(current_user: CurrentUserDep, db: DbDep) -> MyWork:
+    """What is mine right now: chats I own, AI replies waiting on those chats, escalations I hold, open cases."""
+    biz, me = current_user.business, current_user.id
+
+    async def count(stmt) -> int:
+        return int((await db.execute(stmt)).scalar_one())
+
+    chats = await count(select(func.count(Customer.id)).where(Customer.business_id == biz, Customer.assigned_to_user_id == me))
+    drafts = await count(
+        select(func.count(MessageDraft.id))
+        .join(Customer, Customer.id == MessageDraft.customer_id)
+        .where(MessageDraft.business_id == biz, MessageDraft.status == DraftStatus.pending, Customer.assigned_to_user_id == me)
+    )
+    escalations = await count(
+        select(func.count(Escalation.id)).where(
+            Escalation.business_id == biz, Escalation.assigned_to_user_id == me,
+            Escalation.status.in_(("open", "in_progress")),
+        )
+    )
+    cases = await count(
+        select(func.count(Case.id)).where(
+            Case.business_id == biz, Case.assigned_to_user_id == me, Case.status != CaseStatus.closed,
+        )
+    )
+    return MyWork(chats=chats, drafts_waiting=drafts, escalations=escalations, cases=cases)
