@@ -450,6 +450,11 @@ class Escalation(UUIDMixin, Base):
     acknowledged_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Who is dealing with it. At most one person; None = anyone may take it.
+    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Stamped once the SMS failsafe has run for this escalation, whether or
     # not the send actually succeeded - a business with no voice number
     # connected still gets this stamped (nothing to retry), a real failure

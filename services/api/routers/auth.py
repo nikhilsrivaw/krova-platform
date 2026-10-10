@@ -44,6 +44,16 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class TeamLoginRequest(BaseModel):
+    team_id: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+
 class SessionResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -53,11 +63,17 @@ class SessionResponse(BaseModel):
     business_id: str | None
     business_name: str | None
     vertical: str | None
+    # True until a person signing in with a password someone else chose has set
+    # their own; the app sends them to the change-password step first.
+    must_change_password: bool = False
 
 
 class MeResponse(BaseModel):
     user_id: str
     email: str | None
+    # The Team ID, for people an owner added.
+    team_id: str | None = None
+    must_change_password: bool = False
     full_name: str | None
     # None until linked via /auth/account/phone/verify - see User.phone's
     # own docstring on why this is optional/additive rather than required.
@@ -101,6 +117,7 @@ def _session_response(s: service.Session) -> SessionResponse:
         business_id=str(s.business.id) if s.business else None,
         business_name=s.business.name if s.business else None,
         vertical=s.business.vertical if s.business else None,
+        must_change_password=bool(s.user.must_change_password),
     )
 
 
@@ -158,6 +175,43 @@ async def login(body: LoginRequest, db: DbDep) -> SessionResponse:
             status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
         ) from exc
 
+    return _session_response(session)
+
+
+@router.post("/team-login", response_model=SessionResponse)
+async def team_login(body: TeamLoginRequest, db: DbDep) -> SessionResponse:
+    """Sign in with the Team ID and password an owner or admin created."""
+    try:
+        session = await service.authenticate_team(body.team_id, body.password, db)
+    except service.AccountLocked as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
+    except service.AccountDisabled as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except service.InvalidCredentials as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    return _session_response(session)
+
+
+@router.post("/change-password", response_model=SessionResponse)
+async def change_password(
+    body: ChangePasswordRequest, current_user: CurrentUserDep, db: DbDep
+) -> SessionResponse:
+    """
+    Choose your own password. Works while a handed-over password is still
+    pending (the only thing such an account may do), and for anyone later.
+    Signs every device out and returns a fresh session for this one.
+    """
+    try:
+        session = await service.change_password(
+            current_user.id, body.current_password, body.new_password, db
+        )
+    except service.WrongCurrentPassword as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except (PasswordTooWeak, service.AuthError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return _session_response(session)
 
 
@@ -489,6 +543,8 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
     return MeResponse(
         user_id=str(current_user.id),
         email=current_user.email,
+        team_id=user.username if user else None,
+        must_change_password=bool(user and user.must_change_password),
         full_name=user.full_name if user else None,
         phone=user.phone if user else None,
         phone_verified=bool(user and user.phone_verified_at),

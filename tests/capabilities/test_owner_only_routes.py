@@ -81,6 +81,9 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/migration/whatsapp/verify-code"), ("POST", "/migration/whatsapp/finish"),
     ("POST", "/justdial/token"), ("POST", "/indiamart/token"), ("POST", "/lead-sources/{key}/token"),
     ("POST", "/email-leads/token"), ("POST", "/zoho/sync"), ("DELETE", "/zoho/connection"),
+    # who is on the team (the finer owner-vs-admin rules are in shared/team/members.py)
+    ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
+    ("DELETE", "/team/members/{user_id}"), ("POST", "/team/members/{user_id}/reset-password"),
 ]}
 
 # What staff may not READ either: business-wide numbers and money, the voice KYC
@@ -117,6 +120,10 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/queue/check-in"),
     ("GET", "/conversations"), ("GET", "/ledger/commitments"), ("GET", "/team"),
     ("GET", "/escalations"), ("GET", "/voice-onboarding/logs"),
+    # working a shared inbox as a team
+    ("POST", "/conversations/{customer_id}/take-over"), ("POST", "/conversations/{customer_id}/presence"),
+    ("POST", "/escalations/{escalation_id}/claim"), ("POST", "/escalations/{escalation_id}/release"),
+    ("POST", "/auth/change-password"),
 ]}
 
 

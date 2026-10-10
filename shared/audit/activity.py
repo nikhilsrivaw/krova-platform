@@ -108,6 +108,9 @@ _add("POST", "/messages/instagram/publish", "instagram_post_published", "Publish
 _add("POST", "/approvals/{draft_id}/approve", "draft_approved", "Approved an AI reply", WORK)
 _add("POST", "/approvals/{draft_id}/reject", "draft_rejected", "Rejected an AI reply", WORK)
 _add("POST", "/conversations/{customer_id}/assign", "conversation_assigned", "Assigned a conversation", WORK)
+_add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
+_add("POST", "/escalations/{escalation_id}/claim", "escalation_claimed", "Took an escalation", WORK)
+_add("POST", "/escalations/{escalation_id}/release", "escalation_released", "Handed an escalation back", WORK)
 _add("PATCH", "/escalations/{escalation_id}/status", "escalation_updated", "Updated an escalation", WORK)
 _add("POST", "/escalations/{escalation_id}/acknowledge", "escalation_updated", "Acknowledged an escalation", WORK)
 _add("POST", "/flows/{flow_id}/send", "flow_sent", "Sent a WhatsApp Flow to a customer", WORK)
@@ -206,7 +209,10 @@ for _m, _p, _a, _s in [
     ("GET", "/export/customers", "data_export", "Downloaded the customer list"),
     ("GET", "/export/conversations", "data_export", "Downloaded conversations"),
     ("GET", "/ledger/export/tally", "data_export", "Downloaded the Tally export"),
-    ("POST", "/team/invites", "team_changed", "Invited someone to the team"),
+    ("POST", "/team/members", "team_member_added", "Added a team member"),
+    ("PATCH", "/team/members/{user_id}", "team_role_changed", "Changed a team member's role"),
+    ("DELETE", "/team/members/{user_id}", "team_member_removed", "Removed a team member"),
+    ("POST", "/team/members/{user_id}/reset-password", "team_password_reset", "Reset a team member's password"),
 ]:
     _add(_m, _p, _a, _s, SECURITY)
 
@@ -219,6 +225,8 @@ NOT_ACTIVITY = {
     ("POST", API + "/post-call-rules/test"), ("POST", API + "/templates/sync"),
     ("POST", API + "/templates/carousel/draft"), ("POST", API + "/commands/understand"),
     ("POST", API + "/owner/ask"), ("POST", API + "/voice-onboarding/preview-voice"),
+    # Heartbeat of an open thread, every few seconds - not a decision anyone made.
+    ("POST", API + "/conversations/{customer_id}/presence"),
 }
 NOT_ACTIVITY_PREFIXES = (API + "/push/", API + "/auth/")
 # /auth/me is a change; the rest of /auth is signing in and out (recorded by hand).
@@ -323,6 +331,7 @@ def label_for(user) -> str:
         getattr(user, "full_name", None)
         or getattr(user, "email", None)
         or getattr(user, "phone", None)
+        or getattr(user, "username", None)
         or "Unknown"
     )[:255]
 

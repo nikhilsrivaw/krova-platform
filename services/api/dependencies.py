@@ -31,6 +31,10 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# The only requests a handed-over password may make before it is replaced.
+_PASSWORD_PENDING_OK = ("/auth/me", "/auth/change-password", "/auth/logout")
+
+
 @dataclass(slots=True)
 class CurrentUser:
     """Who is making this request, and what they may act on."""
@@ -92,6 +96,13 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is not active"
+        )
+
+    if user.must_change_password and not request.url.path.endswith(_PASSWORD_PENDING_OK):
+        # A password someone else chose is only good for choosing your own.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "password_change_required", "message": "Choose a new password to continue."},
         )
 
     business_id: uuid.UUID | None = None

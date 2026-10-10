@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from shared.team import conflict
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared import verticals
 from shared.auth.encryption import decrypt, encrypt
@@ -357,6 +358,14 @@ async def send_flow(
     if identity is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "This customer has no WhatsApp number on record")
     to = identity.value
+
+    try:
+        await conflict.guard_reply(
+            db, business_id=current_user.business, customer_id=customer_uuid,
+            actor_id=current_user.id, actor_role=current_user.role,
+        )
+    except conflict.AssignedToOther as exc:
+        raise conflict.to_http(exc) from exc
 
     last_inbound = await db.execute(
         select(Message.occurred_at)

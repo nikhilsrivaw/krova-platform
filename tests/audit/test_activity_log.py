@@ -36,8 +36,7 @@ def test_every_owner_only_route_has_its_own_readable_label():
 
 
 def test_labels_point_at_routes_that_exist():
-    future = {("POST", API + "/team/invites")}  # the invite flow is planned, not built yet
-    stale = {key for key in activity.LABELS if key not in _real_routes() and key not in future}
+    stale = {key for key in activity.LABELS if key not in _real_routes()}
     assert not stale, f"labels for routes that do not exist: {sorted(stale)}"
 
 

@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.audit import activity
+from shared.team import conflict, presence
 from shared.channels.whatsapp.client import SERVICE_WINDOW, within_service_window
 from shared.db.models import (
     BusinessMember,
@@ -347,6 +348,7 @@ async def assign_conversation(
 
     if user_id is None:
         customer.assigned_to_user_id = None
+        customer.assigned_at = None
         return {"customer_id": str(customer.id), "assigned_to_user_id": None}
 
     target_id = uuid.UUID(user_id)
@@ -362,5 +364,58 @@ async def assign_conversation(
         )
 
     customer.assigned_to_user_id = target_id
+    customer.assigned_at = datetime.now(timezone.utc)
     activity.note(assigned_to=str(target_id))
     return {"customer_id": str(customer.id), "assigned_to_user_id": str(target_id)}
+
+
+@router.post("/{customer_id}/take-over")
+async def take_over_conversation(
+    customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    Make this chat yours, whoever had it. The one-tap answer to "this chat is with
+    Rahul" - logged, and the previous owner is told on their next look at it.
+    """
+    previous = await conflict.take_over(
+        db, business_id=current_user.business, customer_id=customer_id, actor_id=current_user.id
+    )
+    return {
+        "customer_id": str(customer_id),
+        "assigned_to_user_id": str(current_user.id),
+        "previous_user_id": str(previous) if previous else None,
+    }
+
+
+class PresenceIn(BaseModel):
+    typing: bool = False
+    # True when the person closes the thread, so their name goes away at once.
+    left: bool = False
+
+
+@router.post("/{customer_id}/presence")
+async def thread_presence(
+    customer_id: uuid.UUID, body: PresenceIn, current_user: CurrentUserDep, db: DbDep
+) -> dict:
+    """
+    Heartbeat from an open thread: "I am here" (and whether I am typing). Returns
+    the teammates who are here too, so the UI can say "Rahul is replying".
+    Advisory only; the hard guard is on sending.
+    """
+    customer = await db.get(Customer, customer_id)
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    if body.left:
+        await presence.leave(
+            db, business_id=current_user.business, customer_id=customer_id, user_id=current_user.id
+        )
+        return {"viewers": []}
+    await presence.touch(
+        db, business_id=current_user.business, customer_id=customer_id,
+        user_id=current_user.id, typing=body.typing,
+    )
+    viewers = await presence.viewers(
+        db, business_id=current_user.business, customer_id=customer_id,
+        exclude_user_id=current_user.id,
+    )
+    return {"viewers": viewers}

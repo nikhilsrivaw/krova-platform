@@ -10,7 +10,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.auth.passwords import hash_password, needs_rehash, verify_password
@@ -49,6 +51,24 @@ class InvalidCredentials(AuthError):
 
 class AccountDisabled(AuthError):
     pass
+
+
+class AccountLocked(AuthError):
+    """Too many wrong passwords in a row; try again after the lock ends."""
+
+    def __init__(self, message: str, retry_after_seconds: int):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class WrongCurrentPassword(AuthError):
+    pass
+
+
+# Team sign-in: a wrong password this many times in a row locks the account for
+# a while. The owner can reset the password (which also unlocks) at any time.
+MAX_FAILED_LOGINS = 5
+LOCK_MINUTES = 15
 
 
 @dataclass(slots=True)
@@ -350,6 +370,104 @@ async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
     return await _issue_session(user, business, role, db)
 
 
+async def _record_failed_login(user_id: uuid.UUID) -> None:
+    """
+    Count a wrong password in its own transaction: the request is about to
+    raise, and the request's session rolls back on an exception, which would
+    throw the count away and make the lock meaningless.
+    """
+    from shared.db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as own:
+        user = await own.get(User, user_id, with_for_update=True)
+        if user is None:
+            return
+        user.failed_logins = (user.failed_logins or 0) + 1
+        if user.failed_logins >= MAX_FAILED_LOGINS:
+            user.locked_until = _now() + timedelta(minutes=LOCK_MINUTES)
+            user.failed_logins = 0
+        await own.commit()
+
+
+async def authenticate_team(team_id: str, password: str, db: AsyncSession) -> Session:
+    """
+    Sign in with the Team ID an owner or admin created, plus its password.
+
+    Same discipline as authenticate(): an unknown ID and a wrong password
+    answer identically. Five wrong passwords lock the account for 15 minutes.
+    Only accounts made through the Team page have a Team ID, so this cannot
+    be used to probe owners' email accounts.
+    """
+    key = team_id.strip().lower()
+    user = None
+    if key:
+        user = (await db.execute(select(User).where(User.username == key))).scalar_one_or_none()
+
+    if user is None:
+        hash_password("timing-equalisation-placeholder")
+        raise InvalidCredentials("Team ID or password is incorrect")
+
+    now = _now()
+    if user.locked_until is not None and user.locked_until > now:
+        wait = int((user.locked_until - now).total_seconds()) + 1
+        raise AccountLocked(
+            "Too many wrong passwords. Try again in a few minutes, "
+            "or ask your owner to reset your password.",
+            retry_after_seconds=wait,
+        )
+
+    if not verify_password(password, user.password_hash):
+        await _record_failed_login(user.id)
+        raise InvalidCredentials("Team ID or password is incorrect")
+
+    if not user.is_active:
+        raise AccountDisabled("This account has been disabled")
+
+    if needs_rehash(user.password_hash):
+        user.password_hash = hash_password(password)
+    user.failed_logins = 0
+    user.locked_until = None
+    user.last_login_at = now
+
+    membership = await _primary_membership(user.id, db)
+    if membership is None:
+        # Removed from the team: the account exists but has nowhere to sign in to.
+        raise AccountDisabled("You are no longer part of this team")
+    business, role = membership
+    return await _issue_session(user, business, role, db)
+
+
+async def change_password(
+    user_id: uuid.UUID, current_password: str, new_password: str, db: AsyncSession,
+) -> Session:
+    """
+    Let a signed-in person choose their own password.
+
+    Needs the current one even when it was handed over by the owner: a stolen
+    session alone must not be enough to take the account. Every session is
+    signed out, the must-change flag is cleared, and a fresh session for this
+    device is returned.
+    """
+    from shared.auth.passwords import validate_password
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise UserNotFound("Account not found")
+    if not verify_password(current_password, user.password_hash):
+        raise WrongCurrentPassword("Current password is incorrect")
+    validate_password(new_password)
+    if verify_password(new_password, user.password_hash):
+        raise AuthError("Choose a password different from the current one")
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+    user.failed_logins = 0
+    user.locked_until = None
+    await revoke_all_sessions(user.id, db)
+    membership = await _primary_membership(user.id, db)
+    business, role = membership if membership else (None, None)
+    return await _issue_session(user, business, role, db, record_login=False)
+
+
 async def refresh_session(refresh_token: str, db: AsyncSession) -> Session:
     """
     Exchange a refresh token for a new pair, and consume the old one.
@@ -430,7 +548,17 @@ async def _primary_membership(
         select(Business, BusinessMember.role)
         .join(BusinessMember, BusinessMember.business_id == Business.id)
         .where(BusinessMember.user_id == user_id, Business.is_active == True)  # noqa: E712
-        .order_by(BusinessMember.role, Business.created_at)
+        # Role is a string, so ordering by it puts admin < agent < owner. Rank
+        # explicitly so someone who owns one business and works in another
+        # lands in the one they own.
+        .order_by(
+            case(
+                (BusinessMember.role == BusinessRole.owner, 0),
+                (BusinessMember.role == BusinessRole.admin, 1),
+                else_=2,
+            ),
+            Business.created_at,
+        )
     )
     row = result.first()
     if row is None:

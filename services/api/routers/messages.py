@@ -54,6 +54,7 @@ from shared.db.models import (
 )
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
 from shared.audit import activity
+from shared.team import conflict
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -113,6 +114,22 @@ async def _connection(business_id: uuid.UUID, db: DbDep) -> ChannelConnection:
             status_code=status.HTTP_409_CONFLICT, detail="Connect WhatsApp first"
         )
     return connection
+
+
+async def _guard(current_user, db, *, phone: str | None = None, igsid: str | None = None) -> None:
+    """
+    Stop an agent replying to a teammate's customer (409 with the owner's name,
+    which the apps turn into "Take over"), and give an unowned chat to the first
+    agent who answers it. See shared/team/conflict.py.
+    """
+    try:
+        await conflict.guard_reply_to(
+            db, business_id=current_user.business,
+            kind="phone" if phone else "instagram", value=phone or igsid or "",
+            actor_id=current_user.id, actor_role=current_user.role,
+        )
+    except conflict.AssignedToOther as exc:
+        raise conflict.to_http(exc) from exc
 
 
 async def _last_inbound(
@@ -198,6 +215,7 @@ async def send_text(
         activity.note(to=activity.mask_phone(to), channel="whatsapp")
     except InvalidIdentifier as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _guard(current_user, db, phone=to)
 
     connection = await _connection(current_user.business, db)
     _, last_inbound = await _last_inbound(current_user.business, to, db)
@@ -256,6 +274,7 @@ async def send_template(
         activity.note(to=activity.mask_phone(to), channel="whatsapp")
     except InvalidIdentifier as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _guard(current_user, db, phone=to)
 
     connection = await _connection(current_user.business, db)
 
@@ -347,6 +366,7 @@ async def _open_connection_and_window(to_raw: str, current_user: CurrentUserDep,
         to = normalise_phone(to_raw)
     except InvalidIdentifier as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _guard(current_user, db, phone=to)
 
     connection = await _connection(current_user.business, db)
     _, last_inbound = await _last_inbound(current_user.business, to, db)
@@ -683,6 +703,7 @@ async def send_instagram_text(
     person continuing a conversation. Used automatically, not left to the
     caller, since every call into this endpoint already is one.
     """
+    await _guard(current_user, db, igsid=body.to)
     last_inbound = await _last_inbound_instagram(current_user.business, body.to, db)
     if last_inbound is None:
         raise HTTPException(
@@ -797,6 +818,7 @@ async def send_instagram_carousel(
                     f"Button '{button.title}' needs a payload",
                 )
 
+    await _guard(current_user, db, igsid=body.to)
     connection = await _active_instagram_connection(current_user.business, db)
     client = InstagramClient.for_connection(connection)
     try:
@@ -960,6 +982,7 @@ async def send_saved_instagram_carousel(
     carousel = await db.get(InstagramCarousel, carousel_id)
     if carousel is None or carousel.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Carousel not found")
+    await _guard(current_user, db, igsid=body.to)
     if instagram_carousel_needs_values(carousel.elements):
         # {{1}}-style blanks are for the AI to fill from a conversation. Sent by
         # hand there is nothing to fill them with, and the customer would

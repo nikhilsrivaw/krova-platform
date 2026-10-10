@@ -92,6 +92,22 @@ class User(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Team members an owner/admin creates sign in with a Team ID (this) and a
+    # password, with no email or phone needed. Globally unique, lowercase.
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    # Set when someone else chose the password; cleared when the person picks
+    # their own. Until then the account can only change its password.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    failed_logins: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     memberships: Mapped[list["BusinessMember"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
@@ -258,6 +274,7 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # A business's own funnel step ("New", "Qualified", "Won"), free text and
     # set by hand. Unlike everything in customer_tags this is never inferred -

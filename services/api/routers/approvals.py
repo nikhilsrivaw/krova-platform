@@ -37,6 +37,7 @@ from shared.db.models import (
     MessageDraft,
 )
 from shared.audit import activity
+from shared.team import conflict
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -117,13 +118,28 @@ async def _out(draft: MessageDraft, db: DbDep) -> DraftOut:
     )
 
 
-async def _owned(draft_id: uuid.UUID, business_id: uuid.UUID, db: DbDep) -> MessageDraft:
-    draft = await db.get(MessageDraft, draft_id)
+async def _owned(
+    draft_id: uuid.UUID, business_id: uuid.UUID, db: DbDep, *, lock: bool = False
+) -> MessageDraft:
+    # lock=True takes the row lock, so two people approving the same draft at
+    # the same moment queue up: the second one then sees it already sent.
+    draft = await db.get(MessageDraft, draft_id, with_for_update=lock)
     if draft is None or draft.business_id != business_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found"
         )
     return draft
+
+
+async def _guard_customer(draft: MessageDraft, current_user, db) -> None:
+    """An agent may not answer (or bin an answer for) a teammate's customer."""
+    try:
+        await conflict.guard_reply(
+            db, business_id=current_user.business, customer_id=draft.customer_id,
+            actor_id=current_user.id, actor_role=current_user.role,
+        )
+    except conflict.AssignedToOther as exc:
+        raise conflict.to_http(exc) from exc
 
 
 @router.get("", response_model=list[DraftOut])
@@ -180,13 +196,14 @@ async def approve(
     difference between what the agent wrote and what a person sent is the
     best signal we get about where it is wrong.
     """
-    draft = await _owned(draft_id, current_user.business, db)
+    draft = await _owned(draft_id, current_user.business, db, lock=True)
 
     if draft.status != DraftStatus.pending:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This draft is already {_value(draft.status)}",
         )
+    await _guard_customer(draft, current_user, db)
 
     now = datetime.now(timezone.utc)
     expires = draft.expires_at
@@ -236,12 +253,13 @@ async def reject(
     The note is optional but valuable - a rejected draft with a reason says
     more about what is going wrong than ten approvals say about what is right.
     """
-    draft = await _owned(draft_id, current_user.business, db)
+    draft = await _owned(draft_id, current_user.business, db, lock=True)
     if draft.status != DraftStatus.pending:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This draft is already {_value(draft.status)}",
         )
+    await _guard_customer(draft, current_user, db)
 
     draft.status = DraftStatus.rejected
     draft.rejection_note = (body.note or "").strip() or None
