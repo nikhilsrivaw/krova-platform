@@ -8,7 +8,7 @@ reachable by a real business, only by test scripts.
 """
 
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -17,7 +17,8 @@ from sqlalchemy import select
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared import verticals
 from shared.db.models import (
-    Appointment, AvailabilityException, AvailabilityRule, Business, Customer, Doctor, IntakeChannel,
+    Appointment, AppointmentStatus, AvailabilityException, AvailabilityRule, Business, Customer, Doctor,
+    IntakeChannel,
 )
 from shared.verticals import labels
 from shared.scheduling import availability as scheduling_availability
@@ -445,6 +446,45 @@ async def cancel_appointment(
     appointment = await _owned_appointment(appointment_id, current_user.business, db)
     doctor = await db.get(Doctor, appointment.doctor_id)
     appointment = await scheduling_booking.cancel(db, appointment=appointment, reason=body.reason)
+    return _appointment_out(appointment, doctor.name if doctor else "")
+
+
+class AppointmentStatusIn(BaseModel):
+    status: str  # confirmed | visited | no_show
+
+
+_SETTABLE = {"confirmed", "visited", "no_show"}
+# Held, waiting on a deposit, or cancelled: not the staff's to flip to "came" or "did not come".
+_LOCKED = {AppointmentStatus.cancelled, AppointmentStatus.awaiting_deposit}
+
+
+def next_status(current: AppointmentStatus, wanted: str, starts_at: datetime, now: datetime) -> AppointmentStatus:
+    """
+    What staff may record after the fact: the person came, did not come, or (to undo a
+    slip) is simply booked again. Raises ValueError with a message fit to show.
+    """
+    if wanted not in _SETTABLE:
+        raise ValueError("status must be confirmed, visited or no_show")
+    if current in _LOCKED:
+        raise ValueError(f"A {current.value.replace('_', ' ')} booking cannot be marked this way")
+    if wanted == "no_show" and starts_at > now:
+        raise ValueError("A booking that has not started yet cannot be marked as a no-show")
+    return AppointmentStatus(wanted)
+
+
+@router.post("/appointments/{appointment_id}/status", response_model=AppointmentOut)
+async def set_appointment_status(
+    appointment_id: uuid.UUID, body: AppointmentStatusIn, current_user: CurrentUserDep, db: DbDep
+) -> AppointmentOut:
+    """Mark a booking as visited / no-show (or back to confirmed). This is what recall and no-show history read."""
+    await _require_scheduling(current_user.business, db)
+    appointment = await _owned_appointment(appointment_id, current_user.business, db)
+    try:
+        appointment.status = next_status(appointment.status, body.status, appointment.starts_at, datetime.now(timezone.utc))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    doctor = await db.get(Doctor, appointment.doctor_id)
+    await db.commit()
     return _appointment_out(appointment, doctor.name if doctor else "")
 
 
