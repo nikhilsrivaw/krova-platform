@@ -490,6 +490,19 @@ async def buy_number(body: BuyIn, current_user: OwnerOrAdminDep, db: DbDep) -> B
             detail=f"KYC is not approved yet (status: {row.status.value})",
         )
 
+    # The number costs KROVA rent every month, so the first month is taken from the
+    # wallet before it is bought - no money in the wallet, no number.
+    from shared.billing import plans as billing_plans, wallet as billing_wallet
+
+    if (await billing_wallet.balance(db, current_user.business) or 0) < billing_plans.NUMBER_RENT_PAISE:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "wallet_empty",
+                "message": f"Add at least Rs {billing_plans.NUMBER_RENT_PAISE // 100} to your wallet first - that is one month of rent for the number.",
+            },
+        )
+
     sub = _subaccount_of(row)
     try:
         await plivo_client.buy_number(
@@ -521,6 +534,7 @@ async def buy_number(body: BuyIn, current_user: OwnerOrAdminDep, db: DbDep) -> B
         },
     )
     db.add(connection)
+    await billing_wallet.charge_number_rent(db, business_id=current_user.business, number=body.number)
     await db.commit()
 
     logger.info(

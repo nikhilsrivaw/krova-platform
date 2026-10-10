@@ -110,6 +110,10 @@ _add("POST", "/approvals/{draft_id}/reject", "draft_rejected", "Rejected an AI r
 _add("POST", "/conversations/{customer_id}/assign", "conversation_assigned", "Assigned a conversation", WORK)
 _add("PUT", "/team/me/availability", "availability_changed", "Changed own availability", WORK)
 _add("POST", "/team/transfer-ownership", "ownership_transferred", "Transferred ownership of the business", SECURITY)
+_add("POST", "/billing/subscribe", "plan_checkout_started", "Started paying for a plan", SECURITY)
+_add("POST", "/billing/topup", "wallet_topup_started", "Started adding money to the wallet", SECURITY)
+_add("POST", "/billing/cancel", "plan_cancelled", "Cancelled the plan", SECURITY)
+_add("POST", "/billing/resume", "plan_resumed", "Resumed the plan", SECURITY)
 _add("PUT", "/team/settings", "team_settings_changed", "Changed team settings", CONFIG)
 _add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
 _add("POST", "/escalations/{escalation_id}/claim", "escalation_claimed", "Took an escalation", WORK)
@@ -230,6 +234,8 @@ NOT_ACTIVITY = {
     ("POST", API + "/owner/ask"), ("POST", API + "/voice-onboarding/preview-voice"),
     # Heartbeat of an open thread, every few seconds - not a decision anyone made.
     ("POST", API + "/conversations/{customer_id}/presence"),
+    # PayU calling us - no signed-in person behind these.
+    ("POST", API + "/billing/payu/return"), ("POST", API + "/billing/payu/webhook"),
 }
 NOT_ACTIVITY_PREFIXES = (API + "/push/", API + "/auth/")
 # /auth/me is a change; the rest of /auth is signing in and out (recorded by hand).

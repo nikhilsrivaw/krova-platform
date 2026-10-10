@@ -387,6 +387,9 @@ def _step_out(step: CampaignStep, counts: dict[str, int]) -> CampaignStepOut:
 
 
 async def _owned_campaign(campaign_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> Campaign:
+    from shared.billing.guards import require_active_plan
+
+    await require_active_plan(db, current_user.business)
     campaign = await db.get(Campaign, campaign_id)
     if campaign is None or campaign.business_id != current_user.business:
         raise HTTPException(status_code=404, detail="Campaign not found")

@@ -236,6 +236,13 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         # Watching only. The business has not asked for drafts yet.
         return None
 
+    # A plan that is paused for non-payment drafts and sends nothing; the messages
+    # are still stored and visible. (Businesses without a subscription are never paused.)
+    from shared.billing.guards import plan_blocked
+
+    if await plan_blocked(db, message.business_id):
+        return None
+
     # If a newer inbound message exists, this one is stale - the customer has
     # moved on, and answering the older message would be answering the wrong
     # question.

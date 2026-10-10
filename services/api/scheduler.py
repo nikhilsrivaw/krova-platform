@@ -511,6 +511,38 @@ async def check_reply_times() -> None:
         logger.exception("reply-time sweep failed")
 
 
+async def run_billing_renewals() -> None:
+    """Tell PayU a monthly charge is coming, charge it, retry failures for a week, settle pending payments."""
+    from shared.billing import service as billing_service
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            counts = await billing_service.renewal_sweep(db)
+            await db.commit()
+            if any(counts.values()):
+                logger.info("billing sweep: %s", counts)
+    except Exception:
+        logger.exception("billing renewal sweep failed")
+
+
+async def run_wallet_sweep() -> None:
+    """Charge voice usage (cost + 25%) to wallets, take this month's number rent, warn on low balance."""
+    from shared.billing import wallet
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            charged = await wallet.settle_voice_usage(db)
+            paid, short = await wallet.collect_number_rent(db)
+            low = await wallet.alert_low_balances(db)
+            await db.commit()
+            if charged or short or low:
+                logger.info("wallet sweep: calls=%s rent_paid=%s rent_short=%s low=%s", charged, paid, short, low)
+    except Exception:
+        logger.exception("wallet sweep failed")
+
+
 async def sync_zoho_books() -> None:
     """
     Pull open Zoho Books invoices for every connected business, once a day.
@@ -744,6 +776,22 @@ def build() -> AsyncIOScheduler:
         id="reclaim_stalled_jobs",
         replace_existing=True,
         misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        run_billing_renewals,
+        IntervalTrigger(minutes=30),
+        id="run_billing_renewals",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        run_wallet_sweep,
+        IntervalTrigger(minutes=10),
+        id="run_wallet_sweep",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     scheduler.add_job(

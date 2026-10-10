@@ -130,6 +130,17 @@ class Settings(BaseSettings):
     # here instead of the marketing/desktop site.
     app_base_url: str = Field(default="https://app.krova.space", alias="APP_BASE_URL")
 
+    # PayU: the business paying KROVA (plans and wallet top-ups). env=test uses PayU's
+    # sandbox. The gateway fee is added on top of a top-up so the wallet gets the full
+    # credit: 2% fee + 18% GST on that fee = 2.36%.
+    payu_key: str = Field(default="", alias="PAYU_KEY")
+    payu_salt: str = Field(default="", alias="PAYU_SALT")
+    payu_env: str = Field(default="test", alias="PAYU_ENV")
+    payu_fee_pct: float = Field(default=2.36, alias="PAYU_FEE_PCT")
+    # ISO date (e.g. 2026-11-15). Businesses CREATED on/after it must have a paid plan; earlier
+    # ones are never restricted. Empty = no business is ever restricted for not subscribing.
+    billing_enforced_from: str = Field(default="", alias="BILLING_ENFORCED_FROM")
+
     # India data residency for a connected number. Kept because we want it,
     # but NOT currently applied: passing data_localization_region to
     # /register is rejected on v21.0+, and local storage can now only be

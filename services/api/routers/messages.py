@@ -122,6 +122,9 @@ async def _guard(current_user, db, *, phone: str | None = None, igsid: str | Non
     which the apps turn into "Take over"), and give an unowned chat to the first
     agent who answers it. See shared/team/conflict.py.
     """
+    from shared.billing.guards import require_active_plan
+
+    await require_active_plan(db, current_user.business)
     try:
         await conflict.guard_reply_to(
             db, business_id=current_user.business,

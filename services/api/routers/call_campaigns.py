@@ -317,6 +317,10 @@ async def send_call_campaign(campaign_id: uuid.UUID, current_user: OwnerOrAdminD
     recipients inline; see this module's own docstring for why that would
     be wrong for voice specifically.
     """
+    from shared.billing.guards import require_active_plan, require_wallet
+
+    await require_active_plan(db, current_user.business)
+    await require_wallet(db, current_user.business)
     campaign = await db.get(CallCampaign, campaign_id)
     if campaign is None or campaign.business_id != current_user.business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call campaign not found")

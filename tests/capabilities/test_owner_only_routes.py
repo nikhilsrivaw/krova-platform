@@ -82,7 +82,8 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/justdial/token"), ("POST", "/indiamart/token"), ("POST", "/lead-sources/{key}/token"),
     ("POST", "/email-leads/token"), ("POST", "/zoho/sync"), ("DELETE", "/zoho/connection"),
     # who is on the team (the finer owner-vs-admin rules are in shared/team/members.py)
-    ("PUT", "/team/settings"), ("POST", "/team/transfer-ownership"), ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
+    ("PUT", "/team/settings"), ("POST", "/team/transfer-ownership"),
+    ("POST", "/billing/subscribe"), ("POST", "/billing/topup"), ("POST", "/billing/cancel"), ("POST", "/billing/resume"), ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
     ("DELETE", "/team/members/{user_id}"), ("POST", "/team/members/{user_id}/reset-password"),
 ]}
 
@@ -103,6 +104,7 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     ("GET", "/integrations/webhooks"), ("GET", "/integrations/api-keys"),
     # the owner's record of what each person did
     ("GET", "/team/activity"), ("GET", "/team/activity/summary"),
+    ("GET", "/billing"), ("GET", "/billing/quote"),
 ]}
 
 # What staff do all day - one customer at a time - must stay open to them.
@@ -158,6 +160,15 @@ def test_staff_can_still_do_their_day_to_day_work():
     existing = {(m, r.path) for r in app.routes if isinstance(r, APIRoute) for m in r.methods}
     assert OPEN_TO_STAFF <= existing, f"no such route: {sorted(OPEN_TO_STAFF - existing)}"
     assert OPEN_TO_STAFF <= open_now, f"wrongly locked: {sorted(OPEN_TO_STAFF - open_now)}"
+
+
+def test_payu_callbacks_have_no_login_guard():
+    # PayU's servers and the customer's browser call these; a role guard would break every payment.
+    from services.api.main import app
+
+    for path in ("/api/v1/billing/payu/return", "/api/v1/billing/payu/webhook"):
+        route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == path)
+        assert require_owner_or_admin not in {d.call for d in route.dependant.dependencies}
 
 
 def test_meta_callbacks_are_not_mistaken_for_staff_actions():

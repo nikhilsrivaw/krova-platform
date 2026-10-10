@@ -359,6 +359,9 @@ async def send_flow(
         raise HTTPException(status.HTTP_409_CONFLICT, "This customer has no WhatsApp number on record")
     to = identity.value
 
+    from shared.billing.guards import require_active_plan
+
+    await require_active_plan(db, current_user.business)
     try:
         await conflict.guard_reply(
             db, business_id=current_user.business, customer_id=customer_uuid,
