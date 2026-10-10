@@ -10,7 +10,7 @@ from datetime import datetime
 from fastapi import APIRouter, Query, Response
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.db.models import Customer, CustomerIdentity, Message
 from shared.reports import csv_export
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/export", tags=["export"])
 
 
 @router.get("/customers")
-async def export_customers(current_user: CurrentUserDep, db: DbDep) -> Response:
+async def export_customers(current_user: OwnerOrAdminDep, db: DbDep) -> Response:
     customers = (
         await db.execute(select(Customer).where(Customer.business_id == current_user.business))
     ).scalars().all()
@@ -44,7 +44,7 @@ async def export_customers(current_user: CurrentUserDep, db: DbDep) -> Response:
 
 @router.get("/conversations")
 async def export_conversations(
-    current_user: CurrentUserDep, db: DbDep, since: datetime | None = Query(default=None),
+    current_user: OwnerOrAdminDep, db: DbDep, since: datetime | None = Query(default=None),
 ) -> Response:
     query = select(Message).where(Message.business_id == current_user.business)
     if since:

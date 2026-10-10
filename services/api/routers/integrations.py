@@ -16,7 +16,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth import tokens
 from shared.auth.encryption import decrypt, encrypt
 from shared.auth.tokens import TokenError
@@ -56,7 +56,7 @@ class CalendarStatusOut(BaseModel):
 
 
 @router.get("/google-calendar/connect-url", response_model=ConnectUrlOut)
-async def google_calendar_connect_url(current_user: CurrentUserDep) -> ConnectUrlOut:
+async def google_calendar_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlOut:
     if not settings.google_calendar_client_id or not settings.google_calendar_redirect_uri:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -135,7 +135,7 @@ async def google_calendar_status(current_user: CurrentUserDep, db: DbDep) -> Cal
 
 
 @router.post("/google-calendar/disconnect", status_code=status.HTTP_204_NO_CONTENT)
-async def google_calendar_disconnect(current_user: CurrentUserDep, db: DbDep) -> None:
+async def google_calendar_disconnect(current_user: OwnerOrAdminDep, db: DbDep) -> None:
     result = await db.execute(
         select(CalendarConnection).where(
             CalendarConnection.business_id == current_user.business,
@@ -191,7 +191,7 @@ async def github_status(current_user: CurrentUserDep, db: DbDep) -> GitHubConnec
 
 
 @router.post("/github", response_model=GitHubConnectionOut, status_code=status.HTTP_201_CREATED)
-async def connect_github(body: GitHubConnectionIn, current_user: CurrentUserDep, db: DbDep) -> GitHubConnectionOut:
+async def connect_github(body: GitHubConnectionIn, current_user: OwnerOrAdminDep, db: DbDep) -> GitHubConnectionOut:
     # A real check, not just stored credentials - confirms the token can
     # actually see this repo before the connection is saved, same
     # "prove it before storing it" instinct as Shiprocket's own real
@@ -228,7 +228,7 @@ async def connect_github(body: GitHubConnectionIn, current_user: CurrentUserDep,
 
 
 @router.delete("/github", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_github(current_user: CurrentUserDep, db: DbDep) -> None:
+async def disconnect_github(current_user: OwnerOrAdminDep, db: DbDep) -> None:
     result = await db.execute(
         select(GitHubConnection).where(GitHubConnection.business_id == current_user.business)
     )
@@ -282,7 +282,7 @@ async def email_connection_status(current_user: CurrentUserDep, db: DbDep) -> Em
 
 
 @router.post("/email-connection", response_model=EmailConnectionOut, status_code=status.HTTP_201_CREATED)
-async def connect_email(body: EmailConnectionIn, current_user: CurrentUserDep, db: DbDep) -> EmailConnectionOut:
+async def connect_email(body: EmailConnectionIn, current_user: OwnerOrAdminDep, db: DbDep) -> EmailConnectionOut:
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
@@ -313,7 +313,7 @@ async def connect_email(body: EmailConnectionIn, current_user: CurrentUserDep, d
 
 
 @router.delete("/email-connection", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_email(current_user: CurrentUserDep, db: DbDep) -> None:
+async def disconnect_email(current_user: OwnerOrAdminDep, db: DbDep) -> None:
     result = await db.execute(
         select(EmailSendConnection).where(EmailSendConnection.business_id == current_user.business)
     )
@@ -369,7 +369,7 @@ async def stripe_status(current_user: CurrentUserDep, db: DbDep) -> StripeConnec
 
 
 @router.post("/stripe", response_model=StripeConnectionOut, status_code=status.HTTP_201_CREATED)
-async def connect_stripe(body: StripeConnectionIn, current_user: CurrentUserDep, db: DbDep) -> StripeConnectionOut:
+async def connect_stripe(body: StripeConnectionIn, current_user: OwnerOrAdminDep, db: DbDep) -> StripeConnectionOut:
     existing = (
         await db.execute(select(StripeConnection).where(StripeConnection.business_id == current_user.business))
     ).scalar_one_or_none()
@@ -409,7 +409,7 @@ async def connect_stripe(body: StripeConnectionIn, current_user: CurrentUserDep,
 
 
 @router.delete("/stripe", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_stripe(current_user: CurrentUserDep, db: DbDep) -> None:
+async def disconnect_stripe(current_user: OwnerOrAdminDep, db: DbDep) -> None:
     result = await db.execute(
         select(StripeConnection).where(StripeConnection.business_id == current_user.business)
     )
@@ -488,7 +488,7 @@ async def list_webhooks(current_user: CurrentUserDep, db: DbDep) -> list[Webhook
 
 
 @router.post("/webhooks", response_model=WebhookOut, status_code=status.HTTP_201_CREATED)
-async def create_webhook(body: WebhookIn, current_user: CurrentUserDep, db: DbDep) -> WebhookOut:
+async def create_webhook(body: WebhookIn, current_user: OwnerOrAdminDep, db: DbDep) -> WebhookOut:
     _validate_events(body.event_types)
     _validate_format(body.format)
     webhook = OutboundWebhook(
@@ -513,7 +513,7 @@ class WebhookPatch(BaseModel):
 
 
 @router.patch("/webhooks/{webhook_id}", response_model=WebhookOut)
-async def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, current_user: CurrentUserDep, db: DbDep) -> WebhookOut:
+async def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, current_user: OwnerOrAdminDep, db: DbDep) -> WebhookOut:
     webhook = await db.get(OutboundWebhook, webhook_id)
     if webhook is None or webhook.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Webhook not found")
@@ -562,7 +562,7 @@ async def list_api_keys(current_user: CurrentUserDep, db: DbDep) -> list[ApiKeyO
 
 
 @router.post("/api-keys", response_model=ApiKeyOut, status_code=status.HTTP_201_CREATED)
-async def create_api_key(body: ApiKeyIn, current_user: CurrentUserDep, db: DbDep) -> ApiKeyOut:
+async def create_api_key(body: ApiKeyIn, current_user: OwnerOrAdminDep, db: DbDep) -> ApiKeyOut:
     raw_key, key_hash, prefix = api_keys_module.generate()
     key = ApiKey(business_id=current_user.business, name=body.name, key_hash=key_hash, key_prefix=prefix, active=True)
     db.add(key)
@@ -572,7 +572,7 @@ async def create_api_key(body: ApiKeyIn, current_user: CurrentUserDep, db: DbDep
 
 
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_api_key(key_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_api_key(key_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     key = await db.get(ApiKey, key_id)
     if key is None or key.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "API key not found")
@@ -580,7 +580,7 @@ async def delete_api_key(key_id: uuid.UUID, current_user: CurrentUserDep, db: Db
 
 
 @router.delete("/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_webhook(webhook_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_webhook(webhook_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     webhook = await db.get(OutboundWebhook, webhook_id)
     if webhook is None or webhook.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Webhook not found")

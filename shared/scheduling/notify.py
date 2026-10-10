@@ -620,7 +620,11 @@ async def send_payment_failed_reminder(
     return await _send(
         db, business=business, customer=customer,
         template_name=PAYMENT_FAILED_TEMPLATE_NAME,
-        body_params=[customer.display_name or "there", invoice_url or ""],
+        # Never an empty value: Meta refuses a template parameter that is blank,
+        # and the whole message with it. With no link from Stripe the sentence
+        # still reads sensibly ("... update your payment method here: your
+        # billing page").
+        body_params=[customer.display_name or "there", invoice_url or "your billing page"],
         plain_text=(
             f"Hi, your last payment to {business.name} didn't go through - "
             + (f"you can update your payment method here: {invoice_url}" if invoice_url else "please update your payment method to keep your account active.")

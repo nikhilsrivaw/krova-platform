@@ -208,10 +208,32 @@ def test_only_the_missing_one_click_templates_are_submitted(meta_calls):
     assert meta_calls.submitted == ["abandoned_cart_recovery", "cod_confirmation"]
 
 
-def test_the_template_that_cannot_be_written_for_the_owner_is_reported_not_submitted(meta_calls):
+def test_a_template_flagged_as_manual_is_reported_and_never_submitted(meta_calls, monkeypatch):
+    from dataclasses import replace
+
+    manual = replace(rt.BY_NAME["bug_fixed_notification"], one_click=False, note="Create by hand.")
+    monkeypatch.setattr(
+        rt, "CATALOGUE", tuple(manual if t.name == manual.name else t for t in rt.CATALOGUE)
+    )
     report = asyncio.run(rt.create_missing(None, uuid.uuid4(), "product_feedback"))
-    assert report.needs_manual == ["payment_failed_reminder"]
-    assert "payment_failed_reminder" not in meta_calls.submitted
+    assert report.needs_manual == ["bug_fixed_notification"]
+    assert "bug_fixed_notification" not in meta_calls.submitted
+
+
+def test_no_template_needs_to_be_made_by_hand_today():
+    assert all(t.one_click for t in rt.CATALOGUE)
+
+
+def test_a_failed_payment_without_a_link_never_sends_meta_an_empty_value(monkeypatch):
+    sent = {}
+
+    async def fake_send(db, *, business, customer, template_name, body_params, plain_text, button_payloads=None):
+        sent["params"] = body_params
+        return True
+
+    monkeypatch.setattr(notify, "_send", fake_send)
+    asyncio.run(notify.send_payment_failed_reminder(None, business=_business(), customer=_customer(), invoice_url=None))
+    assert sent["params"] == ["Asha", "your billing page"] and all(sent["params"])
 
 
 def test_one_refusal_from_meta_does_not_stop_the_rest(meta_calls):

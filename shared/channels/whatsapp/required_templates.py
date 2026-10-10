@@ -178,12 +178,7 @@ CATALOGUE: tuple[RequiredTemplate, ...] = (
         "Hi {{1}}, your last payment didn't go through. You can update your payment method here: {{2}} Reply here if you need help.",
         ("Customer's name", "Link to update payment"),
         ("Asha", "https://billing.example.com/update"),
-        "Sent when a Stripe payment fails.",
-        one_click=False,
-        note=(
-            "When Stripe gives no invoice link KROVA sends an empty value, which Meta refuses. "
-            "Create it only if your failed payments always carry a link."
-        ),
+        "Sent when a Stripe payment fails. If Stripe gives no invoice link it says \"your billing page\" instead.",
     ),
 )
 

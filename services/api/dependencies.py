@@ -126,6 +126,28 @@ CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 
 
+async def require_owner_or_admin(
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+) -> CurrentUser:
+    """
+    For what only an owner or admin should do: handing out API keys, pointing
+    webhooks at a URL, connecting accounts with credentials, downloading the
+    whole customer list. A team member working the inbox needs none of it, and
+    each of these either opens a door to the business's data or spends its
+    credentials.
+    """
+    from shared.commands.tools import WRITE_ROLES
+
+    if current_user.role not in WRITE_ROLES:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the owner or an admin can do this."
+        )
+    return current_user
+
+
+OwnerOrAdminDep = Annotated[CurrentUser, Depends(require_owner_or_admin)]
+
+
 async def get_api_key_business(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     db: Annotated[AsyncSession, Depends(get_db)],
