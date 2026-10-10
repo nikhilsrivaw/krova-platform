@@ -299,3 +299,30 @@ def test_only_businesses_created_after_the_cutoff_must_pay(monkeypatch):
     assert guards.must_have_plan(old) is False and guards.must_have_plan(new) is True
     monkeypatch.setattr(settings, "billing_enforced_from", "not-a-date")
     assert guards.must_have_plan(new) is False
+
+
+# ── calls switched off ──────────────────────────────────────────────────────
+
+def _wallet_db(row):
+    class R:
+        def first(self):
+            return row
+
+    class D:
+        async def execute(self, stmt):
+            return R()
+
+    return D()
+
+
+@pytest.mark.parametrize("row,blocked", [
+    (None, False),                                                       # never topped up: not billed, not blocked
+    (SimpleNamespace(balance_paise=5000, rent_short_since=None), False),
+    (SimpleNamespace(balance_paise=0, rent_short_since=None), True),     # empty
+    (SimpleNamespace(balance_paise=-10, rent_short_since=None), True),
+    (SimpleNamespace(balance_paise=5000, rent_short_since=datetime.now(UTC)), True),  # rent unpaid
+])
+def test_calls_are_off_when_the_wallet_is_empty_or_rent_is_unpaid(row, blocked):
+    from shared.billing import wallet
+
+    assert asyncio.run(wallet.voice_blocked(_wallet_db(row), uuid.uuid4())) is blocked

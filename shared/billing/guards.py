@@ -55,9 +55,11 @@ async def require_active_plan(db: AsyncSession, business_id: uuid.UUID) -> None:
 
 
 async def require_wallet(db: AsyncSession, business_id: uuid.UUID) -> None:
-    balance = await wallet.balance(db, business_id)
-    if balance is not None and balance <= 0:
+    if await wallet.voice_blocked(db, business_id):
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"code": "wallet_empty", "message": "Your wallet is empty. Add money on the Billing page to make calls."},
+            detail={
+                "code": "wallet_empty",
+                "message": "Your wallet is empty or a phone number's rent is unpaid, so calls are off. Add money on the Billing page.",
+            },
         )

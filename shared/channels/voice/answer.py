@@ -25,6 +25,7 @@ from shared.channels.voice.xml import (
     copilot_response,
     dial_response,
     hangup_response,
+    speak_response,
     stream_response,
 )
 from shared.config.settings import settings
@@ -75,6 +76,19 @@ async def answer(
         logger.warning("answer webhook for unrecognised number %s", to_number)
         return Response(
             content=hangup_response("number not connected to any business"),
+            media_type="application/xml",
+        )
+
+    # An empty wallet or unpaid number rent switches calls off - otherwise KROVA would be
+    # paying for the call. (Businesses that never topped up have no wallet and are never stopped.)
+    from shared.billing.wallet import voice_blocked
+
+    async with AsyncSessionLocal() as db:
+        blocked = await voice_blocked(db, route.business_id)
+    if blocked:
+        logger.warning("voice call refused: wallet empty or rent unpaid business=%s", route.business_id)
+        return Response(
+            content=speak_response("This number cannot take calls right now. Please try again later."),
             media_type="application/xml",
         )
 

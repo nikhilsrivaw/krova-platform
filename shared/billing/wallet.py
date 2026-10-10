@@ -54,6 +54,19 @@ async def balance(db: AsyncSession, business_id: uuid.UUID) -> int | None:
     return (await db.execute(select(Wallet.balance_paise).where(Wallet.business_id == business_id))).scalar_one_or_none()
 
 
+async def voice_blocked(db: AsyncSession, business_id: uuid.UUID) -> bool:
+    """
+    Calls are off when the wallet is empty or a number's rent is unpaid. A business
+    with no wallet (it has never topped up - everyone from before billing) is never blocked.
+    """
+    row = (await db.execute(
+        select(Wallet.balance_paise, Wallet.rent_short_since).where(Wallet.business_id == business_id)
+    )).first()
+    if row is None:
+        return False
+    return row.balance_paise <= 0 or row.rent_short_since is not None
+
+
 async def post(
     db: AsyncSession, *, business_id: uuid.UUID, amount_paise: int, kind: str,
     ref: str | None = None, note: str | None = None, allow_negative: bool = True,
@@ -136,9 +149,12 @@ async def collect_number_rent(db: AsyncSession) -> tuple[int, int]:
             continue  # a number bought before wallets existed: not billed retroactively
         if await charge_number_rent(db, business_id=connection.business_id, number=connection.external_account_id):
             ok += 1
+            wallet = await _locked(db, connection.business_id)
+            wallet.rent_short_since = None
         else:
             short += 1
             wallet = await _locked(db, connection.business_id)
+            wallet.rent_short_since = wallet.rent_short_since or _now()
             if wallet.low_balance_alerted_at is None or wallet.low_balance_alerted_at < _now() - timedelta(hours=24):
                 wallet.low_balance_alerted_at = _now()
                 await _tell_owner(

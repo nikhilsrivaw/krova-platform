@@ -28,6 +28,9 @@ class Wallet(Base):
     # (shared/billing/wallet.py::settle_voice_usage) - a watermark, so the
     # append-only usage_events table never has to be edited.
     calls_settled_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a month's phone-number rent could not be taken; cleared once it is paid.
+    # While set, calls (in and out) are switched off.
+    rent_short_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     low_balance_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
