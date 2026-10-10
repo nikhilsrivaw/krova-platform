@@ -104,6 +104,7 @@ async def _send(
     template_name: str,
     body_params: list[str],
     plain_text: str,
+    button_payloads: list[str] | None = None,
 ) -> bool:
     """
     Shared mechanics behind every appointment-related send: find the active
@@ -182,7 +183,8 @@ async def _send(
     client = WhatsAppClient(decrypt(connection.access_token), connection.external_account_id)
     try:
         outcome = await client.send_template(
-            phone, template_name, template.language, body_params=body_params
+            phone, template_name, template.language, body_params=body_params,
+            quick_reply_payloads=button_payloads,
         )
     except WhatsAppError as exc:
         logger.warning("%s send failed for business=%s: %s", template_name, business.id, exc)
@@ -345,19 +347,26 @@ async def send_cod_confirmation(
     order_number: str, total_paise: int | None,
 ) -> bool:
     """
-    order_sync capability. The template itself must be registered in
-    Meta's WhatsApp Manager with two static Quick Reply buttons -
-    "Confirm Order" (payload COD_CONFIRM) and "Cancel Order" (payload
-    COD_DECLINE) - registered once at template-approval time, not
-    something this call passes per-send. See shared/care/
-    cod_confirmation.py for what happens when the customer taps one.
+    order_sync capability. The template needs two Quick Reply buttons, in
+    this order: "Confirm Order" then "Cancel Order". Their payloads
+    (COD_CONFIRM / COD_DECLINE) are NOT part of the template - they are sent
+    with each message (button_payloads below), which is what makes the tap
+    arrive as a payload KROVA can match rather than as a label. See
+    shared/care/cod_confirmation.py for what happens when the customer taps one.
     """
+    from shared.care.cod_confirmation import CONFIRM_PAYLOAD, DECLINE_PAYLOAD
+
     amount = f"₹{total_paise / 100:,.0f}" if total_paise else "the order amount"
     return await _send(
         db, business=business, customer=customer,
         template_name=COD_CONFIRMATION_TEMPLATE_NAME,
         body_params=[customer.display_name or "there", order_number, amount],
         plain_text=f"Please confirm your Cash on Delivery order #{order_number} ({amount}) with {business.name}.",
+        # In the template's own button order: "Confirm Order", then "Cancel Order".
+        # Sent with every message because that is the only place a payload is
+        # set - registering the template does not carry one, and without it the
+        # tap comes back as the visible label and is never recognised.
+        button_payloads=[CONFIRM_PAYLOAD, DECLINE_PAYLOAD],
     )
 
 

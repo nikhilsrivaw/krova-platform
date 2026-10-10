@@ -53,6 +53,10 @@ class RequiredTemplate:
     one_click: bool = True
     note: str | None = None
     language: str = "en"
+    # Quick-reply buttons, in the order the sender gives them their payloads.
+    # The payloads are NOT stored on the template - the sender passes them with
+    # each message (notify.py) - so only the labels live here.
+    buttons: tuple[str, ...] = ()
 
     def draft(self) -> meta.TemplateDraft:
         return meta.TemplateDraft(
@@ -60,6 +64,7 @@ class RequiredTemplate:
             category=self.category,  # type: ignore[arg-type]
             body=self.body,
             language=self.language,
+            buttons=[meta.Button(type="QUICK_REPLY", text=label) for label in self.buttons],
             examples={str(i): example for i, example in enumerate(self.examples, start=1)},
         )
 
@@ -138,12 +143,12 @@ CATALOGUE: tuple[RequiredTemplate, ...] = (
         "Hi {{1}}, please confirm your Cash on Delivery order #{{2}} ({{3}}).",
         ("Customer's name", "Order number", "Order amount"),
         ("Asha", "1042", "₹1,499"),
-        "Asks a Cash-on-Delivery buyer to confirm before it ships.",
-        one_click=False,
+        "Asks a Cash-on-Delivery buyer to confirm before it ships. Has two buttons, \"Confirm Order\" and \"Cancel Order\"; a tap is recorded on the order.",
+        buttons=("Confirm Order", "Cancel Order"),
         note=(
-            "Needs two quick-reply buttons - \"Confirm Order\" and \"Cancel Order\" - whose taps KROVA "
-            "reads. Create it in WhatsApp Manager. How the buttons' replies reach KROVA has not been "
-            "tested against a live account, so test it with a real order before relying on it."
+            "Test it once with a real order before relying on it: the button taps reach KROVA as "
+            "payloads the app sets on every send (per Meta's webhook reference and other providers' "
+            "docs), but this has not been exercised against a live WhatsApp account."
         ),
     ),
     # ── product feedback loop ───────────────────────────────────────────────

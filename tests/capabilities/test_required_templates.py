@@ -80,9 +80,11 @@ class _MsgDb:
 
 def test_every_template_has_the_variable_count_its_sender_passes(monkeypatch):
     sent = {}
+    payloads = {}
 
-    async def fake_send(db, *, business, customer, template_name, body_params, plain_text):
+    async def fake_send(db, *, business, customer, template_name, body_params, plain_text, button_payloads=None):
         sent[template_name] = body_params
+        payloads[template_name] = button_payloads
         return True
 
     monkeypatch.setattr(notify, "_send", fake_send)
@@ -116,6 +118,16 @@ def test_every_template_has_the_variable_count_its_sender_passes(monkeypatch):
     for name, params in sent.items():
         expected = len(meta.variables_in(rt.BY_NAME[name].body))
         assert len(params) == expected, f"{name}: sender passes {len(params)} values, template has {expected} variables"
+
+    # Buttons: a sender gives a payload to exactly the buttons the template has.
+    for name, template in rt.BY_NAME.items():
+        got = payloads[name] or []
+        assert len(got) == len(template.buttons), (
+            f"{name}: template has {len(template.buttons)} buttons, sender sets {len(got)} payloads"
+        )
+    from shared.care import cod_confirmation
+
+    assert payloads["cod_confirmation"] == [cod_confirmation.CONFIRM_PAYLOAD, cod_confirmation.DECLINE_PAYLOAD]
 
 
 # ── readiness ───────────────────────────────────────────────────────────────
@@ -188,12 +200,18 @@ def test_only_the_missing_one_click_templates_are_submitted(meta_calls):
     }
     report = asyncio.run(rt.create_missing(None, uuid.uuid4(), "order_sync"))
 
-    assert report.created == ["abandoned_cart_recovery"]
+    assert report.created == ["abandoned_cart_recovery", "cod_confirmation"]
     # Even a rejected one is left alone: resubmitting the same name is refused,
     # and a rejection needs a person to read why.
     assert sorted(report.already_there) == ["ndr_reschedule_request", "repeat_purchase_nudge"]
-    assert report.needs_manual == ["cod_confirmation"]
-    assert meta_calls.submitted == ["abandoned_cart_recovery"]
+    assert report.needs_manual == []
+    assert meta_calls.submitted == ["abandoned_cart_recovery", "cod_confirmation"]
+
+
+def test_the_template_that_cannot_be_written_for_the_owner_is_reported_not_submitted(meta_calls):
+    report = asyncio.run(rt.create_missing(None, uuid.uuid4(), "product_feedback"))
+    assert report.needs_manual == ["payment_failed_reminder"]
+    assert "payment_failed_reminder" not in meta_calls.submitted
 
 
 def test_one_refusal_from_meta_does_not_stop_the_rest(meta_calls):
@@ -255,3 +273,99 @@ def test_the_list_shows_each_features_template_state(monkeypatch):
     assert needs["appointment_confirmed"].status == "missing"
     assert rows["quotations"].templates == []
     assert rows["scheduling"].can_create_templates is False
+
+
+# ── COD: the buttons, and the payloads that make a tap recognisable ──────────
+
+def test_the_cod_template_is_submitted_with_its_two_quick_reply_buttons():
+    components = rt.BY_NAME["cod_confirmation"].draft().to_components()
+    buttons = next(c for c in components if c["type"] == "BUTTONS")["buttons"]
+    assert buttons == [
+        {"type": "QUICK_REPLY", "text": "Confirm Order"},
+        {"type": "QUICK_REPLY", "text": "Cancel Order"},
+    ]
+
+
+def test_send_template_attaches_a_payload_to_each_quick_reply_button(monkeypatch):
+    from shared.channels.whatsapp.client import WhatsAppClient
+
+    captured = {}
+
+    async def fake_post(self, path, body):
+        captured.update(body)
+        return {"messages": [{"id": "wamid.1"}]}
+
+    monkeypatch.setattr(WhatsAppClient, "_post", fake_post)
+    client = WhatsAppClient("token", "12345")
+    asyncio.run(
+        client.send_template(
+            "919876543210", "cod_confirmation", "en",
+            body_params=["Asha", "1042", "₹1,499"],
+            quick_reply_payloads=["COD_CONFIRM", "COD_DECLINE"],
+        )
+    )
+
+    components = captured["template"]["components"]
+    buttons = [c for c in components if c["type"] == "button"]
+    assert buttons == [
+        {"type": "button", "sub_type": "quick_reply", "index": "0",
+         "parameters": [{"type": "payload", "payload": "COD_CONFIRM"}]},
+        {"type": "button", "sub_type": "quick_reply", "index": "1",
+         "parameters": [{"type": "payload", "payload": "COD_DECLINE"}]},
+    ]
+
+
+def test_a_send_without_payloads_has_no_button_components(monkeypatch):
+    from shared.channels.whatsapp.client import WhatsAppClient
+
+    captured = {}
+
+    async def fake_post(self, path, body):
+        captured.update(body)
+        return {"messages": [{"id": "wamid.1"}]}
+
+    monkeypatch.setattr(WhatsAppClient, "_post", fake_post)
+    asyncio.run(WhatsAppClient("t", "1").send_template("91987", "appointment_reminder", "en", body_params=["a", "b"]))
+    assert all(c["type"] != "button" for c in captured["template"]["components"])
+
+
+def test_a_tap_on_either_button_reaches_the_cod_handler():
+    from shared.care import cod_confirmation
+    from shared.channels.whatsapp import webhook
+
+    def tapped(payload):
+        parsed = webhook.parse({
+            "object": "whatsapp_business_account",
+            "entry": [{"id": "w", "changes": [{"field": "messages", "value": {
+                "metadata": {"phone_number_id": "1"},
+                "contacts": [{"wa_id": "919876543210", "profile": {"name": "Asha"}}],
+                "messages": [{
+                    "from": "919876543210", "id": "wamid.x", "timestamp": "1700000000",
+                    "type": "button", "button": {"payload": payload, "text": "whatever the label is"},
+                }],
+            }}]}],
+        })
+        return parsed
+
+    for sent, expected in (("COD_CONFIRM", "COD_CONFIRM"), ("COD_DECLINE", "COD_DECLINE")):
+        parsed = tapped(sent)
+        message = parsed.messages[0]
+        stand_in = SimpleNamespace(media=message.media)
+        assert cod_confirmation.button_payload(stand_in) == expected
+
+    # And the case that used to happen: a tap that came back as the label only.
+    label_only = SimpleNamespace(media={"kind": "button_reply", "payload": "Confirm Order"})
+    assert cod_confirmation.button_payload(label_only) is None
+
+
+def test_the_examples_endpoint_lists_every_template_with_buttons_and_samples():
+    from services.api.routers import templates as templates_router
+
+    out = asyncio.run(templates_router.list_template_examples(SimpleNamespace(business=uuid.uuid4())))
+    by_name = {e.name: e for e in out}
+
+    assert set(by_name) == set(rt.BY_NAME)
+    cod = by_name["cod_confirmation"]
+    assert cod.buttons == ["Confirm Order", "Cancel Order"]
+    assert cod.examples == {"1": "Asha", "2": "1042", "3": "₹1,499"}
+    assert by_name["appointment_reminder"].feature == "Appointments & staff calendar"

@@ -189,6 +189,7 @@ class WhatsAppClient:
         body_params: list[str] | None = None,
         carousel_cards: list["CarouselSendCard"] | None = None,
         flow_token: str | None = None,
+        quick_reply_payloads: list[str] | None = None,
     ) -> SendResult:
         """
         Send an approved template. Works regardless of the window.
@@ -200,6 +201,13 @@ class WhatsAppClient:
         `carousel_cards` fills a carousel template's per-card variables and
         images, in the same card order the template was approved with -
         Meta matches cards by card_index, not by name.
+
+        `quick_reply_payloads` gives each of a template's quick-reply buttons the
+        value that comes back on the webhook when it is tapped (`button.payload`),
+        in button order. Without it Meta returns the button's visible label
+        instead - which is a display string, not something to branch on. This is
+        how a "Confirm Order" tap can be told apart from "Cancel Order" without
+        reading words.
 
         `flow_token` is only meaningful when `template_name` refers to a
         template that was itself created in Meta's WhatsApp Manager with a
@@ -248,6 +256,15 @@ class WhatsAppClient:
                     for index, card in enumerate(carousel_cards)
                 ],
             })
+        for index, payload in enumerate(quick_reply_payloads or []):
+            components.append(
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": str(index),
+                    "parameters": [{"type": "payload", "payload": payload}],
+                }
+            )
         if flow_token:
             components.append(
                 {

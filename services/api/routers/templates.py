@@ -23,7 +23,7 @@ from services.api.dependencies import CurrentUserDep, DbDep
 from shared.ai import carousel_draft
 from shared.auth.encryption import decrypt
 from shared.channels.whatsapp import media_upload
-from shared.channels.whatsapp import template_service
+from shared.channels.whatsapp import required_templates, template_service
 from shared.channels.whatsapp import templates as meta
 from shared.db.models import (
     Business,
@@ -258,6 +258,43 @@ async def draft_carousel_cards(
     return CarouselDraftOut(
         cards=[CarouselDraftCardOut(body=c.body, button_label=c.button_label) for c in result.cards]
     )
+
+
+class TemplateExampleOut(BaseModel):
+    name: str
+    category: str
+    body: str
+    # Sample value for each {{number}}, as the builder's "examples" field wants it.
+    examples: dict[str, str]
+    # What each {{number}} stands for, in order.
+    variables: list[str]
+    buttons: list[str]
+    purpose: str
+    note: str | None
+    # Which feature's messages go out as this template.
+    feature: str
+
+
+@router.get("/examples", response_model=list[TemplateExampleOut])
+async def list_template_examples(current_user: CurrentUserDep) -> list[TemplateExampleOut]:
+    """
+    Ready-made templates to start from - the ones KROVA's own features send
+    under fixed names (reminders, queue, orders, claims ...). Each is written
+    to fit exactly the values its sender fills in, so using one as it is
+    works; the builder lets the owner change the wording before submitting.
+    """
+    from shared.verticals.capability_info import SWITCHABLE
+
+    return [
+        TemplateExampleOut(
+            name=t.name, category=t.category, body=t.body,
+            examples={str(i): v for i, v in enumerate(t.examples, start=1)},
+            variables=list(t.variables), buttons=list(t.buttons),
+            purpose=t.purpose, note=t.note,
+            feature=SWITCHABLE[t.capability].label,
+        )
+        for t in required_templates.CATALOGUE
+    ]
 
 
 @router.get("", response_model=list[TemplateOut])
