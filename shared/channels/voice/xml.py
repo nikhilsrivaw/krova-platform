@@ -58,7 +58,12 @@ def dial_response(number: str) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<Response>\n"
-        f"  <Dial><Number>{escape(number)}</Number></Dial>\n"
+        f'  <Dial timeout="25"><Number>{escape(number)}</Number></Dial>\n'
+        # Reached only when nobody picked up: without this the XML simply ends
+        # and the caller is dropped with no word.
+        "  <Speak>Sorry, nobody is free to take your call right now. "
+        "Someone from the team will call you back soon.</Speak>\n"
+        "  <Hangup/>\n"
         "</Response>"
     )
 

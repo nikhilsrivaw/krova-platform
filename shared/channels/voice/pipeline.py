@@ -148,7 +148,7 @@ _PERSON_NOUN = (
 _PERSON_WANT = (
     r"(?:baat (?:karn|karwa|krn|krwa|kar|karo|karao)\w*|talk to|speak to|speak with|"
     r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa|to)|bulao|bulwa\w*|"
-    r"chahiye|karni hai|karna hai|want to)"
+    r"chahiye|karni hai|karna hai|want to|need to|contact|reach|sampark)"
 )
 _PERSON_REQUEST = re.compile(
     rf"\b(?=.*\b{_PERSON_NOUN}\b)(?=.*\b{_PERSON_WANT}\b)"
