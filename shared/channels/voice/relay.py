@@ -272,6 +272,8 @@ async def stream(
     pipeline: CallPipeline | None = None
     stream_id: str | None = None
     call_start = time.time()
+    call_over = False
+    background: list[asyncio.Task] = []
 
     # A filler clip (sent from inside speak(), see below) and real audio
     # are never concurrent writers by construction now - connect_with_filler
@@ -433,6 +435,28 @@ async def stream(
                         await reader_task
                     except (asyncio.CancelledError, Exception):
                         pass
+
+    async def stt_supervisor(pl: CallPipeline) -> None:
+        """
+        Keep the caller's speech flowing to the pipeline. If the STT socket drops mid-call
+        the agent would otherwise go deaf while the line stays open; reconnect, and only
+        if that keeps failing say so and end the call.
+        """
+        nonlocal stt_ws
+        for attempt in range(1, 4):
+            await _pump_transcripts(stt_ws, pl, prewarm_tts)
+            if call_over:
+                return
+            logger.warning("stt socket dropped mid-call, reconnecting attempt=%s call=%s", attempt, call_uuid)
+            await _safe_close(stt_ws)
+            try:
+                stt_ws = await _connect_sarvam(sarvam.stt_connect_url(language="auto"))
+            except Exception:
+                logger.exception("stt reconnect failed call=%s", call_uuid)
+                break
+        if not call_over:
+            logger.error("stt could not be restored, ending call=%s", call_uuid)
+            await pl._say_goodbye("Sorry, I can't hear you properly. Please call back in a moment.")
 
     try:
         while True:
@@ -710,16 +734,22 @@ async def stream(
                         cost_task.add_done_callback(_cleanup_tasks.discard)
 
                     stt_ws = await _connect_sarvam(sarvam.stt_connect_url(language="auto"))
-                    asyncio.create_task(_pump_transcripts(stt_ws, pipeline, prewarm_tts))
+                    background.append(asyncio.create_task(stt_supervisor(pipeline)))
+                    background.append(asyncio.create_task(pipeline.watch_idle()))
 
             elif event == "media":
                 if stt_ws is None:
                     continue
                 payload = (message.get("media") or {}).get("payload")
                 if payload:
-                    await stt_ws.send(
-                        sarvam.stt_audio_frame(_b64decode(payload))
-                    )
+                    try:
+                        await stt_ws.send(
+                            sarvam.stt_audio_frame(_b64decode(payload))
+                        )
+                    except websockets.exceptions.ConnectionClosed:
+                        # The STT socket dropped; stt_supervisor reconnects it. Losing a
+                        # few frames is far better than tearing the whole call down.
+                        pass
 
             elif event == "dtmf":
                 # Plivo's RFC-2833 keypress event, delivered over this same
@@ -729,7 +759,9 @@ async def stream(
                 # no-op for now, no full keypad menu.
                 digit = (message.get("dtmf") or {}).get("digit")
                 if digit == "0" and pipeline is not None:
-                    pipeline._reply_task = asyncio.create_task(pipeline.request_transfer())
+                    dtmf_task = asyncio.create_task(pipeline.on_dtmf(digit))
+                    _cleanup_tasks.add(dtmf_task)
+                    dtmf_task.add_done_callback(_cleanup_tasks.discard)
 
             elif event in ("stop", "end"):
                 logger.info("call ended stream=%s", stream_id)
@@ -747,6 +779,9 @@ async def stream(
         # call and TTS stream running to completion anyway - cost for a
         # reply nobody would ever hear, and a `send_audio` at the end
         # writing to a websocket that had already closed.
+        call_over = True
+        for task in background:
+            task.cancel()
         if pipeline is not None and pipeline._reply_task is not None:
             pipeline._reply_task.cancel()
         if stt_ws is not None:
@@ -832,6 +867,13 @@ async def _record_opener_cost(
 
 async def _pump_transcripts(stt_ws, pipeline: CallPipeline, prewarm_tts) -> None:
     """Forward Sarvam transcripts into the pipeline until the socket closes."""
+    handlers: set[asyncio.Task] = set()
+
+    def _finished(task: asyncio.Task) -> None:
+        handlers.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("transcript handler failed", exc_info=task.exception())
+
     try:
         async for transcript in sarvam.stream_transcripts(stt_ws):
             if transcript.is_final:
@@ -839,9 +881,21 @@ async def _pump_transcripts(stt_ws, pipeline: CallPipeline, prewarm_tts) -> None
                 # needs every millisecond of head start it can get against
                 # the Claude call on_transcript is about to kick off.
                 prewarm_tts()
-            await pipeline.on_transcript(
-                transcript.text, is_final=transcript.is_final, language=transcript.language
-            )
+                # A final transcript is answered in its own task. Awaiting the reply
+                # here stopped this loop reading anything the caller said while the
+                # agent was talking, so nobody could interrupt a reply and what they
+                # said over it was answered late, after the agent had finished.
+                task = asyncio.create_task(
+                    pipeline.on_transcript(
+                        transcript.text, is_final=True, language=transcript.language
+                    )
+                )
+                handlers.add(task)
+                task.add_done_callback(_finished)
+            else:
+                await pipeline.on_transcript(
+                    transcript.text, is_final=False, language=transcript.language
+                )
     except websockets.exceptions.ConnectionClosed:
         pass
     except Exception:

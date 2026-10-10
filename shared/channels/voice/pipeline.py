@@ -148,13 +148,39 @@ _PERSON_NOUN = (
 _PERSON_WANT = (
     r"(?:baat (?:karn|karwa|krn|krwa|kar|karo|karao)\w*|talk to|speak to|speak with|"
     r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa|to)|bulao|bulwa\w*|"
-    r"chahiye|karni hai|karna hai|want to|need to|contact|reach|sampark)"
+    r"chahiye|karni hai|karna hai|want to)"
 )
 _PERSON_REQUEST = re.compile(
     rf"\b(?=.*\b{_PERSON_NOUN}\b)(?=.*\b{_PERSON_WANT}\b)"
     r"|\btransfer (?:kar|karo|kardo|kar do|karwa)\w*|\btransfer me\b",
     re.IGNORECASE,
 )
+
+
+# "Contact the team" asks for a person, but "the sales team's contact number" asks
+# for a detail - the second must not hand the call over.
+_CONTACT_REQUEST = re.compile(
+    rf"\b(?=.*\b{_PERSON_NOUN}\b)(?=.*\b(?:contact|reach|sampark)\b)"
+    r"(?!.*\b(?:numbers?|nambar|e-?mail|mail|address|details?|info|hours|timings?)\b)",
+    re.IGNORECASE,
+)
+
+# A listener's "hmm / haan / ok" while the agent talks is not an interruption.
+_BACKCHANNEL = frozenset({
+    "haan", "han", "ha", "haa", "ji", "haanji", "hmm", "hm", "mm", "ok", "okay", "achha",
+    "accha", "theek", "thik", "yes", "yeah", "yep", "right", "sure", "oh",
+})
+
+# Quiet line: ask once, then end the call rather than keep a dead line (and its cost) open.
+_IDLE_PROMPT_AFTER = 20.0
+_IDLE_HANGUP_AFTER = 15.0
+_MAX_CALL_SECONDS = 20 * 60
+_WATCH_TICK = 2.0
+
+
+def _is_backchannel(text: str) -> bool:
+    words = re.findall(r"[\w']+", text.lower())
+    return 0 < len(words) <= 2 and all(w in _BACKCHANNEL for w in words)
 
 
 async def _single_chunk(text: str):
@@ -263,6 +289,17 @@ class CallPipeline:
     # transfer matches how long the line actually plays.
     _audio_bytes_sent: int = 0
     _audio_started_at: float | None = field(default=None, repr=False)
+    # Serialises the "store the caller's turn, start the reply" step. Transcripts are
+    # now handled concurrently so a caller can interrupt, and two of them must never
+    # use the one database session at the same moment.
+    _turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # Said once per call: the same promise twice in a row is what made the agent sound broken.
+    _followup_told: bool = False
+    _person_ask_told: bool = False
+    _no_customer_count: int = 0
+    _last_activity: float = field(default_factory=time.monotonic, repr=False)
+    _idle_prompted: bool = False
+    _started_at: float = field(default_factory=time.monotonic, repr=False)
 
     async def start(self) -> None:
         """Greet the caller. The first thing anyone hears on the call."""
@@ -298,6 +335,8 @@ class CallPipeline:
         """
         if not text.strip():
             return
+        self._last_activity = time.monotonic()
+        self._idle_prompted = False
 
         # An outbound call's opening line is why the call was placed at
         # all - it has to be heard. Ignoring the caller's speech outright
@@ -323,6 +362,8 @@ class CallPipeline:
             self.detected_language = language
 
         if self._reply_task is not None and not self._reply_task.done():
+            if _is_backchannel(text):
+                return
             await self._barge_in()
 
         if is_final:
@@ -405,17 +446,16 @@ class CallPipeline:
         it just means the real path does the work itself.
         """
         try:
-            self.history.append({"role": "user", "content": partial})
-            try:
-                context = await self._call_context()
-                context.recent = context.recent + [
-                    {"direction": "inbound", "channel": "voice", "text": partial}
-                ]
-                events = agent_module.stream_reply(context)
-                async for ev in events:
-                    await queue.put(ev)
-            finally:
-                self.history.pop()
+            # Not appended to self.history: a customer reply is built from self.turns,
+            # and popping a shared list from a background task removed the real
+            # turn that had been appended in the meantime.
+            context = await self._call_context()
+            context.recent = context.recent + [
+                {"direction": "inbound", "channel": "voice", "text": partial}
+            ]
+            events = agent_module.stream_reply(context)
+            async for ev in events:
+                await queue.put(ev)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -513,7 +553,7 @@ class CallPipeline:
             self._speculation_timer = None
         self._discard_speculation()
 
-        if self._reply_task is not None:
+        if self._reply_task is not None and self._reply_task is not asyncio.current_task():
             self._reply_task.cancel()
             try:
                 await self._reply_task
@@ -550,23 +590,30 @@ class CallPipeline:
         # answer to what they actually said, or wasted work to discard.
         speculation = self._take_speculation(text)
 
-        self.turns.append(Turn(role="caller", text=text))
-        self.history.append({"role": "user", "content": text})
+        async with self._turn_lock:
+            # A second utterance can arrive while the first is still being answered:
+            # stop that reply before starting this one, never run two at once.
+            if self._reply_task is not None and not self._reply_task.done():
+                await self._barge_in()
 
-        if self.mode != "owner":
-            # An owner call is not persisted through ingest() - see
-            # context.py's OwnerContext docstring on why: ingest() resolves
-            # a Customer from caller_phone, and the owner's own number must
-            # never become a Customer row. self.history above already
-            # carries this call's conversation in memory, which is what
-            # _owner_reply()/stream_owner_reply() actually read from.
-            await self._store_turn(direction=Direction.inbound, text=text)
+            self.turns.append(Turn(role="caller", text=text))
+            self.history.append({"role": "user", "content": text})
 
-        self._reply_task = asyncio.create_task(
-            self._reply(started_at=time.monotonic(), speculation=speculation)
-        )
+            if self.mode != "owner":
+                # An owner call is not persisted through ingest() - see
+                # context.py's OwnerContext docstring on why: ingest() resolves
+                # a Customer from caller_phone, and the owner's own number must
+                # never become a Customer row. self.history above already
+                # carries this call's conversation in memory, which is what
+                # _owner_reply()/stream_owner_reply() actually read from.
+                await self._store_turn(direction=Direction.inbound, text=text)
+
+            task = asyncio.create_task(
+                self._reply(started_at=time.monotonic(), speculation=speculation)
+            )
+            self._reply_task = task
         try:
-            await self._reply_task
+            await task
         except asyncio.CancelledError:
             pass
 
@@ -605,7 +652,17 @@ class CallPipeline:
             return
 
         if self.customer_id is None:
-            logger.warning("reply requested with no resolved customer, skipping")
+            # Saving the caller's turn failed. Silence sounds like a dead line, so say so.
+            logger.warning("reply requested with no resolved customer")
+            self._no_customer_count += 1
+            if self._no_customer_count >= 3:
+                await self._say_goodbye(
+                    "I'm sorry, I'm having trouble on my side. Please call back in a few minutes."
+                )
+                return
+            await self._say_stream(
+                _single_chunk("Sorry, I missed that. Could you say it once more?"), record=False,
+            )
             return
 
         # A caller who asks for a person gets the transfer straight away, not
@@ -613,6 +670,9 @@ class CallPipeline:
         # baat karni hai" was answered by the AI as text and nothing transferred.
         if self.route.staff_phone_number and self._caller_asked_for_person():
             await self.request_transfer()
+            return
+        if self._caller_asked_for_person():
+            await self._person_asked_without_transfer()
             return
 
         t_context = time.monotonic()
@@ -680,14 +740,7 @@ class CallPipeline:
                     call_row.escalated = True
                     call_row.escalation_reason = gap
 
-            spoken = (
-                f"I don't have {gap} on hand right now, but I'll make sure "
-                "someone follows up with you on that."
-                if gap
-                else "I don't have enough to answer that properly, but I'll make "
-                "sure someone follows up with you."
-            )
-            await self._say_stream(_single_chunk(spoken), record=True)
+            await self._say_stream(_single_chunk(self._followup_line(gap)), record=True)
             return
 
         if first.book_slot:
@@ -970,6 +1023,100 @@ class CallPipeline:
             db=self.db,
         )
 
+    def _followup_line(self, gap: str | None) -> str:
+        """
+        What to say when the agent cannot answer. The "someone will follow up" promise
+        is made in full once; later gaps get a short acknowledgement, because the same
+        sentence turn after turn is what made callers think the agent was stuck.
+        """
+        # A floor reason such as "needs a person: refund" is for staff, not for speech.
+        topic = gap.strip() if gap else None
+        if topic and (topic.lower().startswith("needs a person") or len(topic.split()) > 6):
+            topic = None
+        if self._followup_told:
+            if topic:
+                return f"I don't have {topic} either - I've noted it for the team. Is there anything else I can help with?"
+            return "I've noted that for the team. Is there anything else I can help with?"
+        self._followup_told = True
+        if topic:
+            return f"I don't have {topic} on hand right now, but I'll make sure someone follows up with you on that."
+        return "I don't have enough to answer that properly, but I'll make sure someone follows up with you."
+
+    async def _person_asked_without_transfer(self) -> None:
+        """The caller wants a person and this business has no number to hand the call to."""
+        reason = "Caller asked to reach a person"
+        if self.call_row_id is not None:
+            call_row = await self.db.get(Call, self.call_row_id)
+            if call_row is not None:
+                call_row.escalated = True
+                call_row.escalation_reason = reason
+        if not self._person_ask_told:
+            await agent_module.notify_escalation(
+                self.route.business_id, reason=reason, customer_id=self.customer_id,
+                channel="voice", db=self.db, request_summary=self._caller_summary(),
+            )
+        line = (
+            "That's noted - the team will call you back. Is there anything else I can help with?"
+            if self._person_ask_told
+            else "I can't transfer you right now, but I've noted that you want to speak to the team, "
+            "and they'll call you back soon."
+        )
+        self._person_ask_told = True
+        await self._say_stream(_single_chunk(line), record=True)
+
+    async def on_dtmf(self, digit: str) -> None:
+        """Keypad 0 means "a person". Stop whatever is being said first, then transfer."""
+        if digit != "0":
+            return
+        self._last_activity = time.monotonic()
+        await self._barge_in()
+        self._reply_task = asyncio.create_task(self.request_transfer())
+
+    async def _say_goodbye(self, line: str) -> bool:
+        """Say a closing line, let it play out, then end the call. False if the caller spoke over it."""
+        self._audio_bytes_sent = 0
+        self._audio_started_at = None
+        task = asyncio.create_task(self._say_stream(_single_chunk(line), record=True))
+        self._reply_task = task
+        await asyncio.wait({task})
+        if task.cancelled():
+            return False
+        await self._wait_for_line_playback()
+        if self.end_stream is not None:
+            await self.end_stream()
+        return True
+
+    async def watch_idle(self) -> None:
+        """
+        End calls that have gone quiet. Without this a line left open (a phone put down,
+        a voicemail, an IVR) stays connected for up to the stream timeout while the
+        business pays for every minute.
+        """
+        while True:
+            await asyncio.sleep(_WATCH_TICK)
+            if self._opening_protected:
+                continue
+            if self._reply_task is not None and not self._reply_task.done():
+                continue
+            now = time.monotonic()
+            if now - self._started_at > _MAX_CALL_SECONDS:
+                logger.info("voice call hit the time limit call=%s", self.provider_call_id)
+                await self._say_goodbye(
+                    "We have reached the time limit for this call. Please call again if you need anything else. Goodbye."
+                )
+                return
+            quiet = now - self._last_activity
+            if not self._idle_prompted and quiet > _IDLE_PROMPT_AFTER:
+                self._idle_prompted = True
+                self._reply_task = asyncio.create_task(
+                    self._say_stream(_single_chunk("Are you still there?"), record=True)
+                )
+            elif self._idle_prompted and quiet > _IDLE_HANGUP_AFTER:
+                logger.info("voice call silent, ending call=%s", self.provider_call_id)
+                if await self._say_goodbye("I can't hear you, so I'll end the call now. Goodbye."):
+                    return
+                self._idle_prompted = False
+
     async def request_transfer(self) -> None:
         """
         The caller pressed the keypad's escape-hatch digit (0) asking for a
@@ -1046,7 +1193,7 @@ class CallPipeline:
     def _caller_asked_for_person(self) -> bool:
         """Transfer only when the caller asks for a person - not for every question the agent cannot answer."""
         last = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
-        return bool(_PERSON_REQUEST.search(last or ""))
+        return bool(_PERSON_REQUEST.search(last or "") or _CONTACT_REQUEST.search(last or ""))
 
     async def _try_transfer(self) -> bool:
         """
@@ -1167,6 +1314,7 @@ class CallPipeline:
                     "voice turn call=%s said (complete=%s): %r",
                     self.provider_call_id, turn.complete, turn.text.strip(),
                 )
+            self._last_activity = time.monotonic()
             if record and turn.text.strip() and self.mode != "owner":
                 await self._store_turn(
                     direction=Direction.outbound,
