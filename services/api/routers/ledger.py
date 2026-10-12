@@ -756,7 +756,7 @@ class ContactImportOut(BaseModel):
 
 @router.post("/customers/import", response_model=ContactImportOut)
 async def import_customers(
-    body: ContactImportIn, current_user: CurrentUserDep, db: DbDep
+    body: ContactImportIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> ContactImportOut:
     """
     Seed the customer list from an existing spreadsheet.

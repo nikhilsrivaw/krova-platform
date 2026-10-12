@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.db.models import (
     Appointment, AppointmentStatus, AvailabilityException, AvailabilityRule, Business, Customer, Doctor,
@@ -112,7 +112,7 @@ async def list_doctors(current_user: CurrentUserDep, db: DbDep) -> list[DoctorOu
 
 
 @router.post("/doctors", response_model=DoctorOut, status_code=status.HTTP_201_CREATED)
-async def create_doctor(body: DoctorIn, current_user: CurrentUserDep, db: DbDep) -> DoctorOut:
+async def create_doctor(body: DoctorIn, current_user: OwnerOrAdminDep, db: DbDep) -> DoctorOut:
     await _require_scheduling(current_user.business, db)
     doctor = Doctor(
         business_id=current_user.business,
@@ -128,7 +128,7 @@ async def create_doctor(body: DoctorIn, current_user: CurrentUserDep, db: DbDep)
 
 
 @router.patch("/doctors/{doctor_id}", response_model=DoctorOut)
-async def update_doctor(doctor_id: uuid.UUID, body: DoctorPatch, current_user: CurrentUserDep, db: DbDep) -> DoctorOut:
+async def update_doctor(doctor_id: uuid.UUID, body: DoctorPatch, current_user: OwnerOrAdminDep, db: DbDep) -> DoctorOut:
     await _require_scheduling(current_user.business, db)
     doctor = await db.get(Doctor, doctor_id)
     if doctor is None or doctor.business_id != current_user.business:
@@ -142,7 +142,7 @@ async def update_doctor(doctor_id: uuid.UUID, body: DoctorPatch, current_user: C
 
 
 @router.delete("/doctors/{doctor_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_doctor(doctor_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_doctor(doctor_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     await _require_scheduling(current_user.business, db)
     doctor = await db.get(Doctor, doctor_id)
     if doctor is None or doctor.business_id != current_user.business:
@@ -198,7 +198,7 @@ async def list_rules(doctor_id: uuid.UUID, current_user: CurrentUserDep, db: DbD
     status_code=status.HTTP_201_CREATED,
 )
 async def create_rule(
-    doctor_id: uuid.UUID, body: AvailabilityRuleIn, current_user: CurrentUserDep, db: DbDep
+    doctor_id: uuid.UUID, body: AvailabilityRuleIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> AvailabilityRuleOut:
     await _require_scheduling(current_user.business, db)
     if body.end_time <= body.start_time:
@@ -218,7 +218,7 @@ async def create_rule(
 
 
 @router.delete("/availability-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_rule(rule_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def delete_rule(rule_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     await _require_scheduling(current_user.business, db)
     rule = await db.get(AvailabilityRule, rule_id)
     if rule is None or rule.business_id != current_user.business:

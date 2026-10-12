@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.commands.tools import WRITE_ROLES
 from shared.db.models import Business, Customer, IntakeChannel, QueueEntry, QueueStatus, Shift, ShiftSession
@@ -110,7 +110,7 @@ async def get_queue_settings(current_user: CurrentUserDep, db: DbDep) -> QueueSe
 
 @router.put("/settings", response_model=QueueSettingsOut)
 async def update_queue_settings(
-    body: QueueSettingsIn, current_user: CurrentUserDep, db: DbDep
+    body: QueueSettingsIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> QueueSettingsOut:
     """
     Turn the queue on for this business and set what it calls things.
@@ -260,7 +260,7 @@ async def get_kiosk_config(current_user: CurrentUserDep, db: DbDep) -> KioskConf
 
 
 @router.post("/kiosk/enable", response_model=KioskConfigOut)
-async def enable_kiosk(current_user: CurrentUserDep, db: DbDep) -> KioskConfigOut:
+async def enable_kiosk(current_user: OwnerOrAdminDep, db: DbDep) -> KioskConfigOut:
     """Generates a new kiosk link, replacing any existing one - the same
     action a business uses both to turn kiosk check-in on for the first
     time and to revoke a leaked/shared link by rotating it."""
@@ -272,7 +272,7 @@ async def enable_kiosk(current_user: CurrentUserDep, db: DbDep) -> KioskConfigOu
 
 
 @router.post("/kiosk/disable", response_model=KioskConfigOut)
-async def disable_kiosk(current_user: CurrentUserDep, db: DbDep) -> KioskConfigOut:
+async def disable_kiosk(current_user: OwnerOrAdminDep, db: DbDep) -> KioskConfigOut:
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")

@@ -16,7 +16,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.catalogue import csv_import, meta_catalog
 from shared.catalogue.sync import IncomingProduct, IncomingVariant, SyncSummary, upsert_product
@@ -158,7 +158,7 @@ async def list_products(
 
 
 @router.post("/sync/meta", response_model=SyncResult)
-async def sync_meta_catalogue(current_user: CurrentUserDep, db: DbDep) -> SyncResult:
+async def sync_meta_catalogue(current_user: OwnerOrAdminDep, db: DbDep) -> SyncResult:
     """
     Import the business's Meta (WhatsApp/Instagram) catalogue.
 
@@ -189,7 +189,7 @@ async def sync_meta_catalogue(current_user: CurrentUserDep, db: DbDep) -> SyncRe
 
 @router.post("/import", response_model=ImportResult)
 async def import_catalogue_csv(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     file: UploadFile = File(...),
 ) -> ImportResult:
@@ -250,7 +250,7 @@ async def import_catalogue_csv(
 
 @router.post("", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
 async def create_product(
-    body: ProductIn, current_user: CurrentUserDep, db: DbDep
+    body: ProductIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> ProductOut:
     """
     Add a product by hand.
@@ -305,7 +305,7 @@ async def create_product(
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_product(
-    product_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+    product_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep
 ) -> None:
     """Remove a manually added product. Variants cascade."""
     await _require_order_sync(current_user.business, db)

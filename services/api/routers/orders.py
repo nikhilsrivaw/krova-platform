@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.auth.encryption import encrypt
 from shared.care import shiprocket_sync
@@ -78,7 +78,7 @@ async def list_store_connections(current_user: CurrentUserDep, db: DbDep) -> lis
 
 @router.post("/connections", response_model=StoreConnectionOut, status_code=status.HTTP_201_CREATED)
 async def connect_store(
-    body: StoreConnectionIn, current_user: CurrentUserDep, db: DbDep
+    body: StoreConnectionIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> StoreConnectionOut:
     await _require_order_sync(current_user.business, db)
     from datetime import datetime, timezone
@@ -104,7 +104,7 @@ async def connect_store(
 
 
 @router.delete("/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_store(connection_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def disconnect_store(connection_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     await _require_order_sync(current_user.business, db)
     connection = await db.get(StoreConnection, connection_id)
     if connection is None or connection.business_id != current_user.business:
@@ -250,7 +250,7 @@ async def list_shipping_connections(current_user: CurrentUserDep, db: DbDep) -> 
 
 @router.post("/shipping-connections", response_model=ShippingConnectionOut, status_code=status.HTTP_201_CREATED)
 async def connect_shipping(
-    body: ShippingConnectionIn, current_user: CurrentUserDep, db: DbDep
+    body: ShippingConnectionIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> ShippingConnectionOut:
     await _require_order_sync(current_user.business, db)
     from datetime import datetime, timezone
@@ -282,7 +282,7 @@ async def connect_shipping(
 
 
 @router.delete("/shipping-connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_shipping(connection_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+async def disconnect_shipping(connection_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> None:
     await _require_order_sync(current_user.business, db)
     connection = await db.get(ShippingConnection, connection_id)
     if connection is None or connection.business_id != current_user.business:

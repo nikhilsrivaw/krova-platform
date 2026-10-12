@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.db.models import (
     Business,
     Customer,
@@ -516,7 +516,7 @@ async def get_pipeline_stages(current_user: CurrentUserDep, db: DbDep) -> Pipeli
 
 @router.put("/pipeline-stages", response_model=PipelineStagesOut)
 async def set_pipeline_stages(
-    body: PipelineStagesIn, current_user: CurrentUserDep, db: DbDep
+    body: PipelineStagesIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> PipelineStagesOut:
     """
     A business's own funnel, in its own words - a coaching business's stages

@@ -87,6 +87,18 @@ LOCKED = {(m, _P + path) for m, path in [
     # spends money (a TTS or AI call per tap) or links a channel to the business
     ("POST", "/voice-onboarding/preview-voice"), ("POST", "/templates/carousel/draft"),
     ("POST", "/templates/carousel/image"),
+    # how the business is set up (who can be booked and when, the walk-in kiosk, connected shops,
+    # the catalogue, the contact list in bulk, the pipeline) - day-to-day work stays open to staff
+    ("POST", "/scheduling/doctors"), ("PATCH", "/scheduling/doctors/{doctor_id}"),
+    ("DELETE", "/scheduling/doctors/{doctor_id}"),
+    ("POST", "/scheduling/doctors/{doctor_id}/availability-rules"),
+    ("DELETE", "/scheduling/availability-rules/{rule_id}"),
+    ("PUT", "/queue/settings"), ("POST", "/queue/kiosk/enable"), ("POST", "/queue/kiosk/disable"),
+    ("POST", "/orders/connections"), ("DELETE", "/orders/connections/{connection_id}"),
+    ("POST", "/orders/shipping-connections"), ("DELETE", "/orders/shipping-connections/{connection_id}"),
+    ("POST", "/products/sync/meta"), ("POST", "/products/import"), ("POST", "/products"),
+    ("DELETE", "/products/{product_id}"),
+    ("POST", "/ledger/customers/import"), ("PUT", "/crm/pipeline-stages"),
     ("POST", "/billing/subscribe"), ("POST", "/billing/topup"), ("POST", "/billing/cancel"), ("POST", "/billing/resume"), ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
     ("DELETE", "/team/members/{user_id}"), ("POST", "/team/members/{user_id}/reset-password"),
 ]}
@@ -134,6 +146,12 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/auth/change-password"),
     ("GET", "/team/settings"), ("GET", "/team/my-work"), ("PUT", "/team/me/availability"),
     ("PUT", "/team/me/phone"),
+    ("POST", "/scheduling/appointments"), ("POST", "/scheduling/appointments/{appointment_id}/cancel"),
+    ("POST", "/scheduling/appointments/{appointment_id}/reschedule"),
+    ("POST", "/scheduling/appointments/{appointment_id}/status"),
+    ("POST", "/scheduling/doctors/{doctor_id}/availability-exceptions"),
+    ("POST", "/queue/check-in"), ("PATCH", "/queue/{entry_id}"), ("POST", "/queue/shifts/open"),
+    ("PATCH", "/orders/{order_id}"), ("POST", "/quotations"),
     ("POST", "/calls/start"), ("GET", "/calls/{call_id}"), ("GET", "/calls/pending/wrapup"),
     ("POST", "/calls/{call_id}/wrapup"), ("GET", "/team/briefing/{customer_id}"),
 ]}
