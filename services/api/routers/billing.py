@@ -63,7 +63,21 @@ class PaymentOut(BaseModel):
     failure: str | None
 
 
+class UsageOut(BaseModel):
+    """This month against what the plan is built for. Messages are shown, never cut off."""
+    plan: str
+    messages_used: int
+    messages_limit: int
+    phone_lines_used: int
+    phone_lines_limit: int
+    team_used: int
+    team_limit: int
+    knowledge_tokens_used: int
+    knowledge_tokens_limit: int
+
+
 class BillingOut(BaseModel):
+    usage: UsageOut | None = None
     payments_enabled: bool
     # Why the plan is off, if it is: required | suspended | ended
     plan_state: str | None = None
@@ -94,6 +108,34 @@ async def plan_status(current_user: CurrentUserDep, db: DbDep) -> PlanStatusOut:
     return PlanStatusOut(state=state, blocked=state is not None, can_manage=current_user.role in ("owner", "admin"))
 
 
+async def _usage(db, business_id) -> UsageOut | None:
+    from sqlalchemy import func
+
+    from shared.billing import limits
+    from shared.db.models import BusinessMember, Channel, ChannelConnection, ConnectionStatus, KnowledgeItem
+
+    business = await db.get(Business, business_id)
+    cap = limits.limits_for(business.plan if business else None)
+    if cap is None:
+        return None
+    team = await limits.count_rows(db, BusinessMember, BusinessMember.business_id == business_id)
+    lines = await limits.count_rows(
+        db, ChannelConnection, ChannelConnection.business_id == business_id,
+        ChannelConnection.channel == Channel.voice, ChannelConnection.status == ConnectionStatus.active,
+    )
+    tokens = (await db.execute(
+        select(func.coalesce(func.sum(KnowledgeItem.token_estimate), 0)).where(
+            KnowledgeItem.business_id == business_id, KnowledgeItem.active == True  # noqa: E712
+        )
+    )).scalar_one()
+    return UsageOut(
+        plan=business.plan, messages_used=await limits.messages_this_month(db, business_id),
+        messages_limit=cap.messages, phone_lines_used=lines, phone_lines_limit=cap.phone_lines,
+        team_used=team, team_limit=cap.team_logins, knowledge_tokens_used=int(tokens),
+        knowledge_tokens_limit=cap.knowledge_tokens,
+    )
+
+
 @router.get("", response_model=BillingOut)
 async def overview(current_user: OwnerOrAdminDep, db: DbDep) -> BillingOut:
     sub = await db.get(Subscription, current_user.business)
@@ -111,6 +153,7 @@ async def overview(current_user: OwnerOrAdminDep, db: DbDep) -> BillingOut:
         base, gst, total = plans.plan_charge(key)
         catalogue.append(PlanOut(key=key, label=label, base=_r(base), gst=_r(gst), total=_r(total)))
     return BillingOut(
+        usage=await _usage(db, current_user.business),
         payments_enabled=payu.enabled(),
         plans=catalogue,
         subscription=SubscriptionOut(

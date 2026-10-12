@@ -32,6 +32,7 @@ from shared.db.models import (
     StripeConnection,
     WebhookEventType,
 )
+from shared.billing import limits as plan_limits
 from shared.integrations import api_keys as api_keys_module
 from shared.integrations import github as github_module
 from shared.integrations import google_calendar
@@ -493,6 +494,11 @@ async def list_webhooks(current_user: OwnerOrAdminDep, db: DbDep) -> list[Webhoo
 async def create_webhook(body: WebhookIn, current_user: OwnerOrAdminDep, db: DbDep) -> WebhookOut:
     _validate_events(body.event_types)
     _validate_format(body.format)
+    business = await db.get(Business, current_user.business)
+    plan_limits.check_count(
+        business.plan if business else None, "webhooks", "outbound webhook(s)",
+        await plan_limits.count_rows(db, OutboundWebhook, OutboundWebhook.business_id == current_user.business),
+    )
     webhook = OutboundWebhook(
         business_id=current_user.business,
         target_url=body.target_url,
@@ -565,6 +571,13 @@ async def list_api_keys(current_user: OwnerOrAdminDep, db: DbDep) -> list[ApiKey
 
 @router.post("/api-keys", response_model=ApiKeyOut, status_code=status.HTTP_201_CREATED)
 async def create_api_key(body: ApiKeyIn, current_user: OwnerOrAdminDep, db: DbDep) -> ApiKeyOut:
+    business = await db.get(Business, current_user.business)
+    plan_limits.check_count(
+        business.plan if business else None, "api_keys", "API key(s)",
+        await plan_limits.count_rows(
+            db, ApiKey, ApiKey.business_id == current_user.business, ApiKey.active.is_(True)
+        ),
+    )
     raw_key, key_hash, prefix = api_keys_module.generate()
     key = ApiKey(business_id=current_user.business, name=body.name, key_hash=key_hash, key_prefix=prefix, active=True)
     db.add(key)

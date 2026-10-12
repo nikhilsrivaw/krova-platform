@@ -22,11 +22,13 @@ from sqlalchemy import func, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
+from shared.billing import limits as plan_limits
 from shared.campaigns import audience as audience_module
 from shared.channels import ingest
 from shared.channels.whatsapp.client import CarouselSendCard, WhatsAppClient, WhatsAppError
 from shared.db.models import (
     Audience,
+    Business,
     Campaign,
     CampaignRecipient,
     CampaignStatus,
@@ -257,6 +259,13 @@ async def preview(
             f"About {max(0, daily - used)} of these {result.count} will send "
             "today; the rest will go out tomorrow."
         )
+    plan_cap = plan_limits.limits_for((await db.get(Business, business_id)).plan)
+    if plan_cap is not None and result.count > plan_cap.campaign_audience:
+        over = (
+            f"Your plan allows {plan_cap.campaign_audience:,} people in one campaign and this reaches "
+            f"{result.count:,}. Narrow the audience, or move to a bigger plan on the Billing page."
+        )
+        limit_note = f"{limit_note} {over}" if limit_note else over
 
     sample = [
         RecipientPreview(
@@ -531,6 +540,11 @@ async def send_campaign(
     result = await audience_module.resolve(
         current_user.business, campaign.audience, campaign.audience_params, db,
         require_marketing_opt_in=(_value(template.category) == "MARKETING"),
+    )
+    business_row = await db.get(Business, current_user.business)
+    plan_limits.check_size(
+        business_row.plan if business_row else None, "campaign_audience",
+        "people in one campaign", result.count,
     )
 
     used = await audience_module.sent_today(current_user.business, db)

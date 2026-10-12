@@ -494,6 +494,19 @@ async def buy_number(body: BuyIn, current_user: OwnerOrAdminDep, db: DbDep) -> B
     # A number costs real rent: no plan, no number.
     await require_active_plan(db, current_user.business)
 
+    from shared.billing import limits as plan_limits
+
+    business = await db.get(Business, current_user.business)
+    plan_limits.check_count(
+        business.plan if business else None, "phone_lines", "phone line(s)",
+        await plan_limits.count_rows(
+            db, ChannelConnection,
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.voice,
+            ChannelConnection.status == ConnectionStatus.active,
+        ),
+    )
+
     row = await _require_provisioning(current_user.business, db)
     if row.status != VoiceProvisioningStatus.compliance_approved:
         raise HTTPException(

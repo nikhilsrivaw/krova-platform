@@ -29,7 +29,9 @@ from sqlalchemy import func, select
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
 from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError
+from shared.billing import limits as plan_limits
 from shared.db.models import (
+    Business,
     Channel,
     ChannelConnection,
     Commitment,
@@ -736,7 +738,8 @@ class ContactImportRow(BaseModel):
 
 
 class ContactImportIn(BaseModel):
-    contacts: list[ContactImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS_PER_IMPORT)
+    # The biggest plan's size; the business's own plan limit is checked in the endpoint.
+    contacts: list[ContactImportRow] = Field(min_length=1, max_length=50_000)
 
 
 class ContactImportRowOut(BaseModel):
@@ -767,6 +770,14 @@ async def import_customers(
     write first. CSV parsing and column mapping happen in the browser; this
     takes the already-structured rows.
     """
+    business = await db.get(Business, current_user.business)
+    plan = business.plan if business else None
+    if plan_limits.limits_for(plan) is None and len(body.contacts) > importer.LEGACY_ROWS_PER_IMPORT:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Import up to {importer.LEGACY_ROWS_PER_IMPORT:,} contacts at a time.",
+        )
+    plan_limits.check_size(plan, "import_rows", "contacts in one import", len(body.contacts))
     rows = [
         importer.ImportRow(row_number=i + 1, phone=c.phone, name=c.name)
         for i, c in enumerate(body.contacts)

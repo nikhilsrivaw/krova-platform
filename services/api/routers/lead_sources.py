@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
+from shared.billing import limits as plan_limits
 from shared.config.settings import settings as app_settings
 from shared.db.models import Business, InboundLead
 from shared.care import post_call_actions
@@ -93,6 +94,7 @@ async def generate_lead_source_token(key: str, current_user: OwnerOrAdminDep, db
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    plan_limits.check_new_lead_source(business.plan, business.settings, platform.token_setting)
 
     token = intake.new_token()
     business.settings = {

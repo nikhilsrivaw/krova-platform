@@ -20,7 +20,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
+from shared.billing import limits as plan_limits
 from shared.db.models import (
+    Business,
     BusinessDNA,
     DraftAction,
     KnowledgeItem,
@@ -238,11 +240,27 @@ async def knowledge_status(current_user: OwnerOrAdminDep, db: DbDep) -> Knowledg
     )
 
 
+async def _check_room(db, business_id: uuid.UUID, new_tokens: int) -> None:
+    """The AI reads all active knowledge before every reply, so each plan has a ceiling on how much."""
+    business = await db.get(Business, business_id)
+    if business is None or plan_limits.limits_for(business.plan) is None:
+        return
+    used = (
+        await db.execute(
+            select(func.coalesce(func.sum(KnowledgeItem.token_estimate), 0)).where(
+                KnowledgeItem.business_id == business_id, KnowledgeItem.active == True  # noqa: E712
+            )
+        )
+    ).scalar_one()
+    plan_limits.check_size(business.plan, "knowledge_tokens", "tokens of business information the AI reads (about 670 tokens a page)", int(used) + new_tokens)
+
+
 @router.post("", response_model=KnowledgeOut, status_code=status.HTTP_201_CREATED)
 async def add_knowledge(
     body: KnowledgeIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> KnowledgeOut:
     """Write something down for the agent."""
+    await _check_room(db, current_user.business, len(body.content) // CHARS_PER_TOKEN)
     item = KnowledgeItem(
         business_id=current_user.business,
         title=body.title.strip(),
@@ -290,6 +308,7 @@ async def upload_knowledge(
             detail="We could not read any text from that file.",
         )
 
+    await _check_room(db, current_user.business, len(text) // CHARS_PER_TOKEN)
     item = KnowledgeItem(
         business_id=current_user.business,
         title=title.strip(),

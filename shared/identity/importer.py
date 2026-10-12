@@ -34,7 +34,10 @@ from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-MAX_ROWS_PER_IMPORT = 5000
+# The most any plan can import at once; a business's own plan limit (shared/billing/limits.py)
+# is checked before rows get here. A business with no plan is held to LEGACY_ROWS_PER_IMPORT.
+MAX_ROWS_PER_IMPORT = 50_000
+LEGACY_ROWS_PER_IMPORT = 5000
 
 
 @dataclass(slots=True)
