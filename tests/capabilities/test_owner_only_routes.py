@@ -85,6 +85,12 @@ LOCKED = {(m, _P + path) for m, path in [
     ("PUT", "/team/settings"), ("POST", "/team/transfer-ownership"),
     ("PUT", "/voice-onboarding/keypad-menu"), ("PATCH", "/team/members/{user_id}/phone"),
     # spends money (a TTS or AI call per tap) or links a channel to the business
+    # how much the AI does on its own, which features are on, and the owner's money assistant
+    ("POST", "/approvals/autonomy"), ("PATCH", "/approvals/auto-send-rules"),
+    ("PUT", "/capabilities/{key}"), ("POST", "/capabilities/{key}/templates"),
+    ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
+    # what the AI is taught to say
+    ("POST", "/knowledge"), ("POST", "/knowledge/upload"), ("DELETE", "/knowledge/{item_id}"),
     ("POST", "/voice-onboarding/preview-voice"), ("POST", "/templates/carousel/draft"),
     ("POST", "/templates/carousel/image"),
     # how the business is set up (who can be booked and when, the walk-in kiosk, connected shops,
@@ -121,6 +127,7 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     # the owner's record of what each person did
     ("GET", "/team/activity"), ("GET", "/team/activity/summary"),
     ("GET", "/billing"), ("GET", "/billing/quote"), ("GET", "/voice-onboarding/keypad-menu"),
+    ("GET", "/knowledge"), ("GET", "/knowledge/gaps"), ("GET", "/knowledge/status"),
     ("GET", "/voice-onboarding/agent-settings"), ("GET", "/channels/instagram/connect-url"),
     ("GET", "/channels/instagram/fb-connect-url"),
 ]}
@@ -136,7 +143,6 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/post-call-rules/test"),
     ("POST", "/leads/manual"),
     ("POST", "/templates/sync"),
-    ("POST", "/knowledge"),
     ("POST", "/queue/check-in"),
     ("GET", "/conversations"), ("GET", "/ledger/commitments"), ("GET", "/team"),
     ("GET", "/escalations"), ("GET", "/voice-onboarding/logs"),

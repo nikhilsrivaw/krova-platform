@@ -9,7 +9,7 @@ provider is approved and its account quota is live (shared/ai/providers.py).
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.ai import client, context as agent_context, providers
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
@@ -42,7 +42,7 @@ class AskOut(BaseModel):
 
 
 @router.post("/ask", response_model=AskOut)
-async def ask(body: AskIn, current_user: CurrentUserDep, db: DbDep) -> AskOut:
+async def ask(body: AskIn, current_user: OwnerOrAdminDep, db: DbDep) -> AskOut:
     owner = await agent_context.build_owner(current_user.business, db)
     system = f"{owner.render()}\n\n{ANSWER_RULES}"
     messages = [{"role": t.role, "content": t.text} for t in body.history[-HISTORY_TURNS:]]

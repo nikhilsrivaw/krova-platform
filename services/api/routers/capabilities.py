@@ -11,7 +11,7 @@ pages and background behaviour.
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.channels.whatsapp import required_templates, template_service
 from shared.commands.tools import WRITE_ROLES
@@ -110,7 +110,7 @@ async def list_capabilities(current_user: CurrentUserDep, db: DbDep) -> list[Cap
 
 @router.put("/{key}", response_model=CapabilityOut)
 async def set_capability(
-    key: str, body: CapabilityIn, current_user: CurrentUserDep, db: DbDep
+    key: str, body: CapabilityIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> CapabilityOut:
     if current_user.role not in WRITE_ROLES:
         raise HTTPException(
@@ -140,7 +140,7 @@ class CreateTemplatesOut(BaseModel):
 
 @router.post("/{key}/templates", response_model=CreateTemplatesOut)
 async def create_missing_templates(
-    key: str, current_user: CurrentUserDep, db: DbDep
+    key: str, current_user: OwnerOrAdminDep, db: DbDep
 ) -> CreateTemplatesOut:
     """
     Submit to Meta every template this feature needs that the business does

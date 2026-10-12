@@ -19,7 +19,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.db.models import (
     BusinessDNA,
     DraftAction,
@@ -123,7 +123,7 @@ def _extract(raw: bytes, content_type: str | None, filename: str) -> str:
 
 
 @router.get("", response_model=list[KnowledgeOut])
-async def list_knowledge(current_user: CurrentUserDep, db: DbDep) -> list[KnowledgeOut]:
+async def list_knowledge(current_user: OwnerOrAdminDep, db: DbDep) -> list[KnowledgeOut]:
     result = await db.execute(
         select(KnowledgeItem)
         .where(KnowledgeItem.business_id == current_user.business)
@@ -133,7 +133,7 @@ async def list_knowledge(current_user: CurrentUserDep, db: DbDep) -> list[Knowle
 
 
 @router.get("/gaps", response_model=list[GapOut])
-async def list_gaps(current_user: CurrentUserDep, db: DbDep) -> list[GapOut]:
+async def list_gaps(current_user: OwnerOrAdminDep, db: DbDep) -> list[GapOut]:
     """
     What the agent has been asked and could not answer.
 
@@ -197,7 +197,7 @@ async def list_gaps(current_user: CurrentUserDep, db: DbDep) -> list[GapOut]:
 
 
 @router.get("/status", response_model=KnowledgeStatus)
-async def knowledge_status(current_user: CurrentUserDep, db: DbDep) -> KnowledgeStatus:
+async def knowledge_status(current_user: OwnerOrAdminDep, db: DbDep) -> KnowledgeStatus:
     """
     How much the agent is carrying, and whether that is still sensible.
 
@@ -240,7 +240,7 @@ async def knowledge_status(current_user: CurrentUserDep, db: DbDep) -> Knowledge
 
 @router.post("", response_model=KnowledgeOut, status_code=status.HTTP_201_CREATED)
 async def add_knowledge(
-    body: KnowledgeIn, current_user: CurrentUserDep, db: DbDep
+    body: KnowledgeIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> KnowledgeOut:
     """Write something down for the agent."""
     item = KnowledgeItem(
@@ -270,7 +270,7 @@ async def add_knowledge(
 
 @router.post("/upload", response_model=KnowledgeOut, status_code=status.HTTP_201_CREATED)
 async def upload_knowledge(
-    current_user: CurrentUserDep,
+    current_user: OwnerOrAdminDep,
     db: DbDep,
     file: UploadFile = File(...),
     title: str = Form(...),
@@ -308,7 +308,7 @@ async def upload_knowledge(
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_knowledge(
-    item_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
+    item_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep
 ) -> None:
     item = await db.get(KnowledgeItem, item_id)
     if item is None or item.business_id != current_user.business:

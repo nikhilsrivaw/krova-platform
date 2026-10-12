@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.channels.send_draft import DraftSendError, send_draft
 from shared.commands.tools import WRITE_ROLES
 from shared.db.models import (
@@ -277,7 +277,7 @@ class AutonomyBody(BaseModel):
 
 @router.post("/autonomy")
 async def set_autonomy(
-    body: AutonomyBody, current_user: CurrentUserDep, db: DbDep
+    body: AutonomyBody, current_user: OwnerOrAdminDep, db: DbDep
 ) -> dict:
     """
     How much the agent may do without a person.
@@ -367,7 +367,7 @@ async def get_auto_send_rules(current_user: CurrentUserDep, db: DbDep) -> AutoSe
 
 @router.patch("/auto-send-rules", response_model=AutoSendRulesOut)
 async def update_auto_send_rules(
-    body: AutoSendRulesIn, current_user: CurrentUserDep, db: DbDep
+    body: AutoSendRulesIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> AutoSendRulesOut:
     if current_user.role not in WRITE_ROLES:
         # The auto-send rules decide what the AI may do to customers without a person

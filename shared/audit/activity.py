@@ -176,6 +176,7 @@ for _m, _p, _a, _s in [
     ("PUT", "/voice-onboarding/keypad-menu", "keypad_menu_changed", "Changed the phone keypad menu"),
     ("PATCH", "/team/members/{user_id}/phone", "member_phone_changed", "Changed a team member's phone number"),
     ("POST", "/voice-onboarding/preview-voice", "voice_previewed", "Played a voice preview"),
+    ("POST", "/owner/ask", "owner_assistant_asked", "Asked KROVA a question about the business"),
     ("POST", "/scheduling/doctors", "provider_added", "Added someone who can be booked"),
     ("PATCH", "/scheduling/doctors/{doctor_id}", "provider_changed", "Changed someone who can be booked"),
     ("DELETE", "/scheduling/doctors/{doctor_id}", "provider_removed", "Removed someone who can be booked"),

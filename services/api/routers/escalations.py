@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.db.models import Business, Escalation, User
 from shared.team import conflict
 from shared.utils.logging import get_logger
@@ -117,7 +117,7 @@ async def get_escalation_settings(current_user: CurrentUserDep, db: DbDep) -> Es
 
 @router.patch("/settings", response_model=EscalationSettingsOut)
 async def set_escalation_settings(
-    body: EscalationSettingsIn, current_user: CurrentUserDep, db: DbDep,
+    body: EscalationSettingsIn, current_user: OwnerOrAdminDep, db: DbDep,
 ) -> EscalationSettingsOut:
     business = await db.get(Business, current_user.business)
     if business is None:
