@@ -106,7 +106,12 @@ async def count_rows(db: AsyncSession, model, *where) -> int:
 
 
 async def messages_this_month(db: AsyncSession, business_id: uuid.UUID) -> int:
-    """Customer messages received since the 1st of this month (UTC)."""
+    """
+    Customer messages received since the 1st of this month (UTC).
+
+    Voice is left out: every spoken turn of a call is written through the same ingest path (so a call joins
+    the customer's record), and calls are paid for from the wallet, not from the plan's message size.
+    """
     from datetime import datetime, timezone
 
     from shared.db.models import UsageEvent, UsageEventType
@@ -118,6 +123,7 @@ async def messages_this_month(db: AsyncSession, business_id: uuid.UUID) -> int:
             select(func.coalesce(func.sum(UsageEvent.quantity), 0)).where(
                 UsageEvent.business_id == business_id,
                 UsageEvent.event_type == UsageEventType.message_processed,
+                UsageEvent.channel != "voice",
                 UsageEvent.occurred_at >= start,
             )
         )

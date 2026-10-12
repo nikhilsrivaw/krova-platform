@@ -740,6 +740,9 @@ class ContactImportRow(BaseModel):
 class ContactImportIn(BaseModel):
     # The biggest plan's size; the business's own plan limit is checked in the endpoint.
     contacts: list[ContactImportRow] = Field(min_length=1, max_length=50_000)
+    # When a big file is sent in batches: how many rows the whole file has, so the plan's import size
+    # is checked against the file and not against one batch.
+    total: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class ContactImportRowOut(BaseModel):
@@ -772,12 +775,13 @@ async def import_customers(
     """
     business = await db.get(Business, current_user.business)
     plan = business.plan if business else None
-    if plan_limits.limits_for(plan) is None and len(body.contacts) > importer.LEGACY_ROWS_PER_IMPORT:
+    file_rows = max(body.total or 0, len(body.contacts))
+    if plan_limits.limits_for(plan) is None and file_rows > importer.LEGACY_ROWS_PER_IMPORT:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"Import up to {importer.LEGACY_ROWS_PER_IMPORT:,} contacts at a time.",
         )
-    plan_limits.check_size(plan, "import_rows", "contacts in one import", len(body.contacts))
+    plan_limits.check_size(plan, "import_rows", "contacts in one import", file_rows)
     rows = [
         importer.ImportRow(row_number=i + 1, phone=c.phone, name=c.name)
         for i, c in enumerate(body.contacts)
