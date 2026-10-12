@@ -383,7 +383,7 @@ class ConnectUrlOut(BaseModel):
 
 
 @router.get("/instagram/connect-url", response_model=ConnectUrlOut)
-async def instagram_connect_url(current_user: CurrentUserDep) -> ConnectUrlOut:
+async def instagram_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlOut:
     """
     Build the Instagram Business Login URL for this business specifically.
 
@@ -489,7 +489,7 @@ async def instagram_callback(
 
 
 @router.get("/instagram/fb-connect-url", response_model=ConnectUrlOut)
-async def instagram_fb_connect_url(current_user: CurrentUserDep) -> ConnectUrlOut:
+async def instagram_fb_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlOut:
     """
     The Facebook-Login-for-Business route into Instagram messaging - the
     older, Page-based path, as an alternative to instagram_connect_url

@@ -84,6 +84,9 @@ LOCKED = {(m, _P + path) for m, path in [
     # who is on the team (the finer owner-vs-admin rules are in shared/team/members.py)
     ("PUT", "/team/settings"), ("POST", "/team/transfer-ownership"),
     ("PUT", "/voice-onboarding/keypad-menu"), ("PATCH", "/team/members/{user_id}/phone"),
+    # spends money (a TTS or AI call per tap) or links a channel to the business
+    ("POST", "/voice-onboarding/preview-voice"), ("POST", "/templates/carousel/draft"),
+    ("POST", "/templates/carousel/image"),
     ("POST", "/billing/subscribe"), ("POST", "/billing/topup"), ("POST", "/billing/cancel"), ("POST", "/billing/resume"), ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
     ("DELETE", "/team/members/{user_id}"), ("POST", "/team/members/{user_id}/reset-password"),
 ]}
@@ -106,6 +109,8 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     # the owner's record of what each person did
     ("GET", "/team/activity"), ("GET", "/team/activity/summary"),
     ("GET", "/billing"), ("GET", "/billing/quote"), ("GET", "/voice-onboarding/keypad-menu"),
+    ("GET", "/voice-onboarding/agent-settings"), ("GET", "/channels/instagram/connect-url"),
+    ("GET", "/channels/instagram/fb-connect-url"),
 ]}
 
 # What staff do all day - one customer at a time - must stay open to them.

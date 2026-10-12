@@ -195,7 +195,7 @@ class CarouselImageOut(BaseModel):
 
 @router.post("/carousel/image", response_model=CarouselImageOut)
 async def upload_carousel_image(
-    current_user: CurrentUserDep, db: DbDep, file: UploadFile = File(...),
+    current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile = File(...),
 ) -> CarouselImageOut:
     """
     Upload one card's picture, once, to both of Meta's endpoints - the
@@ -235,7 +235,7 @@ class CarouselDraftOut(BaseModel):
 
 @router.post("/carousel/draft", response_model=CarouselDraftOut)
 async def draft_carousel_cards(
-    body: CarouselDraftIn, current_user: CurrentUserDep, db: DbDep,
+    body: CarouselDraftIn, current_user: OwnerOrAdminDep, db: DbDep,
 ) -> CarouselDraftOut:
     """
     A starting point for the cards' text, from a one-line brief. Nothing

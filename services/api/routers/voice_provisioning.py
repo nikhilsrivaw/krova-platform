@@ -786,7 +786,7 @@ def _agent_settings_out(connection: ChannelConnection, business: Business | None
 
 
 @router.get("/agent-settings", response_model=AgentSettingsOut)
-async def get_agent_settings(current_user: CurrentUserDep, db: DbDep) -> AgentSettingsOut:
+async def get_agent_settings(current_user: OwnerOrAdminDep, db: DbDep) -> AgentSettingsOut:
     connection = await _voice_connection(current_user.business, db)
     business = await db.get(Business, current_user.business)
     return _agent_settings_out(connection, business)
@@ -1038,7 +1038,7 @@ class VoicePreviewOut(BaseModel):
 
 
 @router.post("/preview-voice", response_model=VoicePreviewOut)
-async def preview_voice(body: VoicePreviewIn, current_user: CurrentUserDep) -> VoicePreviewOut:
+async def preview_voice(body: VoicePreviewIn, current_user: OwnerOrAdminDep) -> VoicePreviewOut:
     if body.speaker not in VALID_SPEAKERS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
