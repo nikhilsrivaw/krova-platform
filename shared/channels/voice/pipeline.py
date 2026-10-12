@@ -44,6 +44,7 @@ from shared.channels import ingest
 from shared.channels.voice import keypad_menu, plivo_client
 from shared.care import post_call_actions
 from shared.identity import resolver
+from shared.team import call_routing, conflict
 from shared.channels.voice.tenant import VoiceRoute
 from shared.config.settings import settings
 from shared.db.models import (
@@ -675,11 +676,12 @@ class CallPipeline:
         # A caller who asks for a person gets the transfer straight away, not
         # whenever the model happens to choose escalate. Before this, "team se
         # baat karni hai" was answered by the AI as text and nothing transferred.
-        if self.route.staff_phone_number and self._caller_asked_for_person():
-            await self.request_transfer()
-            return
         if self._caller_asked_for_person():
-            await self._person_asked_without_transfer()
+            targets = await self._transfer_targets()
+            if targets:
+                await self.request_transfer(targets=targets)
+            else:
+                await self._person_asked_without_transfer()
             return
 
         t_context = time.monotonic()
@@ -1177,8 +1179,20 @@ class CallPipeline:
                     return
                 self._idle_prompted = False
 
+    async def _transfer_targets(self) -> "list[call_routing.Target]":
+        """Who this call could ring: the customer's own team member first, then whoever is free."""
+        try:
+            return await call_routing.targets_for(
+                self.db, business_id=self.route.business_id, customer_id=self.customer_id,
+                fallback=self.route.staff_phone_number,
+            )
+        except Exception:
+            logger.exception("could not work out who to ring call=%s", self.provider_call_id)
+            return call_routing.order([], self.route.staff_phone_number)
+
     async def request_transfer(
         self, *, number: str | None = None, reason: str | None = None, line: str | None = None,
+        targets: "list[call_routing.Target] | None" = None,
     ) -> None:
         """
         The caller pressed the keypad's escape-hatch digit (0) asking for a
@@ -1210,8 +1224,12 @@ class CallPipeline:
             customer_id=self.customer_id, channel="voice", db=self.db,
         )
 
-        target = number or self.route.staff_phone_number
-        if target:
+        if number:  # a phone-menu key with a number of its own
+            targets = [call_routing.Target(number, None, "the team")]
+        elif targets is None:
+            targets = await self._transfer_targets()
+        if targets:
+            await self._alert_first(targets[0])
             # Speak first, then wait for the line to finish playing: the
             # transfer cuts the audio stream, so anything not yet heard is lost.
             self._audio_bytes_sent = 0
@@ -1223,7 +1241,7 @@ class CallPipeline:
                 record=True,
             )
             await self._wait_for_line_playback()
-            if await self._try_transfer(target):
+            if await self._try_transfer(targets):
                 return
 
         await self._say_stream(
@@ -1258,7 +1276,22 @@ class CallPipeline:
         last = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
         return bool(_PERSON_REQUEST.search(last or "") or _CONTACT_REQUEST.search(last or ""))
 
-    async def _try_transfer(self, target: str | None = None) -> bool:
+    async def _alert_first(self, target: "call_routing.Target") -> None:
+        """Tell the first person we are about to ring that a call is coming, and from whom."""
+        if target.user_id is None:
+            return
+        name = "A customer"
+        if self.customer_id is not None:
+            customer = await self.db.get(Customer, self.customer_id)
+            if customer is not None and customer.display_name:
+                name = customer.display_name
+        await conflict.notify(
+            self.db, business_id=self.route.business_id, user_id=target.user_id,
+            title="Call coming in", body=f"{name} is being put through to you",
+            url=f"/app/inbox/{self.customer_id}" if self.customer_id else "/app/today",
+        )
+
+    async def _try_transfer(self, targets: "list[call_routing.Target]") -> bool:
         """
         Ask Plivo to bridge this live call to the business's configured
         staff number, via its Live Call Modification API.
@@ -1290,10 +1323,10 @@ class CallPipeline:
             )
             return False
 
-        aleg_url = (
-            f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?"
-            f"{urlencode({'number': f'+{target or self.route.staff_phone_number}'})}"
-        )
+        query: dict[str, str] = {"t": call_routing.encode(targets), "i": "0"}
+        if self.call_row_id is not None:
+            query["call"] = str(self.call_row_id)
+        aleg_url = f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?{urlencode(query)}"
         try:
             await plivo_client.transfer_call(
                 auth_id=auth_id,
@@ -1307,7 +1340,7 @@ class CallPipeline:
 
         logger.info(
             "call transfer triggered call=%s to=+%s",
-            self.provider_call_id, target or self.route.staff_phone_number,
+            self.provider_call_id, [t.number for t in targets],
         )
         if self.end_stream is not None:
             await self.end_stream()

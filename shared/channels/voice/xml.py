@@ -68,6 +68,32 @@ def dial_response(number: str) -> str:
     )
 
 
+def dial_step_response(number: str, *, action_url: str, timeout: int) -> str:
+    """
+    Ring one number; when that attempt ends Plivo asks `action_url` what to do next. Used to
+    walk a list of team members one at a time (see shared/team/call_routing.py).
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f'  <Dial action="{escape(action_url)}" method="POST" timeout="{int(timeout)}">'
+        f"<Number>+{escape(number)}</Number></Dial>\n"
+        "</Response>"
+    )
+
+
+def nobody_answered_response() -> str:
+    """Every number on the list was tried: say so honestly, then end the call."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        "  <Speak>Sorry, nobody is free to take your call right now. "
+        "Someone from the team will call you back soon.</Speak>\n"
+        "  <Hangup/>\n"
+        "</Response>"
+    )
+
+
 def speak_response(text: str) -> str:
     """
     Read fixed text aloud, then hang up - no <Stream>, no conversation.

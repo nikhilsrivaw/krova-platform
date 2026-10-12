@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
 from shared.db.models import Business, BusinessMember, Case, CaseStatus, DraftStatus, Customer, Escalation, MessageDraft, User
+from shared.identity.normalise import InvalidIdentifier, normalise_phone
 from shared.team import members
 from shared.team import settings as team_settings
 
@@ -39,6 +40,8 @@ class TeamMemberOut(BaseModel):
     must_change_password: bool | None = None
     locked: bool | None = None
     available: bool = True
+    # Where calls for this person ring. Shown to owner/admin, and to the person themselves.
+    phone: str | None = None
 
 
 @router.get("", response_model=list[TeamMemberOut])
@@ -60,6 +63,8 @@ async def list_team(current_user: CurrentUserDep, db: DbDep) -> list[TeamMemberO
             role=members.role_value(member.role),
             available=bool(member.available),
         )
+        if supervisor or member.user_id == current_user.id:
+            item.phone = member.phone
         if supervisor:
             item.team_id = user.username
             item.last_login_at = user.last_login_at
@@ -240,6 +245,46 @@ async def my_work(current_user: CurrentUserDep, db: DbDep) -> MyWork:
         )
     )
     return MyWork(chats=chats, drafts_waiting=drafts, escalations=escalations, cases=cases)
+
+
+class PhoneIn(BaseModel):
+    phone: str | None = None  # "" or null clears it
+
+
+def _clean_phone(raw: str | None) -> str | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return normalise_phone(raw)
+    except InvalidIdentifier as exc:
+        raise HTTPException(422, f"phone: {exc}") from exc
+
+
+async def _member(db, business_id: uuid.UUID, user_id: uuid.UUID) -> BusinessMember:
+    member = (await db.execute(
+        select(BusinessMember).where(
+            BusinessMember.business_id == business_id, BusinessMember.user_id == user_id)
+    )).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(404, "Not on this team")
+    return member
+
+
+@router.put("/me/phone")
+async def set_my_phone(body: PhoneIn, current_user: CurrentUserDep, db: DbDep) -> dict:
+    """The number calls for me ring. Empty = I take no calls."""
+    member = await _member(db, current_user.business, current_user.id)
+    member.phone = _clean_phone(body.phone)
+    activity.note(phone_set=str(member.phone is not None).lower())
+    return {"phone": member.phone}
+
+
+@router.patch("/members/{user_id}/phone")
+async def set_member_phone(user_id: uuid.UUID, body: PhoneIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
+    member = await _member(db, current_user.business, user_id)
+    member.phone = _clean_phone(body.phone)
+    activity.note(phone_set=str(member.phone is not None).lower(), for_user=str(user_id))
+    return {"phone": member.phone}
 
 
 class AvailabilityIn(BaseModel):

@@ -83,7 +83,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/email-leads/token"), ("POST", "/zoho/sync"), ("DELETE", "/zoho/connection"),
     # who is on the team (the finer owner-vs-admin rules are in shared/team/members.py)
     ("PUT", "/team/settings"), ("POST", "/team/transfer-ownership"),
-    ("PUT", "/voice-onboarding/keypad-menu"),
+    ("PUT", "/voice-onboarding/keypad-menu"), ("PATCH", "/team/members/{user_id}/phone"),
     ("POST", "/billing/subscribe"), ("POST", "/billing/topup"), ("POST", "/billing/cancel"), ("POST", "/billing/resume"), ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
     ("DELETE", "/team/members/{user_id}"), ("POST", "/team/members/{user_id}/reset-password"),
 ]}
@@ -128,6 +128,7 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/escalations/{escalation_id}/claim"), ("POST", "/escalations/{escalation_id}/release"),
     ("POST", "/auth/change-password"),
     ("GET", "/team/settings"), ("GET", "/team/my-work"), ("PUT", "/team/me/availability"),
+    ("PUT", "/team/me/phone"),
 ]}
 
 

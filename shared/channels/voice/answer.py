@@ -13,6 +13,8 @@ outbound Plivo API call for that business uses - just not this check.
 """
 
 import json
+import uuid
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Header, Request, Response, status
 from sqlalchemy import select
@@ -24,12 +26,15 @@ from shared.channels.voice.tenant import resolve
 from shared.channels.voice.xml import (
     copilot_response,
     dial_response,
+    dial_step_response,
     hangup_response,
+    nobody_answered_response,
     speak_response,
     stream_response,
 )
 from shared.config.settings import settings
-from shared.db.models import VoiceProvisioning
+from shared.db.models import Call, VoiceProvisioning
+from shared.team import call_routing
 from shared.db.session import AsyncSessionLocal
 from shared.utils.logging import get_logger
 
@@ -147,7 +152,10 @@ async def answer(
 @router.post("/voice/transfer-xml")
 async def transfer_xml(
     request: Request,
-    number: str,
+    number: str | None = None,
+    t: str | None = None,
+    i: int = 0,
+    call: uuid.UUID | None = None,
     x_plivo_signature_ma_v3: str | None = Header(default=None),
     x_plivo_signature_v3_nonce: str | None = Header(default=None),
 ) -> Response:
@@ -176,7 +184,46 @@ async def transfer_xml(
         logger.warning("rejected /voice/transfer-xml - bad plivo signature")
         return Response(status_code=status.HTTP_403_FORBIDDEN)
 
-    return Response(content=dial_response(number), media_type="application/xml")
+    if t is None:
+        # One fixed number (a phone-menu key that rings somewhere specific).
+        if not number:
+            return Response(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        return Response(content=dial_response(number), media_type="application/xml")
+
+    # A list of team members, tried one after another. First request: i == 0, no DialStatus.
+    # After each attempt Plivo posts back here with the result and the next index.
+    stops = call_routing.decode(t)
+    outcome = params.get("DialStatus")
+    if outcome is not None and 0 < i <= len(stops):
+        if outcome == "completed":
+            number_answered, user_id = stops[i - 1]
+            if call is not None and user_id is not None:
+                await _record_handler(call, user_id)
+            return Response(content=hangup_response("transfer completed"), media_type="application/xml")
+    if i >= len(stops):
+        return Response(content=nobody_answered_response(), media_type="application/xml")
+
+    next_number, _ = stops[i]
+    query = {"t": t, "i": i + 1}
+    if call is not None:
+        query["call"] = str(call)
+    action_url = f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?{urlencode(query)}"
+    return Response(
+        content=dial_step_response(next_number, action_url=action_url, timeout=call_routing.RING_SECONDS),
+        media_type="application/xml",
+    )
+
+
+async def _record_handler(call_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """Remember who took the call, so they can be asked to write it up afterwards."""
+    try:
+        async with AsyncSessionLocal() as db:
+            row = await db.get(Call, call_id)
+            if row is not None and row.handled_by_user_id is None:
+                row.handled_by_user_id = user_id
+            await db.commit()
+    except Exception:
+        logger.exception("could not record who took call=%s", call_id)
 
 
 @router.post("/voice/status")

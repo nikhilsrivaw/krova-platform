@@ -214,6 +214,8 @@ class BusinessMember(UUIDMixin, TimestampMixin, Base):
     available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     # When this person was last handed a routed chat - round-robin picks whoever is longest ago.
     last_routed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Where a call for this person rings (E.164 without the plus). None = they take no calls.
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     business: Mapped["Business"] = relationship(back_populates="members")
     user: Mapped["User"] = relationship(back_populates="memberships")

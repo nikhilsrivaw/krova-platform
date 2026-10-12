@@ -307,8 +307,8 @@ def test_menu_key_transfers_to_that_keys_own_number(monkeypatch):
     pipe, spoken, _ = _with_menu(_menu())
     seen = {}
 
-    async def fake_try(self, target=None):
-        seen["target"] = target
+    async def fake_try(self, targets):
+        seen["target"] = targets[0].number
         return True
 
     monkeypatch.setattr(CallPipeline, "_try_transfer", fake_try)

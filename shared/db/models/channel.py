@@ -297,6 +297,14 @@ class Call(UUIDMixin, Base):
 
     recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # The team member who spoke to the customer on this call (a transfer they took, or a
+    # call they placed), and whether they have written it up yet.
+    handled_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    wrapped_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    wrapup_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
