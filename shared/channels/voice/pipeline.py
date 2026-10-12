@@ -44,7 +44,7 @@ from shared.channels import ingest
 from shared.channels.voice import keypad_menu, plivo_client
 from shared.care import post_call_actions
 from shared.identity import resolver
-from shared.team import call_routing, conflict
+from shared.team import briefing, call_routing, conflict
 from shared.channels.voice.tenant import VoiceRoute
 from shared.config.settings import settings
 from shared.db.models import (
@@ -1280,14 +1280,19 @@ class CallPipeline:
         """Tell the first person we are about to ring that a call is coming, and from whom."""
         if target.user_id is None:
             return
-        name = "A customer"
+        body = "A customer is being put through to you"
         if self.customer_id is not None:
-            customer = await self.db.get(Customer, self.customer_id)
-            if customer is not None and customer.display_name:
-                name = customer.display_name
+            try:
+                found = await briefing.build(
+                    self.db, business_id=self.route.business_id, customer_id=self.customer_id,
+                )
+                if found is not None:
+                    body = found.headline
+            except Exception:
+                logger.exception("could not build the pick-up briefing call=%s", self.provider_call_id)
         await conflict.notify(
             self.db, business_id=self.route.business_id, user_id=target.user_id,
-            title="Call coming in", body=f"{name} is being put through to you",
+            title="Call coming in", body=body,
             url=f"/app/inbox/{self.customer_id}" if self.customer_id else "/app/today",
         )
 
