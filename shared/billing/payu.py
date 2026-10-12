@@ -135,19 +135,30 @@ async def verify_payment(txnid: str) -> dict | None:
     details = (body.get("transaction_details") or {}).get(txnid)
     if not isinstance(details, dict) or not details:
         return None
+    # PayU answers an unknown transaction with a filled-in entry that says "Not Found", not with nothing.
+    if str(details.get("status") or "").strip().lower() == "not found" or str(details.get("mihpayid")) == "Not Found":
+        return None
     return details
 
 
-async def pre_debit(*, authpayuid: str, request_id: str, debit_date: date, amount_paise: int, invoice: str) -> dict:
-    """Tell PayU a charge is coming (cards and UPI; at least 48 hours before)."""
-    var1 = json.dumps(
-        {
-            "authpayuid": authpayuid, "requestId": request_id, "debitDate": debit_date.isoformat(),
-            "amount": rupees(amount_paise), "invoiceDisplayNumber": invoice,
-        },
-        separators=(",", ":"),
-    )
-    return await _call("pre_debit_SI", var1)
+async def pre_debit(
+    *, authpayuid: str, request_id: str, debit_date: date, amount_paise: int, invoice: str,
+    mandate_seq: int | None = None,
+) -> dict:
+    """
+    Tell PayU a charge is coming (cards and UPI; at least 48 hours before).
+
+    `invoice` must be the same one the charge itself carries - PayU matches the debit to its notice by
+    it (cards). `mandate_seq` is UPI AutoPay's execution number: the registration payment was 1, so
+    the first renewal is 2.
+    """
+    body: dict = {
+        "authpayuid": authpayuid, "requestId": request_id, "debitDate": debit_date.isoformat(),
+        "amount": rupees(amount_paise), "invoiceDisplayNumber": invoice,
+    }
+    if mandate_seq is not None:
+        body["mandateSeqNo"] = mandate_seq
+    return await _call("pre_debit_SI", json.dumps(body, separators=(",", ":")))
 
 
 async def charge_mandate(

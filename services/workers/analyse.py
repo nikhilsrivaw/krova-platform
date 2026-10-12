@@ -331,6 +331,12 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         # stays stored; nothing is derived from it.
         return 0
 
+    from shared.billing.guards import plan_blocked
+
+    if await plan_blocked(db, message.business_id):
+        # Reading a conversation costs real AI money; an unpaid plan does not get it. The message stays stored.
+        return 0
+
     if message.analysed_at is not None:
         # A later run already read this message as part of the thread (see
         # the bulk mark at the end of this function).

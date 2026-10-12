@@ -20,7 +20,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.billing import payu, plans, wallet
@@ -37,6 +37,9 @@ RETRY_WINDOW = timedelta(days=7)
 MAX_ATTEMPTS = 4                        # per month; UPI AutoPay's limit
 MANDATE_YEARS = 5
 PENDING_EXPIRY = timedelta(days=3)
+# A renewal PayU has no record of is not going to turn up: judge it in hours, so the retry clock
+# and the week's grace are not spent waiting on a charge that never happened.
+RENEWAL_NOT_FOUND_EXPIRY = timedelta(hours=6)
 
 FAILED_STATES = {"failure", "failed", "bounced", "dropped", "usercancelled", "cancelled", "error"}
 
@@ -66,6 +69,15 @@ def is_blocked(sub: Subscription | None, now: datetime | None = None) -> bool:
     return sub.status == "cancelled" and sub.current_period_end < now
 
 
+def invoice_for(business_id: uuid.UUID, debit_on: date) -> str:
+    """
+    The invoice number of one scheduled debit. The pre-debit notice and the charge must carry the SAME
+    number (PayU matches them by it), so it is derived from what they share - the business and the
+    debit date - rather than invented separately at each step.
+    """
+    return f"INV{business_id.hex[:10]}{debit_on:%y%m%d}"
+
+
 def run_window_ok(now: datetime) -> bool:
     """UPI AutoPay debits are not allowed 10:00-13:00 and 17:00-21:30 IST."""
     t = now.astimezone(IST)
@@ -91,7 +103,7 @@ async def start_plan_checkout(db: AsyncSession, *, business: Business, user, pla
     start = add_month(datetime.combine(today, datetime.min.time())).date()
     end = date(today.year + MANDATE_YEARS, today.month, min(today.day, 28))
     fields = payu.checkout_fields(
-        txnid=payment.txnid, amount_paise=total, productinfo=f"KROVA {plans.PLAN_LABELS[plan]} plan (monthly)",
+        txnid=payment.txnid, amount_paise=total, productinfo=f"KROVA {plans.PLAN_LABELS[plan]} plan monthly",
         firstname=user.full_name or business.name, email=user.email or "billing@krova.space",
         phone=user.phone or "", return_url=return_url(), udf1=str(business.id),
         si_details=payu.si_details_json(amount_paise=total, start=start, end=end),
@@ -133,7 +145,8 @@ async def settle_payment(db: AsyncSession, txnid: str) -> Payment | None:
     details = await payu.verify_payment(txnid)
     now = _now()
     if details is None:
-        if payment.created_at < now - PENDING_EXPIRY:
+        expiry = RENEWAL_NOT_FOUND_EXPIRY if payment.purpose == "renewal" else PENDING_EXPIRY
+        if payment.created_at < now - expiry:
             await _fail(db, payment, "Payment was never completed", now)
         return payment
 
@@ -153,6 +166,9 @@ async def settle_payment(db: AsyncSession, txnid: str) -> Payment | None:
         await _apply_success(db, payment, now)
     elif state in FAILED_STATES:
         await _fail(db, payment, str(details.get("error_Message") or state)[:300], now)
+    elif payment.created_at < now - PENDING_EXPIRY:
+        # Still "pending" at PayU after days: the bank is never going to confirm it.
+        await _fail(db, payment, "The bank never confirmed this payment", now)
     return payment
 
 
@@ -226,7 +242,7 @@ async def _fail(db: AsyncSession, payment: Payment, reason: str, now: datetime) 
 async def renewal_sweep(db: AsyncSession) -> dict:
     """Pre-debit notices, charges, retries, and settling payments still pending. Returns counts."""
     now = _now()
-    out = {"pre_debit": 0, "charged": 0, "settled": 0}
+    out = {"pre_debit": 0, "charged": 0, "settled": 0, "suspended": 0}
     if not payu.enabled():
         return out
 
@@ -234,6 +250,16 @@ async def renewal_sweep(db: AsyncSession) -> dict:
         select(Subscription).where(Subscription.status.in_(("active", "past_due", "cancelled")))
     )).scalars().all()
     for sub in subs:
+        # The backstop: whatever went wrong (no mandate, a revoked one, PayU refusing every notice), a
+        # plan that is still unpaid a week after its month ended is paused. Nothing renews forever on
+        # silence.
+        if (
+            not sub.cancel_at_period_end and sub.status in ("active", "past_due")
+            and now > sub.current_period_end + RETRY_WINDOW
+        ):
+            await _suspend(db, sub, sub.last_failure or "The monthly payment did not go through", now)
+            out["suspended"] += 1
+            continue
         if sub.cancel_at_period_end:
             if sub.current_period_end < now and sub.status != "cancelled":
                 sub.status = "cancelled"
@@ -249,16 +275,19 @@ async def renewal_sweep(db: AsyncSession) -> dict:
             continue  # a charge is still in flight; do not notify or charge again on top of it
         try:
             if sub.pre_debit_sent_for != sub.next_charge_at and now >= sub.next_charge_at - PRE_DEBIT_LEAD:
+                debit_on = sub.next_charge_at.astimezone(IST).date()
+                is_upi, seq = await _mandate(db, sub)
                 reply = await payu.pre_debit(
-                    authpayuid=sub.authpayuid, request_id=new_txnid("PD"),
-                    debit_date=sub.next_charge_at.astimezone(IST).date(), amount_paise=sub.amount_paise,
-                    invoice=new_txnid("INV"),
+                    authpayuid=sub.authpayuid, request_id=new_txnid("PD"), debit_date=debit_on,
+                    amount_paise=sub.amount_paise, invoice=invoice_for(sub.business_id, debit_on),
+                    mandate_seq=seq if is_upi else None,
                 )
-                if str(reply.get("status")) == "1":
+                # E9254 / E9256: a notice (or the debit itself) is already on file for this one - not an error.
+                if str(reply.get("status")) in ("1", "E9254", "E9256"):
                     sub.pre_debit_sent_for = sub.next_charge_at
                     out["pre_debit"] += 1
                 else:
-                    logger.warning("pre-debit refused business=%s reply=%s", sub.business_id, reply)
+                    await _pre_debit_refused(db, sub, reply, now)
                 continue
             if sub.pre_debit_sent_for == sub.next_charge_at and now >= sub.next_charge_at and run_window_ok(now):
                 await _charge(db, sub, now)
@@ -280,7 +309,55 @@ async def renewal_sweep(db: AsyncSession) -> dict:
     return out
 
 
+async def _mandate(db: AsyncSession, sub: Subscription) -> tuple[bool, int]:
+    """
+    (is this mandate UPI AutoPay, the execution number of the next debit). The registration payment was
+    execution 1, so the first renewal is 2, the next 3, and so on - UPI AutoPay needs it in the notice.
+    """
+    registration = (await db.execute(
+        select(Payment.mode, Payment.paid_at).where(
+            Payment.business_id == sub.business_id, Payment.payu_id == sub.authpayuid, Payment.purpose == "plan",
+        ).order_by(Payment.paid_at.desc()).limit(1)
+    )).first()
+    if registration is None:
+        return False, 2
+    mode, paid_at = registration
+    renewals = (await db.execute(
+        select(func.count(Payment.id)).where(
+            Payment.business_id == sub.business_id, Payment.purpose == "renewal", Payment.status == "success",
+            Payment.paid_at >= paid_at,
+        )
+    )).scalar_one()
+    return str(mode or "").upper() == "UPI", int(renewals) + 2
+
+
+async def _pre_debit_refused(db: AsyncSession, sub: Subscription, reply: dict, now: datetime) -> None:
+    """PayU would not take the notice (an inactive or revoked mandate, a bank decline). Say so, once."""
+    message = str(reply.get("msg") or reply.get("message") or reply.get("status") or "PayU refused the notice")[:300]
+    logger.warning("pre-debit refused business=%s reply=%s", sub.business_id, reply)
+    if sub.last_failure != message:
+        sub.last_failure = message
+        sub.updated_at = now
+        await wallet._tell_owner(
+            db, sub.business_id, "Your payment method needs attention",
+            "We could not schedule the next KROVA payment - your bank mandate may have been cancelled. "
+            "Set up payment again on the Billing page to keep your plan running.",
+        )
+
+
+async def _suspend(db: AsyncSession, sub: Subscription, reason: str, now: datetime) -> None:
+    sub.status = "suspended"
+    sub.next_charge_at = None
+    sub.last_failure = reason[:300]
+    sub.updated_at = now
+    await wallet._tell_owner(
+        db, sub.business_id, "Your KROVA plan is paused",
+        "We could not collect the monthly payment. Add a payment method on the Billing page to continue.",
+    )
+
+
 async def _charge(db: AsyncSession, sub: Subscription, now: datetime) -> None:
+    debit_on = sub.next_charge_at.astimezone(IST).date()  # the date the notice named, before it moves
     payment = Payment(
         business_id=sub.business_id, purpose="renewal", plan=sub.plan,
         base_paise=round(sub.amount_paise / (1 + plans.GST_PCT / 100)),
@@ -294,7 +371,8 @@ async def _charge(db: AsyncSession, sub: Subscription, now: datetime) -> None:
     sub.updated_at = now
     await db.flush()
     reply = await payu.charge_mandate(
-        authpayuid=sub.authpayuid, txnid=payment.txnid, amount_paise=sub.amount_paise, invoice=new_txnid("INV"),
+        authpayuid=sub.authpayuid, txnid=payment.txnid, amount_paise=sub.amount_paise,
+        invoice=invoice_for(sub.business_id, debit_on),
     )
     detail = (reply.get("details") or {}).get(payment.txnid) or {}
     state = str(detail.get("status") or "").lower()

@@ -64,6 +64,11 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
         # worth compressing and nothing that should be.
         return False
 
+    from shared.billing.guards import plan_blocked
+
+    if await plan_blocked(db, customer.business_id):
+        return False
+
     # The newest MAX_MESSAGES, oldest first. Ordering ascending before the
     # limit returned a long-standing customer's FIRST 200 messages instead,
     # so their profile never saw anything recent - compression.py trims to

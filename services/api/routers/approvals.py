@@ -203,6 +203,9 @@ async def approve(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This draft is already {_value(draft.status)}",
         )
+    from shared.billing.guards import require_active_plan
+
+    await require_active_plan(db, current_user.business)
     await _guard_customer(draft, current_user, db)
 
     now = datetime.now(timezone.utc)

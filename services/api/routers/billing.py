@@ -16,9 +16,9 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from services.api.dependencies import DbDep, OwnerOrAdminDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
-from shared.billing import payu, plans, service, wallet
+from shared.billing import guards, payu, plans, service, wallet
 from shared.config.settings import settings
 from shared.db.models import Business, Payment, Subscription, User, WalletEntry
 from shared.utils.logging import get_logger
@@ -65,6 +65,8 @@ class PaymentOut(BaseModel):
 
 class BillingOut(BaseModel):
     payments_enabled: bool
+    # Why the plan is off, if it is: required | suspended | ended
+    plan_state: str | None = None
     plans: list[PlanOut]
     subscription: SubscriptionOut | None
     blocked: bool
@@ -77,6 +79,19 @@ class BillingOut(BaseModel):
 
 def _r(paise: int) -> str:
     return f"{paise / 100:.2f}"
+
+
+class PlanStatusOut(BaseModel):
+    state: str | None       # None = all fine
+    blocked: bool
+    can_manage: bool        # owner or admin: may open Billing and pay
+
+
+@router.get("/status", response_model=PlanStatusOut)
+async def plan_status(current_user: CurrentUserDep, db: DbDep) -> PlanStatusOut:
+    """Open to every member (it carries no money): is the plan paused, so the app can say so on every page."""
+    state = await guards.plan_state(db, current_user.business)
+    return PlanStatusOut(state=state, blocked=state is not None, can_manage=current_user.role in ("owner", "admin"))
 
 
 @router.get("", response_model=BillingOut)
@@ -104,7 +119,8 @@ async def overview(current_user: OwnerOrAdminDep, db: DbDep) -> BillingOut:
             cancel_at_period_end=sub.cancel_at_period_end, last_failure=sub.last_failure,
             retry_until=sub.retry_until,
         ) if sub else None,
-        blocked=service.is_blocked(sub),
+        plan_state=await guards.plan_state(db, current_user.business),
+        blocked=await guards.plan_blocked(db, current_user.business),
         wallet_balance=_r(balance) if balance is not None else None,
         number_rent=_r(plans.NUMBER_RENT_PAISE),
         low_balance=balance is not None and balance < plans.LOW_BALANCE_PAISE,

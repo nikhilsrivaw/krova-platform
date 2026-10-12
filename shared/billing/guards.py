@@ -36,11 +36,28 @@ def must_have_plan(business) -> bool:
     return business.created_at >= start
 
 
-async def plan_blocked(db: AsyncSession, business_id: uuid.UUID) -> bool:
+async def plan_state(db: AsyncSession, business_id: uuid.UUID) -> str | None:
+    """
+    Why a business is read-only, or None if it is not:
+      required   it has never paid and was created after billing began (no free period)
+      suspended  a renewal failed for a week
+      ended      it cancelled and the month it paid for is over
+    """
     sub = await db.get(Subscription, business_id)
-    if sub is not None:
-        return is_blocked(sub)
-    return must_have_plan(await db.get(Business, business_id))
+    if sub is None:
+        return "required" if must_have_plan(await db.get(Business, business_id)) else None
+    if sub.status == "suspended":
+        return "suspended"
+    return "ended" if is_blocked(sub) else None
+
+
+async def plan_blocked(db: AsyncSession, business_id: uuid.UUID) -> bool:
+    return await plan_state(db, business_id) is not None
+
+
+async def voice_calls_blocked(db: AsyncSession, business_id: uuid.UUID) -> bool:
+    """AI-run calls, in or out, stop when the plan is paused or the wallet that pays for them is empty."""
+    return await plan_blocked(db, business_id) or await wallet.voice_blocked(db, business_id)
 
 
 async def require_active_plan(db: AsyncSession, business_id: uuid.UUID) -> None:

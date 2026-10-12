@@ -484,6 +484,11 @@ async def buy_number(body: BuyIn, current_user: OwnerOrAdminDep, db: DbDep) -> B
     side, so a business that tries before approval gets Plivo's own error
     rather than a check duplicated here.
     """
+    from shared.billing.guards import require_active_plan
+
+    # A number costs real rent: no plan, no number.
+    await require_active_plan(db, current_user.business)
+
     row = await _require_provisioning(current_user.business, db)
     if row.status != VoiceProvisioningStatus.compliance_approved:
         raise HTTPException(

@@ -93,12 +93,12 @@ async def answer(
 
     # An empty wallet or unpaid number rent switches calls off - otherwise KROVA would be
     # paying for the call. (Businesses that never topped up have no wallet and are never stopped.)
-    from shared.billing.wallet import voice_blocked
+    from shared.billing.guards import voice_calls_blocked
 
     async with AsyncSessionLocal() as db:
-        blocked = await voice_blocked(db, route.business_id)
+        blocked = await voice_calls_blocked(db, route.business_id)
     if blocked:
-        logger.warning("voice call refused: wallet empty or rent unpaid business=%s", route.business_id)
+        logger.warning("voice call refused: plan paused, wallet empty or rent unpaid business=%s", route.business_id)
         return Response(
             content=speak_response("This number cannot take calls right now. Please try again later."),
             media_type="application/xml",

@@ -713,6 +713,14 @@ async def _run_step_action(
     says so (NoRecipient), rather than quietly messaging the customer: a
     fee reminder meant for a parent must never land on the child instead.
     """
+    # A paused plan switches off what reaches customers; internal steps (a task for the team, a tag, an alert)
+    # keep working so nothing important goes quiet.
+    if action_type not in INTERNAL_ACTIONS:
+        from shared.billing.guards import plan_blocked
+
+        if await plan_blocked(db, business_id):
+            raise NoRecipient("the plan is paused, so this step is off")
+
     if (action_config or {}).get("send_to") == "payer":
         if action_type not in PAYER_ACTIONS:
             raise NoRecipient(f"{action_type} can't be sent to a payer")
@@ -806,6 +814,9 @@ async def _run_step_action(
 # The actions that reach a person on a channel, and so can be pointed at
 # the payer. add_tag and create_escalation_task are about the customer
 # themselves, and an Instagram comment reply belongs to whoever commented.
+# Steps that stay inside the business: they cost nothing and must not go quiet when a plan is paused.
+INTERNAL_ACTIONS = frozenset({"create_escalation_task", "add_tag", "set_stage", "notify_team", "assign_to_agent"})
+
 # Who a notify_team step can alert.
 NOTIFY_TARGETS = frozenset({"owner", "admins", "assigned", "everyone"})
 

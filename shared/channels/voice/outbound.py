@@ -305,6 +305,12 @@ async def place_adhoc_call(
     the caller (shared/scheduling/notify.py's _send_voice_call) owns its
     own dedupe column, since there is no recipient row here to stamp.
     """
+    from shared.billing.guards import voice_calls_blocked
+
+    if await voice_calls_blocked(db, business_id):
+        logger.info("adhoc call skipped business=%s: plan paused or wallet empty", business_id)
+        return False
+
     to_number = await _customer_phone(customer_id, db)
     if not to_number:
         logger.info("adhoc call skipped business=%s customer=%s: no phone on file", business_id, customer_id)
