@@ -128,6 +128,7 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     ("GET", "/team/activity"), ("GET", "/team/activity/summary"),
     ("GET", "/billing"), ("GET", "/billing/quote"), ("GET", "/voice-onboarding/keypad-menu"),
     ("GET", "/knowledge"), ("GET", "/knowledge/gaps"), ("GET", "/knowledge/status"),
+    ("GET", "/voice-onboarding/numbers/mine"),
     ("GET", "/voice-onboarding/agent-settings"), ("GET", "/channels/instagram/connect-url"),
     ("GET", "/channels/instagram/fb-connect-url"),
 ]}

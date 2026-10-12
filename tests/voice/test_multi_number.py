@@ -199,8 +199,7 @@ def test_a_promotional_campaign_on_a_business_with_only_an_080_line_is_refused_b
 def test_naming_the_wrong_number_for_the_purpose_is_refused():
     service, promo = number(SERVICE), number(PROMO)
     with pytest.raises(HTTPException) as err:
-        _check(_campaign("service", service.id), promo.__class__ and service, promo) if False else \
-            asyncio.run(campaigns._check_number_series(_campaign("promotional", service.id), None, _Db([service, promo])))
+        _check(_campaign("promotional", service.id), service, promo)
     assert "080" in err.value.detail
 
 
