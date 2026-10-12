@@ -70,6 +70,7 @@ from services.api.routers import (
     team_activity,
     templates,
     trust,
+    team_calls,
     voice_provisioning,
     webhooks,
     widget,
@@ -179,6 +180,7 @@ app.include_router(call_scripts.router, prefix=API_PREFIX)
 app.include_router(analytics.router, prefix=API_PREFIX)
 app.include_router(migration.router, prefix=API_PREFIX)
 app.include_router(voice_provisioning.router, prefix=API_PREFIX)
+app.include_router(team_calls.router, prefix=API_PREFIX)
 app.include_router(post_call_rules.router, prefix=API_PREFIX)
 app.include_router(scheduling.router, prefix=API_PREFIX)
 app.include_router(orders.router, prefix=API_PREFIX)

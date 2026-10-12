@@ -68,7 +68,7 @@ def _call(t, i, status=None, call=None):
     form = {} if status is None else {"DialStatus": status}
     recorded = []
 
-    async def fake_record(call_id, user_id):
+    async def fake_record(call_id, user_id, b_leg=""):
         recorded.append((call_id, user_id))
 
     answer._record_handler = fake_record

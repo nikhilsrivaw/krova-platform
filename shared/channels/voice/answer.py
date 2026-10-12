@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Header, Request, Response, status
 from sqlalchemy import select
 
-from shared.channels.voice import compliance
+from shared.channels.voice import compliance, human_calls
 from shared.channels.voice.call_registry import remember
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.tenant import resolve
@@ -197,8 +197,8 @@ async def transfer_xml(
     if outcome is not None and 0 < i <= len(stops):
         if outcome == "completed":
             number_answered, user_id = stops[i - 1]
-            if call is not None and user_id is not None:
-                await _record_handler(call, user_id)
+            if call is not None:
+                await _record_handler(call, user_id, str(params.get("DialBLegUUID") or ""))
             return Response(content=hangup_response("transfer completed"), media_type="application/xml")
     if i >= len(stops):
         return Response(content=nobody_answered_response(), media_type="application/xml")
@@ -214,14 +214,22 @@ async def transfer_xml(
     )
 
 
-async def _record_handler(call_id: uuid.UUID, user_id: uuid.UUID) -> None:
-    """Remember who took the call, so they can be asked to write it up afterwards."""
+async def _record_handler(call_id: uuid.UUID, user_id: uuid.UUID | None, b_leg: str = "") -> None:
+    """
+    Remember who took the call (so they can be asked to write it up) and which Plivo leg
+    carried it to them (so its cost reaches the wallet - nothing else records that leg).
+    """
     try:
         async with AsyncSessionLocal() as db:
             row = await db.get(Call, call_id)
-            if row is not None and row.handled_by_user_id is None:
-                row.handled_by_user_id = user_id
+            if row is not None:
+                if user_id is not None and row.handled_by_user_id is None:
+                    row.handled_by_user_id = user_id
+                if b_leg:
+                    row.cost_breakdown = {**(row.cost_breakdown or {}), "b_leg_uuid": b_leg}
             await db.commit()
+        if b_leg:
+            human_calls._detach(human_calls.record_leg_costs(call_id, only_b_leg=True))
     except Exception:
         logger.exception("could not record who took call=%s", call_id)
 

@@ -97,6 +97,24 @@ async def proxy_voice_transfer_xml(request: Request) -> Response:
     return await _proxy_http(request, f"/voice/transfer-xml{query}")
 
 
+@router.post("/voice/bridge-answer")
+async def proxy_voice_bridge_answer(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/bridge-answer{query}")
+
+
+@router.post("/voice/bridge-dialed")
+async def proxy_voice_bridge_dialed(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/bridge-dialed{query}")
+
+
+@router.post("/voice/bridge-hangup")
+async def proxy_voice_bridge_hangup(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/bridge-hangup{query}")
+
+
 @router.post("/voice/outbound-answer")
 async def proxy_voice_outbound_answer(request: Request) -> Response:
     query = f"?{request.url.query}" if request.url.query else ""

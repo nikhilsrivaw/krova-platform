@@ -109,6 +109,8 @@ _add("POST", "/approvals/{draft_id}/approve", "draft_approved", "Approved an AI 
 _add("POST", "/approvals/{draft_id}/reject", "draft_rejected", "Rejected an AI reply", WORK)
 _add("POST", "/conversations/{customer_id}/assign", "conversation_assigned", "Assigned a conversation", WORK)
 _add("PUT", "/team/me/availability", "availability_changed", "Changed own availability", WORK)
+_add("POST", "/calls/start", "call_placed", "Called a customer from the app", WORK)
+_add("POST", "/calls/{call_id}/wrapup", "call_written_up", "Wrote up a call", WORK)
 _add("POST", "/team/transfer-ownership", "ownership_transferred", "Transferred ownership of the business", SECURITY)
 _add("POST", "/billing/subscribe", "plan_checkout_started", "Started paying for a plan", SECURITY)
 _add("POST", "/billing/topup", "wallet_topup_started", "Started adding money to the wallet", SECURITY)

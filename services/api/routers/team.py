@@ -23,7 +23,7 @@ from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
 from shared.db.models import Business, BusinessMember, Case, CaseStatus, DraftStatus, Customer, Escalation, MessageDraft, User
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
-from shared.team import briefing, members
+from shared.team import briefing, human_calls, members
 from shared.team import settings as team_settings
 
 router = APIRouter(prefix="/team", tags=["team"])
@@ -217,6 +217,8 @@ class MyWork(BaseModel):
     drafts_waiting: int
     escalations: int
     cases: int
+    # Calls I spoke on and have not written up (the promises made on them are not in the ledger yet).
+    calls_to_write_up: int = 0
 
 
 @router.get("/my-work", response_model=MyWork)
@@ -244,7 +246,8 @@ async def my_work(current_user: CurrentUserDep, db: DbDep) -> MyWork:
             Case.business_id == biz, Case.assigned_to_user_id == me, Case.status != CaseStatus.closed,
         )
     )
-    return MyWork(chats=chats, drafts_waiting=drafts, escalations=escalations, cases=cases)
+    calls = len(await human_calls.pending_wrapups(db, business_id=biz, user_id=me))
+    return MyWork(chats=chats, drafts_waiting=drafts, escalations=escalations, cases=cases, calls_to_write_up=calls)
 
 
 @router.get("/briefing/{customer_id}")

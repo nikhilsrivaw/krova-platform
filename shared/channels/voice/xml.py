@@ -82,6 +82,33 @@ def dial_step_response(number: str, *, action_url: str, timeout: int) -> str:
     )
 
 
+def bridge_response(*, announce: str, number: str, caller_id: str, action_url: str, timeout: int = 30) -> str:
+    """
+    A team member's click-to-call, once they have picked up: tell them who they are about
+    to speak to, then dial the customer from the business number so the customer sees the
+    number they know.
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"  <Speak>{escape(announce)}</Speak>\n"
+        f'  <Dial action="{escape(action_url)}" method="POST" timeout="{int(timeout)}" callerId="+{escape(caller_id)}">'
+        f"<Number>+{escape(number)}</Number></Dial>\n"
+        "</Response>"
+    )
+
+
+def customer_unreachable_response() -> str:
+    """The customer did not pick up: tell the team member who is still on the line, then end."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        "  <Speak>The customer did not pick up. You can try again from the app.</Speak>\n"
+        "  <Hangup/>\n"
+        "</Response>"
+    )
+
+
 def nobody_answered_response() -> str:
     """Every number on the list was tried: say so honestly, then end the call."""
     return (

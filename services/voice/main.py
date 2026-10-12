@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from shared.channels.voice import answer, cod_ivr, copilot, otp_call, outbound, relay
+from shared.channels.voice import answer, cod_ivr, copilot, human_calls, otp_call, outbound, relay
 from shared.config.settings import settings
 from shared.db.session import check_db_connection, get_engine
 from shared.utils.logging import get_logger
@@ -75,6 +75,7 @@ app.include_router(copilot.router)
 app.include_router(outbound.router)
 app.include_router(cod_ivr.router)
 app.include_router(otp_call.router)
+app.include_router(human_calls.router)
 
 
 @app.get("/health", tags=["ops"])

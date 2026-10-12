@@ -129,6 +129,8 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/auth/change-password"),
     ("GET", "/team/settings"), ("GET", "/team/my-work"), ("PUT", "/team/me/availability"),
     ("PUT", "/team/me/phone"),
+    ("POST", "/calls/start"), ("GET", "/calls/{call_id}"), ("GET", "/calls/pending/wrapup"),
+    ("POST", "/calls/{call_id}/wrapup"), ("GET", "/team/briefing/{customer_id}"),
 ]}
 
 
