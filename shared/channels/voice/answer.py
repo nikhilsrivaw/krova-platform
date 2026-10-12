@@ -84,6 +84,13 @@ async def answer(
             media_type="application/xml",
         )
 
+    if route.use == "outbound":
+        logger.info("call to an outgoing-only number %s - declined", route.label)
+        return Response(
+            content=speak_response("This number is used for outgoing calls only. Please call us on our main number."),
+            media_type="application/xml",
+        )
+
     # An empty wallet or unpaid number rent switches calls off - otherwise KROVA would be
     # paying for the call. (Businesses that never topped up have no wallet and are never stopped.)
     from shared.billing.wallet import voice_blocked

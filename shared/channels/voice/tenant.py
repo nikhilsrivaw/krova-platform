@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.channels.voice import numbers
 from shared.db.models import Business, Channel, ChannelConnection, ConnectionStatus
 
 # Speaker gender, Sarvam bulbul:v3's real published catalogue (never
@@ -119,6 +120,10 @@ class VoiceRoute:
     owner_phone: str | None
     # The business's keypad menu (shared/channels/voice/keypad_menu.py), or None.
     keypad_menu: dict | None = None
+    # "both", "inbound" or "outbound" - what the owner said this number is for.
+    use: str = "both"
+    # The number's own name, e.g. "Sales".
+    label: str = ""
 
 
 def _build_route(business: Business, connection: ChannelConnection) -> VoiceRoute:
@@ -140,6 +145,8 @@ def _build_route(business: Business, connection: ChannelConnection) -> VoiceRout
         copilot_live_suggestions=bool(extra.get("copilot_live_suggestions", False)),
         owner_phone=business.owner_phone,
         keypad_menu=extra.get("keypad_menu") or None,
+        use=numbers.use_of(connection),
+        label=numbers.label_of(connection),
     )
 
 
@@ -175,7 +182,9 @@ async def resolve(to_number: str, db: AsyncSession) -> VoiceRoute | None:
     return _build_route(business, connection)
 
 
-async def resolve_by_business(business_id: uuid.UUID, db: AsyncSession) -> VoiceRoute | None:
+async def resolve_by_business(
+    business_id: uuid.UUID, db: AsyncSession, *, purpose: str | None = None, preferred: uuid.UUID | None = None,
+) -> VoiceRoute | None:
     """
     The outbound direction - KROVA already knows which business is
     calling (from the CallCampaign it placed the call for), so this skips
@@ -186,14 +195,7 @@ async def resolve_by_business(business_id: uuid.UUID, db: AsyncSession) -> Voice
     if business is None or not business.is_active:
         return None
 
-    result = await db.execute(
-        select(ChannelConnection).where(
-            ChannelConnection.business_id == business_id,
-            ChannelConnection.channel == Channel.voice,
-            ChannelConnection.status == ConnectionStatus.active,
-        )
-    )
-    connection = result.scalars().first()
+    connection = await numbers.pick_outbound(db, business_id, purpose=purpose, preferred=preferred)
     if connection is None:
         return None
 

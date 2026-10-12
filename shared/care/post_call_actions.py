@@ -938,15 +938,9 @@ async def _send_sms(business_id: uuid.UUID, customer_id: uuid.UUID, config: dict
     from shared.channels.voice import plivo_client
     from shared.db.models import Channel, ChannelConnection, ConnectionStatus, CustomerIdentity, IdentityKind
 
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == business_id,
-                ChannelConnection.channel == Channel.voice,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
+    from shared.channels.voice import numbers as voice_numbers
+
+    connection = await voice_numbers.pick_outbound(db, business_id, purpose="service")
     if connection is None or not connection.access_token:
         logger.info("send_sms rule skipped business=%s: no voice number connected", business_id)
         return False

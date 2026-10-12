@@ -44,6 +44,7 @@ from shared.billing import usage
 from shared.channels.voice import plivo_client
 from shared.channels.voice.call_registry import attach_opening_line, remember
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
+from shared.channels.voice import numbers as voice_numbers
 from shared.channels.voice.tenant import VoiceRoute, resolve_by_business
 from shared.channels.voice.xml import hangup_response, stream_response
 from shared.config.settings import settings
@@ -120,7 +121,9 @@ async def build_context(
     if campaign is None:
         return None
 
-    route = await resolve_by_business(campaign.business_id, db)
+    route = await resolve_by_business(
+        campaign.business_id, db, purpose=campaign.purpose, preferred=campaign.connection_id,
+    )
     if route is None:
         return None
 
@@ -194,7 +197,7 @@ async def build_adhoc_context(
     CallCampaign lookup: business_id/customer_id/reason arrive already
     resolved rather than being read off a recipient row.
     """
-    route = await resolve_by_business(business_id, db)
+    route = await resolve_by_business(business_id, db, purpose="service")
     if route is None:
         return None
 
@@ -257,15 +260,9 @@ async def place_call(recipient_id: uuid.UUID, db: AsyncSession) -> None:
         recipient.reason = "No phone number on file"
         return
 
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == campaign.business_id,
-                ChannelConnection.channel == Channel.voice,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
+    connection = await voice_numbers.pick_outbound(
+        db, campaign.business_id, purpose=campaign.purpose, preferred=campaign.connection_id,
+    )
     if connection is None or not connection.access_token:
         recipient.status = CallCampaignRecipientStatus.failed
         recipient.reason = "No voice number connected"
@@ -313,15 +310,7 @@ async def place_adhoc_call(
         logger.info("adhoc call skipped business=%s customer=%s: no phone on file", business_id, customer_id)
         return False
 
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == business_id,
-                ChannelConnection.channel == Channel.voice,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
+    connection = await voice_numbers.pick_outbound(db, business_id, purpose="service")
     if connection is None or not connection.access_token:
         logger.info("adhoc call skipped business=%s: no voice number connected", business_id)
         return False

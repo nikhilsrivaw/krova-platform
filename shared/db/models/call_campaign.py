@@ -72,6 +72,11 @@ class CallCampaign(UUIDMixin, TimestampMixin, Base):
     )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The voice number the calls go out from. None = chosen automatically: the number whose
+    # series suits `purpose` (shared/channels/voice/numbers.py).
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("channel_connections.id", ondelete="SET NULL"), nullable=True
+    )
     audience: Mapped[Audience] = mapped_column(EnumType(Audience, 24), nullable=False)
     audience_params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 

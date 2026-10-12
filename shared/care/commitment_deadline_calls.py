@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.channels.voice import numbers as voice_numbers
 from shared.db.models import (
     Business,
     Channel,
@@ -77,15 +78,7 @@ async def check_deadline_calls(db: AsyncSession) -> int:
         if not (business.settings or {}).get("proactive_deadline_calls_enabled"):
             continue
 
-        connection = (
-            await db.execute(
-                select(ChannelConnection.id).where(
-                    ChannelConnection.business_id == business.id,
-                    ChannelConnection.channel == Channel.voice,
-                    ChannelConnection.status == ConnectionStatus.active,
-                ).limit(1)
-            )
-        ).scalars().first()
+        connection = await voice_numbers.pick_outbound(db, business.id, purpose="service")
         if connection is None:
             continue
 

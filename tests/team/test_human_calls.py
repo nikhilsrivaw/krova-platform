@@ -86,9 +86,13 @@ async def _customer_has_a_phone(*a, **k):
     return "919822222222"
 
 
+class _Placed(list):
+    holder: dict = {}
+
+
 @pytest.fixture
 def plivo(monkeypatch):
-    placed = []
+    placed = _Placed()
 
     async def fake_make_call(**kw):
         placed.append(kw)
@@ -97,11 +101,18 @@ def plivo(monkeypatch):
     async def ok(*a, **k):
         return None
 
+    holder = {"connection": _connection()}
+
+    async def fake_pick(db, business_id, **kw):
+        return holder["connection"]
+
+    monkeypatch.setattr(svc.voice_numbers, "pick_outbound", fake_pick)
     monkeypatch.setattr(plivo_client, "make_call", fake_make_call)
     monkeypatch.setattr(svc, "decrypt", lambda _: "token")
     monkeypatch.setattr(svc, "require_active_plan", ok)
     monkeypatch.setattr(svc, "require_wallet", ok)
     monkeypatch.setattr(conflict, "guard_reply", ok)
+    placed.holder = holder
     return placed
 
 
@@ -142,7 +153,8 @@ def test_a_private_chat_is_closed_to_an_agent(plivo):
 
 def test_no_voice_number_means_no_call(plivo, monkeypatch):
     monkeypatch.setattr(svc, "_customer_phone", _customer_has_a_phone)
-    db = _Db([_member(), None], {"Customer": _customer()})
+    plivo.holder["connection"] = None
+    db = _Db([_member()], {"Customer": _customer()})
     with pytest.raises(HTTPException) as err:
         _start(db)
     assert _code(err.value) == "no_voice_number"
@@ -154,7 +166,7 @@ def test_a_teammates_customer_is_refused_with_their_name(plivo, monkeypatch):
 
     monkeypatch.setattr(svc, "_customer_phone", _customer_has_a_phone)
     monkeypatch.setattr(conflict, "guard_reply", refuse)
-    db = _Db([_member(), _connection(), None], {"Customer": _customer()})
+    db = _Db([_member(), None], {"Customer": _customer()})
     with pytest.raises(HTTPException) as err:
         _start(db)
     assert err.value.detail["code"] == "assigned_to_other" and "Ravi" in err.value.detail["message"]
@@ -163,7 +175,7 @@ def test_a_teammates_customer_is_refused_with_their_name(plivo, monkeypatch):
 
 def test_the_members_phone_rings_first_and_the_customer_is_dialled_after(plivo, monkeypatch):
     monkeypatch.setattr(svc, "_customer_phone", _customer_has_a_phone)
-    db = _Db([_member("919811111111"), _connection(), None], {"Customer": _customer()})
+    db = _Db([_member("919811111111"), None], {"Customer": _customer()})
     call = _start(db)
 
     assert plivo[0]["to_number"] == "919811111111"          # the member, not the customer
@@ -176,7 +188,7 @@ def test_the_members_phone_rings_first_and_the_customer_is_dialled_after(plivo, 
 
 def test_a_second_tap_while_connecting_is_refused(plivo, monkeypatch):
     monkeypatch.setattr(svc, "_customer_phone", _customer_has_a_phone)
-    db = _Db([_member(), _connection(), uuid.uuid4()], {"Customer": _customer()})
+    db = _Db([_member(), uuid.uuid4()], {"Customer": _customer()})
     with pytest.raises(HTTPException) as err:
         _start(db)
     assert _code(err.value) == "already_calling" and plivo == []
@@ -188,7 +200,7 @@ def test_when_plivo_refuses_the_call_is_closed_and_the_member_told(monkeypatch, 
 
     monkeypatch.setattr(svc, "_customer_phone", _customer_has_a_phone)
     monkeypatch.setattr(plivo_client, "make_call", boom)
-    db = _Db([_member(), _connection(), None], {"Customer": _customer()})
+    db = _Db([_member(), None], {"Customer": _customer()})
     with pytest.raises(HTTPException) as err:
         _start(db)
     assert _code(err.value) == "could_not_place"

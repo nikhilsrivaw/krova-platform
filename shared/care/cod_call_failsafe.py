@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.channels.voice import numbers as voice_numbers
 from shared.auth.encryption import decrypt
 from shared.channels.voice import plivo_client
 from shared.config.settings import settings
@@ -83,15 +84,7 @@ async def due_for_call(db: AsyncSession) -> int:
             logger.info("COD call failsafe skipped order=%s - no phone on file", order.id)
             continue
 
-        connection = (
-            await db.execute(
-                select(ChannelConnection).where(
-                    ChannelConnection.business_id == order.business_id,
-                    ChannelConnection.channel == Channel.voice,
-                    ChannelConnection.status == ConnectionStatus.active,
-                )
-            )
-        ).scalars().first()
+        connection = await voice_numbers.pick_outbound(db, order.business_id, purpose="service")
         auth_id = (connection.extra or {}).get("subaccount_auth_id") if connection else None
         if connection is None or not connection.access_token or not auth_id:
             logger.info("COD call failsafe skipped order=%s - no voice number connected", order.id)

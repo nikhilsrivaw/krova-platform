@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.auth.encryption import decrypt
 from shared.billing.guards import require_active_plan, require_wallet
 from shared.channels import ingest
+from shared.channels.voice import numbers as voice_numbers
 from shared.channels.voice import plivo_client
 from shared.config.settings import settings
 from shared.db.models import (
@@ -93,12 +94,7 @@ async def start(
     await require_active_plan(db, business_id)
     await require_wallet(db, business_id)
 
-    connection = (await db.execute(
-        select(ChannelConnection).where(
-            ChannelConnection.business_id == business_id, ChannelConnection.channel == Channel.voice,
-            ChannelConnection.status == ConnectionStatus.active,
-        )
-    )).scalars().first()
+    connection = await voice_numbers.pick_outbound(db, business_id, purpose="service")
     auth_id = (connection.extra or {}).get("subaccount_auth_id") if connection else None
     if connection is None or not connection.access_token or not auth_id:
         raise _fail("no_voice_number", "Connect a phone number on the Voice page first.")

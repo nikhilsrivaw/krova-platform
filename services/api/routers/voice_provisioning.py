@@ -22,6 +22,7 @@ from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
 from shared.channels.voice import compliance, keypad_menu, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
+from shared.channels.voice import numbers as voice_numbers
 from shared.channels.voice.tenant import (
     FEMALE_SPEAKERS,
     MALE_SPEAKERS,
@@ -584,6 +585,56 @@ async def release_number(number: str, current_user: OwnerOrAdminDep, db: DbDep) 
     logger.info("voice number released business=%s number=%s", current_user.business, number)
 
 
+class MyNumberOut(BaseModel):
+    connection_id: str
+    number: str
+    label: str
+    use: str
+    default_outbound: bool
+    series: str | None
+    series_label: str | None
+    rent_paise: int
+    calls_30d: int
+    cost_paise_30d: int
+
+
+@router.get("/numbers/mine", response_model=list[MyNumberOut])
+async def my_numbers(current_user: OwnerOrAdminDep, db: DbDep) -> list[MyNumberOut]:
+    """Every connected number with its name, what it is for, its monthly rent and the last 30 days of calls."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func
+
+    from shared.billing import plans as billing_plans
+
+    numbers = await voice_numbers.active(db, current_user.business)
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    usage = (
+        await db.execute(
+            select(Call.connection_id, func.count(Call.id), func.coalesce(func.sum(Call.cost_paise), 0))
+            .where(Call.business_id == current_user.business, Call.started_at >= since)
+            .group_by(Call.connection_id)
+        )
+    ).all()
+    by_connection = {cid: (int(n), int(cost)) for cid, n, cost in usage}
+    default_id = getattr(voice_numbers.choose_outbound(numbers), "id", None)
+    out = []
+    for c in numbers:
+        series = voice_numbers.series_of(c.external_account_id)
+        calls, cost = by_connection.get(c.id, (0, 0))
+        out.append(MyNumberOut(
+            connection_id=str(c.id), number=c.external_account_id, label=voice_numbers.label_of(c),
+            use=voice_numbers.use_of(c),
+            # What outgoing calls will really use, even if the owner never ticked a default.
+            default_outbound=voice_numbers.is_default_outbound(c) or (default_id == c.id and not any(
+                voice_numbers.is_default_outbound(x) for x in numbers
+            )),
+            series=series, series_label=voice_numbers.SERIES_LABEL.get(series) if series else None,
+            rent_paise=billing_plans.NUMBER_RENT_PAISE, calls_30d=calls, cost_paise_30d=cost,
+        ))
+    return out
+
+
 # ── call log ─────────────────────────────────────────────────────────────
 
 def _money(paise: int) -> str:
@@ -604,6 +655,9 @@ class CallLogOut(BaseModel):
     cost_paise: int
     cost_display: str
     cost_breakdown: dict
+    # Which of the business's numbers this call used.
+    number: str | None = None
+    number_label: str | None = None
     hangup_cause: str | None
     started_at: str
     escalated: bool
@@ -619,20 +673,31 @@ async def call_logs(
     current_user: CurrentUserDep,
     db: DbDep,
     limit: int = Query(default=100, le=500),
+    connection_id: uuid.UUID | None = Query(default=None),
 ) -> list[CallLogOut]:
     """
     Every call this business's number has handled, most recent first - what
     actually happened is worth more here than what Plivo says the account
     can do, since duration and cost are what the owner is actually asking.
     """
+    conditions = [Call.business_id == current_user.business]
+    if connection_id is not None:
+        conditions.append(Call.connection_id == connection_id)
     rows = (
         await db.execute(
-            select(Call)
-            .where(Call.business_id == current_user.business)
-            .order_by(Call.started_at.desc())
-            .limit(limit)
+            select(Call).where(*conditions).order_by(Call.started_at.desc()).limit(limit)
         )
     ).scalars().all()
+    connections = {
+        c.id: c
+        for c in (
+            await db.execute(
+                select(ChannelConnection).where(
+                    ChannelConnection.business_id == current_user.business, ChannelConnection.channel == Channel.voice,
+                )
+            )
+        ).scalars().all()
+    }
 
     customer_ids = {c.customer_id for c in rows if c.customer_id}
     names: dict[uuid.UUID, str | None] = {}
@@ -661,6 +726,8 @@ async def call_logs(
             cost_paise=c.cost_paise,
             cost_display=_money(c.cost_paise),
             cost_breakdown=c.cost_breakdown or {},
+            number=connections[c.connection_id].external_account_id if c.connection_id in connections else None,
+            number_label=voice_numbers.label_of(connections[c.connection_id]) if c.connection_id in connections else None,
             hangup_cause=c.hangup_cause,
             started_at=c.started_at.isoformat(),
             escalated=c.escalated,
@@ -711,15 +778,20 @@ SUPPORTED_LANGUAGES = [
 VALID_LANGUAGES = {l["code"] for l in SUPPORTED_LANGUAGES}
 
 
-async def _voice_connection(business_id: uuid.UUID, db: DbDep) -> ChannelConnection:
-    result = await db.execute(
-        select(ChannelConnection).where(
-            ChannelConnection.business_id == business_id,
-            ChannelConnection.channel == Channel.voice,
-            ChannelConnection.status == ConnectionStatus.active,
-        )
-    )
-    connection = result.scalar_one_or_none()
+async def _voice_connection(
+    business_id: uuid.UUID, db: DbDep, connection_id: uuid.UUID | None = None,
+) -> ChannelConnection:
+    """
+    One of this business's connected voice numbers. Name it with `connection_id`; without one,
+    use the default for outgoing calls (else the oldest) - never fail just because there are two.
+    """
+    numbers = await voice_numbers.active(db, business_id)
+    if connection_id is not None:
+        connection = next((c for c in numbers if c.id == connection_id), None)
+        if connection is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That number is not connected here")
+        return connection
+    connection = voice_numbers.choose_outbound(numbers) or (numbers[0] if numbers else None)
     if connection is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -734,6 +806,13 @@ class LanguageOption(BaseModel):
 
 
 class AgentSettingsOut(BaseModel):
+    # Which number these settings belong to, and what the owner calls it.
+    connection_id: str
+    number: str
+    label: str
+    use: str  # both | inbound | outbound
+    default_outbound: bool
+    series: str | None
     greeting: str
     language: str
     language_mode: str
@@ -765,6 +844,12 @@ def _agent_settings_out(connection: ChannelConnection, business: Business | None
     speaker = extra.get("speaker", "shubh")
     business_name = business.name if business else "your business"
     return AgentSettingsOut(
+        connection_id=str(connection.id),
+        number=connection.external_account_id,
+        label=voice_numbers.label_of(connection),
+        use=voice_numbers.use_of(connection),
+        default_outbound=voice_numbers.is_default_outbound(connection),
+        series=voice_numbers.series_of(connection.external_account_id),
         # Same default a live call actually speaks (tenant.py's
         # default_greeting) - this used to be a second, English-only copy
         # of that fallback, so the settings page and a real call could
@@ -786,8 +871,10 @@ def _agent_settings_out(connection: ChannelConnection, business: Business | None
 
 
 @router.get("/agent-settings", response_model=AgentSettingsOut)
-async def get_agent_settings(current_user: OwnerOrAdminDep, db: DbDep) -> AgentSettingsOut:
-    connection = await _voice_connection(current_user.business, db)
+async def get_agent_settings(
+    current_user: OwnerOrAdminDep, db: DbDep, connection_id: uuid.UUID | None = Query(default=None),
+) -> AgentSettingsOut:
+    connection = await _voice_connection(current_user.business, db, connection_id)
     business = await db.get(Business, current_user.business)
     return _agent_settings_out(connection, business)
 
@@ -823,14 +910,18 @@ def _menu_out(connection: ChannelConnection) -> KeypadMenuOut:
 
 
 @router.get("/keypad-menu", response_model=KeypadMenuOut)
-async def get_keypad_menu(current_user: OwnerOrAdminDep, db: DbDep) -> KeypadMenuOut:
-    return _menu_out(await _voice_connection(current_user.business, db))
+async def get_keypad_menu(
+    current_user: OwnerOrAdminDep, db: DbDep, connection_id: uuid.UUID | None = Query(default=None),
+) -> KeypadMenuOut:
+    return _menu_out(await _voice_connection(current_user.business, db, connection_id))
 
 
 @router.put("/keypad-menu", response_model=KeypadMenuOut)
-async def put_keypad_menu(body: KeypadMenuIO, current_user: OwnerOrAdminDep, db: DbDep) -> KeypadMenuOut:
-    """Replace the whole menu: the screen always sends every key, so what you see is what is stored."""
-    connection = await _voice_connection(current_user.business, db)
+async def put_keypad_menu(
+    body: KeypadMenuIO, current_user: OwnerOrAdminDep, db: DbDep, connection_id: uuid.UUID | None = Query(default=None),
+) -> KeypadMenuOut:
+    """Replace the whole menu of one number: the screen always sends every key, so what you see is what is stored."""
+    connection = await _voice_connection(current_user.business, db, connection_id)
     try:
         menu = keypad_menu.clean(body.model_dump(), normalise_phone)
     except keypad_menu.MenuError as exc:
@@ -845,6 +936,10 @@ async def put_keypad_menu(body: KeypadMenuIO, current_user: OwnerOrAdminDep, db:
 
 
 class AgentSettingsIn(BaseModel):
+    # This number's name ("Sales"), what it is for, and whether outgoing calls default to it.
+    label: str | None = None
+    use: str | None = None
+    default_outbound: bool | None = None
     greeting: str | None = None
     language: str | None = None
     language_mode: str | None = None
@@ -864,14 +959,16 @@ class AgentSettingsIn(BaseModel):
 
 @router.patch("/agent-settings", response_model=AgentSettingsOut)
 async def update_agent_settings(
-    body: AgentSettingsIn, current_user: OwnerOrAdminDep, db: DbDep
+    body: AgentSettingsIn, current_user: OwnerOrAdminDep, db: DbDep,
+    connection_id: uuid.UUID | None = Query(default=None),
 ) -> AgentSettingsOut:
     """
     Every field is optional and only what's sent gets changed - a business
     picking just a voice shouldn't have to resend its own greeting text to
-    avoid losing it.
+    avoid losing it. `connection_id` says which number; the greeting, voice, language,
+    staff phone and the rest belong to that number alone.
     """
-    connection = await _voice_connection(current_user.business, db)
+    connection = await _voice_connection(current_user.business, db, connection_id)
 
     if body.language is not None and body.language not in VALID_LANGUAGES:
         raise HTTPException(
@@ -945,7 +1042,20 @@ async def update_agent_settings(
         extra["copilot_mode"] = body.copilot_mode
     if body.copilot_live_suggestions is not None:
         extra["copilot_live_suggestions"] = body.copilot_live_suggestions
-    connection.extra = extra
+    try:
+        if body.label is not None:
+            extra["label"] = voice_numbers.clean_label(body.label)
+        if body.use is not None:
+            extra["use"] = voice_numbers.clean_use(body.use)
+            if extra["use"] == "inbound":
+                extra["default_outbound"] = False  # an incoming-only number cannot be the outgoing default
+        connection.extra = extra
+        if body.default_outbound is not None:
+            voice_numbers.apply_default(
+                await voice_numbers.active(db, current_user.business), connection, body.default_outbound,
+            )
+    except voice_numbers.NumberError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     business = await db.get(Business, current_user.business)
     if body.owner_phone is not None and business is not None:

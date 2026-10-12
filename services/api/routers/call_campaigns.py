@@ -43,6 +43,7 @@ from shared.db.models import (
     ConnectionStatus,
 )
 from shared.audit import activity
+from shared.channels.voice import numbers as voice_numbers
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -91,6 +92,8 @@ class CallCampaignIn(BaseModel):
     call_script_id: str | None = None
     # "service" or "promotional". Decides which number series may place the calls.
     purpose: Literal["service", "promotional"] | None = None
+    # The voice number to call from. None = choose automatically (the one whose series suits the purpose).
+    connection_id: str | None = None
 
 
 class RecipientPreviewOut(BaseModel):
@@ -151,6 +154,7 @@ class CallCampaignOut(BaseModel):
     audience_label: str
     objective: str
     purpose: str | None
+    connection_id: str | None = None
     call_script_id: str | None
     status: str
     recipients: int
@@ -170,6 +174,7 @@ def _out(campaign: CallCampaign) -> CallCampaignOut:
         audience_label=_AUDIENCE_LABELS[audience],
         objective=campaign.objective,
         purpose=campaign.purpose,
+        connection_id=str(campaign.connection_id) if campaign.connection_id else None,
         call_script_id=str(campaign.call_script_id) if campaign.call_script_id else None,
         status=campaign.status.value if hasattr(campaign.status, "value") else campaign.status,
         recipients=campaign.recipients,
@@ -198,8 +203,24 @@ async def create_call_campaign(body: CallCampaignIn, current_user: OwnerOrAdminD
         if script is None or script.business_id != current_user.business:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call script not found")
 
+    connection_uuid = None
+    if body.connection_id:
+        try:
+            connection_uuid = uuid.UUID(body.connection_id)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown number")
+        chosen = next(
+            (c for c in await voice_numbers.active(db, current_user.business) if c.id == connection_uuid), None,
+        )
+        if chosen is None or not voice_numbers.allows_outbound(chosen):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="That number is not connected here or only takes incoming calls.",
+            )
+
     campaign = CallCampaign(
         business_id=current_user.business,
+        connection_id=connection_uuid,
         name=body.name.strip(),
         audience=audience,
         audience_params=body.audience_params,
@@ -226,84 +247,56 @@ async def list_call_campaigns(current_user: CurrentUserDep, db: DbDep) -> list[C
     return [_out(c) for c in rows]
 
 
-_SERIES_FOR_PURPOSE = {"service": {"080", "022"}, "promotional": {"140"}}
-
-
-def _series_of(number: str) -> str | None:
-    """The Indian number series a phone number belongs to, read from its digits."""
-    digits = re.sub(r"\D", "", number or "")
-    if digits.startswith("91") and len(digits) > 10:
-        digits = digits[2:]
-    if digits.startswith("140"):
-        return "140"
-    if digits.startswith("160"):
-        return "160"
-    if digits.startswith("80"):
-        return "080"
-    if digits.startswith("22"):
-        return "022"
-    return None
+# Kept under their old names for anything that still imports them.
+_SERIES_FOR_PURPOSE = voice_numbers.SERIES_FOR_PURPOSE
+_series_of = voice_numbers.series_of
 
 
 async def _check_number_series(campaign: CallCampaign, business: Business | None, db: AsyncSession) -> None:
     """
-    India's rules: service and transactional calls go on 080 or 022, promotional calls
-    on 140, and BFSI-only calls on 160. A campaign is refused before any call is placed
-    if its purpose does not match the number it would actually dial from.
+    India's rules: service and transactional calls go on 080 or 022, promotional calls on 140,
+    and BFSI-only calls on 160. A campaign is refused before any call is placed if its purpose
+    does not match the number it would actually dial from.
 
-    The series is read from the connected voice number, because that is the number
-    the calls go out on. The typed setting must agree with it, so a setting alone
-    cannot put a promotional campaign on an 080 line.
+    The number is the one the campaign names ("call from"), or - if it names none - the one whose
+    series suits its purpose, then the business's default for outgoing calls. The series is read
+    from that number's own digits, so a business with a 140 line and an 080 line is judged on the
+    line it is really using, not on whichever happened to come first.
     """
-    if campaign.purpose not in _SERIES_FOR_PURPOSE:
+    if campaign.purpose not in voice_numbers.SERIES_FOR_PURPOSE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Choose whether this campaign is a service call or a promotional call first.",
         )
-    allowed = _SERIES_FOR_PURPOSE[campaign.purpose]
+    allowed = voice_numbers.SERIES_FOR_PURPOSE[campaign.purpose]
 
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == campaign.business_id,
-                ChannelConnection.channel == Channel.voice,
-                ChannelConnection.status == ConnectionStatus.active,
+    numbers = await voice_numbers.active(db, campaign.business_id)
+    connection = voice_numbers.choose_outbound(numbers, purpose=campaign.purpose, preferred=campaign.connection_id)
+    if connection is None:
+        if campaign.connection_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The number chosen for this campaign is no longer connected or only takes incoming calls. Choose another.",
             )
-        )
-    ).scalars().first()
-    if connection is None or not connection.external_account_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="No voice number is connected, so there is nothing to call from.",
+            detail="No voice number is connected that can place calls, so there is nothing to call from.",
         )
     number = connection.external_account_id
-    actual = _series_of(number)
+    actual = voice_numbers.series_of(number)
+    name = voice_numbers.label_of(connection)
     if actual is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"The connected number {number} is not an 080, 022, 140 or 160 series number.",
-        )
-
-    setting = str((business.settings or {}).get("outbound_number_series", "")).strip() if business else ""
-    if not setting:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This business has no outbound number series set. Set it before sending.",
-        )
-    if setting != actual:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"The series setting is {setting}, but the connected number {number} is in the "
-                f"{actual} series. Fix one of them before sending."
-            ),
+            detail=f"The number {name} ({number}) is not an 080, 022, 140 or 160 series number.",
         )
     if actual not in allowed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"A {campaign.purpose} campaign needs a {' or '.join(sorted(allowed))} number, "
-                f"but the connected number {number} is in the {actual} series."
+                f"but {name} ({number}) is in the {actual} series. "
+                "Choose a number in the right series under 'Call from', or buy one."
             ),
         )
 

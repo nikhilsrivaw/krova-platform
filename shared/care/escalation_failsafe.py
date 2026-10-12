@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.channels.voice import numbers as voice_numbers
 from shared.ai import escalation_categorize
 from shared.auth.encryption import decrypt
 from shared.billing import usage
@@ -126,16 +127,7 @@ async def _try_whatsapp_staff(
     if wa_connection is None or not wa_connection.access_token:
         return False
 
-    voice_connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == escalation.business_id,
-                ChannelConnection.channel == Channel.voice,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
-    staff_phone = ((voice_connection.extra or {}) if voice_connection else {}).get("staff_phone_number")
+    staff_phone = await voice_numbers.staff_phone(db, escalation.business_id)
     if not staff_phone:
         return False
 
@@ -192,20 +184,12 @@ async def _try_sms(
     escalation: Escalation, business: Business, db: AsyncSession, *, text: str | None = None,
 ) -> bool:
     """Returns True if the SMS was actually sent."""
-    connection = (
-        await db.execute(
-            select(ChannelConnection).where(
-                ChannelConnection.business_id == escalation.business_id,
-                ChannelConnection.channel == Channel.voice,
-                ChannelConnection.status == ConnectionStatus.active,
-            )
-        )
-    ).scalars().first()
+    connection = await voice_numbers.pick_outbound(db, escalation.business_id, purpose="service")
     if connection is None or not connection.access_token:
         logger.info("escalation failsafe: no voice number connected id=%s", escalation.id)
         return False
 
-    staff_phone = (connection.extra or {}).get("staff_phone_number")
+    staff_phone = await voice_numbers.staff_phone(db, escalation.business_id)
     auth_id = (connection.extra or {}).get("subaccount_auth_id")
     if not staff_phone or not auth_id:
         logger.info("escalation failsafe: no staff_phone_number configured id=%s", escalation.id)
