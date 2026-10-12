@@ -16,6 +16,7 @@ stays visible - and starts again the moment a payment succeeds.
 """
 
 import calendar
+import hmac
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -91,11 +92,39 @@ def return_url() -> str:
     return f"{settings.public_base_url.rstrip('/')}/api/v1/billing/payu/return"
 
 
-async def start_plan_checkout(db: AsyncSession, *, business: Business, user, plan: str) -> tuple[Payment, dict]:
+TEST_COUPON_PAISE = 100  # the first month costs Rs 1 with the test coupon
+
+
+class CouponError(ValueError):
+    """The code is wrong, switched off, or already not usable by this business."""
+
+
+async def check_test_coupon(db: AsyncSession, business: Business, code: str) -> None:
+    """
+    The one test coupon: the first month costs Rs 1, AutoPay then takes the full price next month.
+    The code lives only in the server's TEST_COUPON_CODE (empty = coupon off), and works only for a
+    business that has never paid for a plan.
+    """
+    expected = settings.test_coupon_code.strip()
+    if not expected or not hmac.compare_digest(code.strip().encode(), expected.encode()):
+        raise CouponError("That coupon code is not valid.")
+    if await db.get(Subscription, business.id) is not None:
+        raise CouponError("This coupon is only for a first plan payment.")
+
+
+async def start_plan_checkout(
+    db: AsyncSession, *, business: Business, user, plan: str, coupon: str | None = None
+) -> tuple[Payment, dict]:
     base, gst, total = plans.plan_charge(plan)
+    # With the coupon the customer pays Rs 1 now, but the plan (and the AutoPay mandate) stay at full
+    # price: base/gst keep the real price, total is what is charged today.
+    pay_now = total
+    if coupon:
+        await check_test_coupon(db, business, coupon)
+        pay_now = TEST_COUPON_PAISE
     payment = Payment(
         business_id=business.id, purpose="plan", plan=plan, base_paise=base, gst_paise=gst,
-        fee_paise=0, total_paise=total, txnid=new_txnid(),
+        fee_paise=0, total_paise=pay_now, txnid=new_txnid(),
     )
     db.add(payment)
     await db.flush()
@@ -103,7 +132,7 @@ async def start_plan_checkout(db: AsyncSession, *, business: Business, user, pla
     start = add_month(datetime.combine(today, datetime.min.time())).date()
     end = date(today.year + MANDATE_YEARS, today.month, min(today.day, 28))
     fields = payu.checkout_fields(
-        txnid=payment.txnid, amount_paise=total, productinfo=f"KROVA {plans.PLAN_LABELS[plan]} plan monthly",
+        txnid=payment.txnid, amount_paise=pay_now, productinfo=f"KROVA {plans.PLAN_LABELS[plan]} plan monthly",
         firstname=user.full_name or business.name, email=user.email or "billing@krova.space",
         phone=user.phone or "", return_url=return_url(), udf1=str(business.id),
         si_details=payu.si_details_json(amount_paise=total, start=start, end=end),
@@ -184,12 +213,13 @@ async def _apply_success(db: AsyncSession, payment: Payment, now: datetime) -> N
     business = await db.get(Business, payment.business_id)
     if payment.purpose == "plan":
         end = add_month(now)
+        full_price = payment.base_paise + payment.gst_paise  # not total_paise: a coupon lowers today's charge only
         if sub is None:
-            sub = Subscription(business_id=payment.business_id, plan=payment.plan, amount_paise=payment.total_paise,
+            sub = Subscription(business_id=payment.business_id, plan=payment.plan, amount_paise=full_price,
                                current_period_end=end)
             db.add(sub)
         sub.plan = payment.plan
-        sub.amount_paise = payment.total_paise
+        sub.amount_paise = full_price
         sub.authpayuid = payment.payu_id
         sub.current_period_end = end
         sub.next_charge_at = end

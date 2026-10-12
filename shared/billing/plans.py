@@ -45,13 +45,14 @@ def topup_charge(credit_paise: int, fee_pct: float) -> tuple[int, int, int, int]
     """
     (credit, gst, fee, total) in paise for adding `credit_paise` to the wallet.
 
-    GST is charged on the credit; the gateway fee (already including its own GST,
-    see Settings.payu_fee_pct) is charged on what PayU actually moves, credit + GST.
+    No GST is added to a wallet top-up (decided by Nikhil); the gst slot stays 0 so callers keep
+    their shape. The gateway fee (already including its own GST, see Settings.payu_fee_pct) is
+    charged on the credit.
     """
     if not MIN_TOPUP_PAISE <= credit_paise <= MAX_TOPUP_PAISE:
         raise ValueError("Top-up must be between Rs 100 and Rs 50,000")
-    gst = gst_of(credit_paise)
-    fee = math.ceil((credit_paise + gst) * fee_pct / 100)
+    gst = 0
+    fee = math.ceil(credit_paise * fee_pct / 100)
     return credit_paise, gst, fee, credit_paise + gst + fee
 
 

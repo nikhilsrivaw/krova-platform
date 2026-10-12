@@ -137,6 +137,8 @@ class Settings(BaseSettings):
     payu_salt: str = Field(default="", alias="PAYU_SALT")
     payu_env: str = Field(default="test", alias="PAYU_ENV")
     payu_fee_pct: float = Field(default=2.36, alias="PAYU_FEE_PCT")
+    # A test coupon: the first plan month costs Rs 1 (AutoPay then charges the full price). Empty = off.
+    test_coupon_code: str = Field(default="", alias="TEST_COUPON_CODE")
     # ISO date (e.g. 2026-11-15). Businesses CREATED on/after it must have a paid plan; earlier
     # ones are never restricted. Empty = no business is ever restricted for not subscribing.
     billing_enforced_from: str = Field(default="", alias="BILLING_ENFORCED_FROM")

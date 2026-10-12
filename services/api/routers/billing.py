@@ -201,6 +201,7 @@ async def quote(amount_rupees: int, current_user: OwnerOrAdminDep) -> QuoteOut:
 
 class SubscribeIn(BaseModel):
     plan: Literal["starter", "pro", "scale"]
+    coupon: str | None = Field(default=None, max_length=64)
 
 
 async def _context(current_user, db) -> tuple[Business, User]:
@@ -217,7 +218,9 @@ async def subscribe(body: SubscribeIn, current_user: OwnerOrAdminDep, db: DbDep)
         raise HTTPException(403, "Only the owner can choose or change the plan.")
     business, user = await _context(current_user, db)
     try:
-        payment, fields = await service.start_plan_checkout(db, business=business, user=user, plan=body.plan)
+        payment, fields = await service.start_plan_checkout(db, business=business, user=user, plan=body.plan, coupon=(body.coupon or "").strip() or None)
+    except service.CouponError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except payu.PayUError as exc:
         raise HTTPException(503, str(exc)) from exc
     activity.note(plan=body.plan)

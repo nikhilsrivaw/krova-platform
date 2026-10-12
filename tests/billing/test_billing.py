@@ -36,10 +36,10 @@ def test_biggest_plan_fits_under_the_upi_autopay_limit():
     assert plans.plan_charge("scale")[2] <= 15_000_00
 
 
-def test_topup_adds_gst_then_the_gateway_fee_and_the_wallet_gets_the_full_credit():
+def test_topup_adds_only_the_gateway_fee_and_the_wallet_gets_the_full_credit():
     credit, gst, fee, total = plans.topup_charge(1_000_00, 2.36)
-    assert credit == 100_000 and gst == 18_000
-    assert fee == 2_785                      # 2.36% of 118,000 = 2,784.8, rounded up
+    assert credit == 100_000 and gst == 0
+    assert fee == 2_360                      # 2.36% of 100,000
     assert total == credit + gst + fee
 
 
@@ -326,3 +326,97 @@ def test_calls_are_off_when_the_wallet_is_empty_or_rent_is_unpaid(row, blocked):
     from shared.billing import wallet
 
     assert asyncio.run(wallet.voice_blocked(_wallet_db(row), uuid.uuid4())) is blocked
+
+
+
+# ── Test coupon: Rs 1 today, full price from AutoPay ─────────────────────────
+
+def _coupon_db(has_sub=False):
+    import uuid
+    from types import SimpleNamespace
+
+    class Db:
+        def __init__(self):
+            self.added = []
+
+        async def get(self, model, key, **_k):
+            return SimpleNamespace() if has_sub else None
+
+        def add(self, obj):
+            self.added.append(obj)
+
+        async def flush(self):
+            pass
+
+    biz = SimpleNamespace(id=uuid.uuid4(), name="Acme", settings={})
+    user = SimpleNamespace(full_name="A", email="a@b.co", phone="9999999999")
+    return Db(), biz, user
+
+
+def test_the_coupon_charges_one_rupee_today_but_keeps_the_mandate_at_full_price(monkeypatch):
+    import asyncio
+    import json
+
+    from shared.billing import payu, service
+    from shared.config.settings import settings as cfg
+
+    monkeypatch.setattr(cfg, "test_coupon_code", "RS1TEST")
+    seen = {}
+
+    def fake_fields(**kw):
+        seen.update(kw)
+        return {}
+
+    monkeypatch.setattr(payu, "checkout_fields", fake_fields)
+    db, biz, user = _coupon_db()
+    payment, _ = asyncio.run(service.start_plan_checkout(db, business=biz, user=user, plan="starter", coupon="RS1TEST"))
+    assert payment.total_paise == 100 and seen["amount_paise"] == 100
+    assert payment.base_paise + payment.gst_paise == 3_538_82
+    assert json.loads(seen["si_details"])["billingAmount"] == "3538.82"
+
+
+def test_the_coupon_sets_the_subscription_to_the_full_price_after_the_rupee_payment():
+    import asyncio
+    import uuid
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from shared.billing import service
+    from shared.db.models import Subscription
+
+    sub_holder = {}
+
+    class Db:
+        async def get(self, model, key, **_k):
+            return sub_holder.get("sub") if model is Subscription else SimpleNamespace(plan=None)
+
+        def add(self, obj):
+            sub_holder["sub"] = obj
+
+    payment = SimpleNamespace(
+        purpose="plan", plan="starter", base_paise=2_999_00, gst_paise=539_82, total_paise=100,
+        business_id=uuid.uuid4(), payu_id="P1",
+    )
+    asyncio.run(service._apply_success(Db(), payment, datetime.now(timezone.utc)))
+    assert sub_holder["sub"].amount_paise == 3_538_82   # next month's AutoPay debit
+
+
+def test_the_coupon_is_refused_when_off_wrong_or_not_a_first_payment(monkeypatch):
+    import asyncio
+
+    import pytest
+
+    from shared.billing import service
+    from shared.config.settings import settings as cfg
+
+    db, biz, user = _coupon_db()
+    monkeypatch.setattr(cfg, "test_coupon_code", "")
+    with pytest.raises(service.CouponError):
+        asyncio.run(service.check_test_coupon(db, biz, ""))           # off: even an empty code fails
+    monkeypatch.setattr(cfg, "test_coupon_code", "RS1TEST")
+    with pytest.raises(service.CouponError):
+        asyncio.run(service.check_test_coupon(db, biz, "nope"))
+    paid, biz2, _ = _coupon_db(has_sub=True)
+    with pytest.raises(service.CouponError):
+        asyncio.run(service.check_test_coupon(paid, biz2, "RS1TEST"))
+    asyncio.run(service.check_test_coupon(db, biz, "RS1TEST"))        # the good case passes
