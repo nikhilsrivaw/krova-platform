@@ -93,6 +93,11 @@ async def create_subaccount(current_user: OwnerOrAdminDep, db: DbDep) -> Subacco
     if row is not None:
         return SubaccountOut(subaccount_auth_id=row.subaccount_auth_id, status=row.status.value)
 
+    from shared.billing.guards import require_active_plan
+
+    # A channel is set up by a business with a plan: no plan yet, no WhatsApp / Instagram / voice line.
+    await require_active_plan(db, current_user.business)
+
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")

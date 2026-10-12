@@ -24,6 +24,10 @@ from shared.db.models import Business, Subscription
 
 def must_have_plan(business) -> bool:
     """A business created on/after BILLING_ENFORCED_FROM has no free period: no plan, no AI sending."""
+    # A switch for testing (scripts/billing_gate.py): this one business is treated as brand new, whatever
+    # the date it signed up.
+    if business is not None and (getattr(business, "settings", None) or {}).get("billing_required") is True:
+        return True
     cutoff = settings.billing_enforced_from.strip()
     if not cutoff or business is None or business.created_at is None:
         return False

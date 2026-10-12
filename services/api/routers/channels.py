@@ -64,13 +64,17 @@ class ConnectionOut(BaseModel):
 
 
 @router.get("/whatsapp/signup-config", response_model=SignupConfig)
-async def whatsapp_signup_config(current_user: CurrentUserDep) -> SignupConfig:
+async def whatsapp_signup_config(current_user: CurrentUserDep, db: DbDep) -> SignupConfig:
     """
     What the browser needs to open Meta's signup dialog.
 
     Served from the API rather than baked into the frontend so the
     configuration can change without a redeploy.
     """
+    from shared.billing.guards import require_active_plan
+
+    # A channel is set up by a business with a plan: no plan yet, no WhatsApp / Instagram / voice line.
+    await require_active_plan(db, current_user.business)
     if not settings.meta_app_id or not settings.meta_config_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -93,6 +97,10 @@ async def whatsapp_embedded_signup(
     The account stays theirs throughout. We hold only the authorisation they
     granted, and DELETE /channels/whatsapp gives it back.
     """
+    from shared.billing.guards import require_active_plan
+
+    # A channel is set up by a business with a plan: no plan yet, no WhatsApp / Instagram / voice line.
+    await require_active_plan(db, current_user.business)
     business_id = current_user.business
 
     # Six digits, ours to choose, and it becomes the number's two-step
@@ -383,7 +391,7 @@ class ConnectUrlOut(BaseModel):
 
 
 @router.get("/instagram/connect-url", response_model=ConnectUrlOut)
-async def instagram_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlOut:
+async def instagram_connect_url(current_user: OwnerOrAdminDep, db: DbDep) -> ConnectUrlOut:
     """
     Build the Instagram Business Login URL for this business specifically.
 
@@ -391,6 +399,10 @@ async def instagram_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlOut:
     this is - the redirect back from Meta carries no Krova session, only
     whatever we round-trip through Meta's own state passthrough.
     """
+    from shared.billing.guards import require_active_plan
+
+    # A channel is set up by a business with a plan: no plan yet, no WhatsApp / Instagram / voice line.
+    await require_active_plan(db, current_user.business)
     if not settings.meta_instagram_app_id or not settings.instagram_redirect_uri:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -489,7 +501,7 @@ async def instagram_callback(
 
 
 @router.get("/instagram/fb-connect-url", response_model=ConnectUrlOut)
-async def instagram_fb_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlOut:
+async def instagram_fb_connect_url(current_user: OwnerOrAdminDep, db: DbDep) -> ConnectUrlOut:
     """
     The Facebook-Login-for-Business route into Instagram messaging - the
     older, Page-based path, as an alternative to instagram_connect_url
@@ -502,6 +514,10 @@ async def instagram_fb_connect_url(current_user: OwnerOrAdminDep) -> ConnectUrlO
     rejects the requested permissions as "Invalid Scopes" even when they're
     spelled correctly.
     """
+    from shared.billing.guards import require_active_plan
+
+    # A channel is set up by a business with a plan: no plan yet, no WhatsApp / Instagram / voice line.
+    await require_active_plan(db, current_user.business)
     if (
         not settings.meta_app_id
         or not settings.instagram_fb_redirect_uri

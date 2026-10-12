@@ -463,3 +463,12 @@ def test_a_forged_success_cannot_credit_anything(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert asked == ["KRFAKE"] and payment.status == "pending" and payment.paid_at is None
+
+
+def test_one_business_can_be_put_in_the_new_customer_state_for_testing(monkeypatch):
+    monkeypatch.setattr(settings, "billing_enforced_from", "")
+    old = SimpleNamespace(created_at=datetime(2026, 1, 1, tzinfo=UTC), settings={"billing_required": True})
+    normal = SimpleNamespace(created_at=datetime(2026, 1, 1, tzinfo=UTC), settings={})
+    assert guards.must_have_plan(old) is True and guards.must_have_plan(normal) is False
+    assert _state(None, old) == "required"
+    assert _state(_sub(status="active"), old) is None      # having paid always wins
