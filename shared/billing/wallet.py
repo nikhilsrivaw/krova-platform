@@ -114,7 +114,7 @@ async def settle_voice_usage(db: AsyncSession) -> int:
         if cost and cost > 0:
             await post(
                 db, business_id=business_id, amount_paise=-plans.call_charge(int(cost)), kind="calls",
-                ref=cutoff.isoformat(), note="Voice calls (cost + 25%)",
+                ref=cutoff.isoformat(), note="Voice calls (cost + platform charge)",
             )
             charged += 1
     return charged
