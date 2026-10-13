@@ -16,10 +16,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
+from shared.billing import plans
 from shared.channels.voice import compliance, keypad_menu, plivo_client, sarvam
 from shared.channels.voice.plivo_client import PlivoError, Subaccount
 from shared.channels.voice import numbers as voice_numbers
@@ -42,6 +43,7 @@ from shared.db.models import (
     NumberRequest,
     NumberRequestStatus,
     NumberRequestType,
+    UsageEvent,
     VoiceProvisioning,
     VoiceProvisioningStatus,
 )
@@ -678,6 +680,12 @@ class CallLogOut(BaseModel):
     cost_paise: int
     cost_display: str
     cost_breakdown: dict
+    # What the wallet is charged for this call: the real cost (speech + carrier + the AI that ran the call),
+    # plus the platform charge. cost_paise above is only the speech + carrier part.
+    ai_paise: int = 0
+    platform_paise: int = 0
+    charged_paise: int = 0
+    charged_display: str = ""
     # Which of the business's numbers this call used.
     number: str | None = None
     number_label: str | None = None
@@ -738,9 +746,37 @@ async def call_logs(
         for identity in id_rows.scalars().all():
             phones.setdefault(identity.customer_id, identity.value)
 
+    # Every cost the wallet bills for a call is a voice usage event pointing at it, not just the
+    # speech + carrier part stored on the call; sum them so the page shows what is really charged.
+    billed: dict[uuid.UUID, int] = {}
+    if rows:
+        billed = {
+            sid: int(total)
+            for sid, total in (
+                await db.execute(
+                    select(UsageEvent.source_id, func.sum(UsageEvent.krova_cost_paise)).where(
+                        UsageEvent.business_id == current_user.business,
+                        UsageEvent.channel == "voice",
+                        UsageEvent.source_type == "call",
+                        UsageEvent.source_id.in_([c.id for c in rows]),
+                    ).group_by(UsageEvent.source_id)
+                )
+            ).all()
+        }
+
+    def _bill(c) -> tuple[int, int, int]:
+        """(AI part, platform charge, total charged) in paise for one call."""
+        cost = max(billed.get(c.id, 0), c.cost_paise or 0)
+        charged = plans.call_charge(cost) if cost > 0 else 0
+        return cost - (c.cost_paise or 0), charged - cost, charged
+
     return [
         CallLogOut(
             id=str(c.id),
+            ai_paise=_bill(c)[0],
+            platform_paise=_bill(c)[1],
+            charged_paise=_bill(c)[2],
+            charged_display=_money(_bill(c)[2]),
             customer_id=str(c.customer_id) if c.customer_id else None,
             customer_name=names.get(c.customer_id) if c.customer_id else None,
             customer_phone=phones.get(c.customer_id) if c.customer_id else None,

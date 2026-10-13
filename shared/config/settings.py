@@ -269,6 +269,9 @@ class Settings(BaseSettings):
     # this is used at low volume. Empty by default, which is what makes
     # every admin-gated endpoint refuse everyone until this is set.
     platform_admin_email: str = Field(default="", alias="PLATFORM_ADMIN_EMAIL")
+    # Who may sign in to the /admin panel: "email|salt|pbkdf2hash,email|salt|pbkdf2hash". Never plain
+    # passwords. Made by `python -m scripts.admin_panel_users`. Empty = the admin panel login is off.
+    admin_panel_users: str = Field(default="", alias="ADMIN_PANEL_USERS")
 
     @property
     def is_development(self) -> bool:

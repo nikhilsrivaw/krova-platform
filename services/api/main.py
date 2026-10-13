@@ -71,6 +71,7 @@ from services.api.routers import (
     templates,
     trust,
     team_calls,
+    admin,
     voice_provisioning,
     webhooks,
     widget,
@@ -164,6 +165,7 @@ async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
 
 API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(admin.router, prefix=API_PREFIX)
 app.include_router(billing.router, prefix=API_PREFIX)
 app.include_router(channels.router, prefix=API_PREFIX)
 app.include_router(ledger.router, prefix=API_PREFIX)
