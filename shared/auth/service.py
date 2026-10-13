@@ -31,6 +31,7 @@ from shared.db.models import (
     User,
 )
 from shared.audit import activity
+from shared.identity.normalise import InvalidIdentifier, normalise_phone
 from shared.verticals import seed_dna
 from shared.utils.logging import get_logger
 
@@ -335,24 +336,33 @@ async def login_via_google(email: str, full_name: str | None, db: AsyncSession) 
 
 async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
     """
-    Verify credentials and start a session.
+    Verify credentials and start a session. `email` is whatever the person typed in the first box:
+    an email address, or a phone number (an account made with a phone number has no email, but it does
+    have the password chosen at sign-up, so it must be able to sign in with it).
 
     A missing user and a wrong password raise the same error with the same
     message: telling an attacker which addresses are registered turns a
     password guess into an account enumeration.
     """
-    email = normalise_email(email)
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
+    identifier = (email or "").strip()
+    if "@" in identifier:
+        result = await db.execute(select(User).where(User.email == normalise_email(identifier)))
+    else:
+        try:
+            phone = normalise_phone(identifier)
+        except InvalidIdentifier:
+            phone = None
+        result = await db.execute(select(User).where(User.phone == phone)) if phone else None
+    user = result.scalar_one_or_none() if result is not None else None
 
     if user is None:
         # Hash anyway so a missing account does not answer faster than a wrong
         # password - the timing difference is enough to enumerate addresses.
         hash_password("timing-equalisation-placeholder")
-        raise InvalidCredentials("Email or password is incorrect")
+        raise InvalidCredentials("Email, phone number or password is incorrect")
 
     if not verify_password(password, user.password_hash):
-        raise InvalidCredentials("Email or password is incorrect")
+        raise InvalidCredentials("Email, phone number or password is incorrect")
 
     if not user.is_active:
         raise AccountDisabled("This account has been disabled")

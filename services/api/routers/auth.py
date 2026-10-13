@@ -40,8 +40,9 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+    # An email address or a phone number. The field keeps its old name so existing clients still work.
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 
 class TeamLoginRequest(BaseModel):
