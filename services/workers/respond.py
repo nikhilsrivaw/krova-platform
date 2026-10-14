@@ -402,7 +402,6 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     # A chat somebody owns pings that person about its draft, not the whole team.
     if proposal.action == "reply" and autonomy in ("draft", "conditional"):
         try:
-            from shared.db.models import Customer
             from shared.team import conflict as team_conflict
 
             owner_of_chat = await db.get(Customer, message.customer_id)
