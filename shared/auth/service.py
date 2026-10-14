@@ -66,10 +66,11 @@ class WrongCurrentPassword(AuthError):
     pass
 
 
-# Team sign-in: a wrong password this many times in a row locks the account for
-# a while. The owner can reset the password (which also unlocks) at any time.
+# A wrong password this many times in a row locks the account for a while. The owner can reset a team
+# member's password (which also unlocks) at any time; a forgotten password reset unlocks too.
 MAX_FAILED_LOGINS = 5
-LOCK_MINUTES = 15
+LOCK_MINUTES = 15            # team sign-in (Team ID)
+PASSWORD_LOCK_MINUTES = 1    # email / phone sign-in
 
 
 @dataclass(slots=True)
@@ -361,7 +362,16 @@ async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
         hash_password("timing-equalisation-placeholder")
         raise InvalidCredentials("Email, phone number or password is incorrect")
 
+    now = _now()
+    if user.locked_until is not None and user.locked_until > now:
+        wait = int((user.locked_until - now).total_seconds()) + 1
+        raise AccountLocked(
+            f"Too many wrong passwords. Try again in {wait} second{'s' if wait != 1 else ''}.",
+            retry_after_seconds=wait,
+        )
+
     if not verify_password(password, user.password_hash):
+        await _record_failed_login(user.id, PASSWORD_LOCK_MINUTES)
         raise InvalidCredentials("Email, phone number or password is incorrect")
 
     if not user.is_active:
@@ -372,7 +382,9 @@ async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
 
-    user.last_login_at = _now()
+    user.failed_logins = 0
+    user.locked_until = None
+    user.last_login_at = now
 
     membership = await _primary_membership(user.id, db)
     business, role = membership if membership else (None, None)
@@ -380,7 +392,7 @@ async def authenticate(email: str, password: str, db: AsyncSession) -> Session:
     return await _issue_session(user, business, role, db)
 
 
-async def _record_failed_login(user_id: uuid.UUID) -> None:
+async def _record_failed_login(user_id: uuid.UUID, lock_minutes: int = LOCK_MINUTES) -> None:
     """
     Count a wrong password in its own transaction: the request is about to
     raise, and the request's session rolls back on an exception, which would
@@ -394,7 +406,7 @@ async def _record_failed_login(user_id: uuid.UUID) -> None:
             return
         user.failed_logins = (user.failed_logins or 0) + 1
         if user.failed_logins >= MAX_FAILED_LOGINS:
-            user.locked_until = _now() + timedelta(minutes=LOCK_MINUTES)
+            user.locked_until = _now() + timedelta(minutes=lock_minutes)
             user.failed_logins = 0
         await own.commit()
 

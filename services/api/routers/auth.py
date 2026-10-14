@@ -169,6 +169,11 @@ async def register(body: RegisterRequest, db: DbDep) -> SessionResponse:
 async def login(body: LoginRequest, db: DbDep) -> SessionResponse:
     try:
         session = await service.authenticate(body.email, body.password, db)
+    except service.AccountLocked as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
     except service.AccountDisabled as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except service.InvalidCredentials as exc:
