@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.billing import payu, plans, wallet
+from shared.billing import invoices, payu, plans, wallet
 from shared.config.settings import settings
 from shared.db.models import Business, Payment, Subscription
 from shared.utils.logging import get_logger
@@ -201,16 +201,34 @@ async def settle_payment(db: AsyncSession, txnid: str) -> Payment | None:
     return payment
 
 
+async def _issue_document(
+    db: AsyncSession, payment: Payment, business: Business | None, start: datetime | None = None, end: datetime | None = None,
+) -> None:
+    """
+    The invoice (plan) or receipt (top-up) for a payment that just succeeded. Never allowed to undo the
+    payment: if it fails, the payment still stands and the error is logged, so the document can be made later.
+    """
+    if business is None:
+        return
+    try:
+        async with db.begin_nested():
+            await invoices.create_for_payment(db, payment, business=business, period_start=start, period_end=end)
+    except Exception:  # noqa: BLE001 - a missing invoice must not cost the customer their plan or wallet credit
+        logger.exception("could not issue the document for payment %s", payment.txnid)
+
+
 async def _apply_success(db: AsyncSession, payment: Payment, now: datetime) -> None:
     if payment.purpose == "topup":
         await wallet.post(
             db, business_id=payment.business_id, amount_paise=payment.base_paise, kind="topup",
             ref=payment.txnid, note="Wallet top-up",
         )
+        await _issue_document(db, payment, await db.get(Business, payment.business_id))
         return
 
     sub = await db.get(Subscription, payment.business_id, with_for_update=True)
     business = await db.get(Business, payment.business_id)
+    period_start = now
     if payment.purpose == "plan":
         end = add_month(now)
         full_price = payment.base_paise + payment.gst_paise  # not total_paise: a coupon lowers today's charge only
@@ -226,7 +244,8 @@ async def _apply_success(db: AsyncSession, payment: Payment, now: datetime) -> N
     else:  # renewal
         if sub is None:
             return
-        sub.current_period_end = add_month(max(sub.current_period_end, now))
+        period_start = max(sub.current_period_end, now)
+        sub.current_period_end = add_month(period_start)
         sub.next_charge_at = sub.current_period_end
     sub.status = "active"
     sub.attempts = 0
@@ -237,6 +256,7 @@ async def _apply_success(db: AsyncSession, payment: Payment, now: datetime) -> N
     sub.updated_at = now
     if business is not None:
         business.plan = sub.plan
+    await _issue_document(db, payment, business, period_start, sub.current_period_end)
 
 
 async def _fail(db: AsyncSession, payment: Payment, reason: str, now: datetime) -> None:

@@ -50,3 +50,6 @@ openpyxl==3.1.5
 
 # Login/registration OTP by email - shared/integrations/gmail_smtp.py.
 aiosmtplib==5.1.3
+
+# GST invoices as PDF - shared/billing/invoice_pdf.py (pure Python).
+reportlab>=4.2,<6

@@ -4,6 +4,7 @@ from shared.db.base import Base
 from shared.db.models.billing import AiShadowRun, UsageEvent, UsageEventType
 from shared.db.models.push_subscription import PushSubscription
 from shared.db.models.activity import ActivityLog
+from shared.db.models.invoice import Invoice, InvoiceCounter
 from shared.db.models.payments import Payment, Subscription, Wallet, WalletEntry
 from shared.db.models.presence import ThreadPresence
 from shared.db.models.command_audit import CommandAudit
@@ -210,6 +211,8 @@ __all__ = [
     "AiShadowRun",
     "PushSubscription",
     "ActivityLog",
+    "Invoice",
+    "InvoiceCounter",
     "Payment",
     "Subscription",
     "Wallet",

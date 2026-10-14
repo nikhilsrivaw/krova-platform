@@ -381,7 +381,7 @@ def test_the_coupon_charges_one_rupee_today_but_keeps_the_mandate_at_full_price(
     assert json.loads(seen["si_details"])["billingAmount"] == "3538.82"
 
 
-def test_the_coupon_sets_the_subscription_to_the_full_price_after_the_rupee_payment():
+def test_the_coupon_sets_the_subscription_to_the_full_price_after_the_rupee_payment(monkeypatch):
     import asyncio
     import uuid
     from datetime import datetime, timezone
@@ -390,6 +390,10 @@ def test_the_coupon_sets_the_subscription_to_the_full_price_after_the_rupee_paym
     from shared.billing import service
     from shared.db.models import Subscription
 
+    async def no_document(*_a, **_k):  # the invoice has its own tests (tests/billing/test_invoices.py)
+        return None
+
+    monkeypatch.setattr(service, "_issue_document", no_document)
     sub_holder = {}
 
     class Db:

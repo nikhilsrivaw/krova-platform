@@ -8,19 +8,20 @@ carry a transaction id: the result is always fetched from PayU and checked
 against our own record before anything is applied.
 """
 
+import uuid
 from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
-from shared.billing import guards, payu, plans, service, wallet
+from shared.billing import gst, guards, invoice_pdf, payu, plans, service, wallet
 from shared.config.settings import settings
-from shared.db.models import Business, Payment, Subscription, User, WalletEntry
+from shared.db.models import Business, Invoice, Payment, Subscription, User, WalletEntry
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -171,6 +172,108 @@ async def overview(current_user: OwnerOrAdminDep, db: DbDep) -> BillingOut:
                           balance_after=_r(e.balance_after_paise), note=e.note) for e in entries],
         payments=[PaymentOut(at=p.created_at, purpose=p.purpose, status=p.status, total=_r(p.total_paise),
                              failure=p.failure) for p in payments],
+    )
+
+
+# ── billing details and invoices ──────────────────────────────────────────────
+
+class BillingDetailsIn(BaseModel):
+    legal_name: str = Field(min_length=1, max_length=200)
+    address: str = Field(default="", max_length=400)
+    state_code: str = Field(default="", max_length=2)
+    gstin: str = Field(default="", max_length=15)
+
+
+class StateOut(BaseModel):
+    code: str
+    name: str
+
+
+class BillingDetailsOut(BaseModel):
+    legal_name: str
+    address: str
+    state_code: str
+    state_name: str
+    gstin: str
+    complete: bool  # a real address and state are on file, so the invoice names the right place of supply
+    states: list[StateOut]
+
+
+def _details_out(business: Business) -> BillingDetailsOut:
+    saved = (business.settings or {}).get("billing_details") or {}
+    state = saved.get("state_code") or ""
+    return BillingDetailsOut(
+        legal_name=saved.get("legal_name") or business.name, address=saved.get("address") or "",
+        state_code=state, state_name=gst.state_name(state), gstin=saved.get("gstin") or "",
+        complete=bool(saved.get("address") and state),
+        states=[StateOut(code=c, name=n) for c, n in gst.STATES.items()],
+    )
+
+
+@router.get("/details", response_model=BillingDetailsOut)
+async def billing_details(current_user: OwnerOrAdminDep, db: DbDep) -> BillingDetailsOut:
+    """What goes on this business's invoices as the buyer."""
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(404, "Account not found")
+    return _details_out(business)
+
+
+@router.put("/details", response_model=BillingDetailsOut)
+async def save_billing_details(body: BillingDetailsIn, current_user: OwnerOrAdminDep, db: DbDep) -> BillingDetailsOut:
+    """Saved for the NEXT invoice. An invoice already issued never changes."""
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(404, "Account not found")
+    gstin = body.gstin.strip().upper()
+    state = body.state_code.strip()
+    if gstin:
+        if not gst.valid_gstin(gstin):
+            raise HTTPException(422, "That GSTIN does not look right. Check the 15 characters.")
+        state = gstin[:2]  # a GSTIN begins with its state's code
+    if not state or state not in gst.STATES:
+        raise HTTPException(422, "Choose the state your business is in.")
+    business.settings = {**(business.settings or {}), "billing_details": {
+        "legal_name": body.legal_name.strip(), "address": body.address.strip(), "state_code": state, "gstin": gstin,
+    }}
+    await db.flush()
+    activity.note(state=state, has_gstin=bool(gstin))
+    return _details_out(business)
+
+
+class InvoiceOut(BaseModel):
+    id: str
+    number: str
+    kind: str  # invoice | receipt
+    issued_at: datetime
+    description: str
+    total: str
+    gst: str  # total GST on it ("0.00" for a receipt)
+
+
+@router.get("/invoices", response_model=list[InvoiceOut])
+async def list_invoices(current_user: OwnerOrAdminDep, db: DbDep) -> list[InvoiceOut]:
+    rows = (await db.execute(
+        select(Invoice).where(Invoice.business_id == current_user.business).order_by(Invoice.issued_at.desc()).limit(100)
+    )).scalars().all()
+    return [
+        InvoiceOut(
+            id=str(i.id), number=i.number, kind=i.kind, issued_at=i.issued_at,
+            description=i.lines[0]["description"] if i.lines else "", total=_r(i.total_paise),
+            gst=_r(i.cgst_paise + i.sgst_paise + i.igst_paise),
+        )
+        for i in rows
+    ]
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+async def download_invoice(invoice_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> Response:
+    invoice = await db.get(Invoice, invoice_id)
+    if invoice is None or invoice.business_id != current_user.business:
+        raise HTTPException(404, "No such invoice")
+    return Response(
+        content=invoice_pdf.render(invoice), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{invoice_pdf.filename(invoice)}"'},
     )
 
 
