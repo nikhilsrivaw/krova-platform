@@ -12,25 +12,31 @@ from shared.db.models import ConnectionStatus
 
 class FakeDb:
     def __init__(self, rows):
-        self.rows, self.sql = rows, None
+        self.rows, self.sql, self.deleted, self.flushed = rows, None, [], False
 
     async def execute(self, stmt):
         self.sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
         return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self.rows))
 
+    async def delete(self, obj):
+        self.deleted.append(obj)
 
-def test_disconnect_clears_the_credentials_and_only_looks_at_this_business_instagram():
+    async def flush(self):
+        self.flushed = True
+
+
+def test_disconnect_removes_the_connection_for_this_business_instagram_only():
     biz = uuid.uuid4()
     conn = SimpleNamespace(
-        access_token="secret", refresh_token="r", status=ConnectionStatus.active, webhook_subscribed=True,
-        external_account_id="1789",
+        access_token="secret", status=ConnectionStatus.active, webhook_subscribed=True, external_account_id="1789",
     )
     db = FakeDb([conn])
     asyncio.run(channels.disconnect_instagram(SimpleNamespace(business=biz), db))
-    assert conn.access_token is None and conn.refresh_token is None
-    assert conn.status == ConnectionStatus.disconnected and conn.webhook_subscribed is False
+    assert db.deleted == [conn] and db.flushed
     assert str(biz) in db.sql and "instagram" in db.sql
 
 
 def test_disconnecting_with_nothing_connected_is_fine():
-    asyncio.run(channels.disconnect_instagram(SimpleNamespace(business=uuid.uuid4()), FakeDb([])))
+    db = FakeDb([])
+    asyncio.run(channels.disconnect_instagram(SimpleNamespace(business=uuid.uuid4()), db))
+    assert db.deleted == []
