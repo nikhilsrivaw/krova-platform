@@ -21,7 +21,9 @@ PLAN_PRICES_PAISE: dict[str, int] = {
 PLAN_LABELS = {"starter": "Starter", "pro": "Pro", "scale": "Scale"}
 
 NUMBER_RENT_PAISE = 220_00      # per phone number, per month, taken from the wallet
-CALL_MARKUP_PCT = 25            # on top of what a call really costs KROVA
+# On top of what a call really costs KROVA. Switched OFF for now (Nikhil, 2026-10-14): calls are charged at
+# cost. Set back to 25 to turn the platform charge on again; every place that shows or takes it reads this.
+CALL_MARKUP_PCT = 0
 
 MIN_TOPUP_PAISE = 100_00
 MAX_TOPUP_PAISE = 50_000_00
@@ -57,7 +59,7 @@ def topup_charge(credit_paise: int, fee_pct: float) -> tuple[int, int, int, int]
 
 
 def call_charge(cost_paise: int) -> int:
-    """What the wallet is charged for usage that cost KROVA `cost_paise`: cost + 25%, rounded up."""
+    """What the wallet is charged for usage that cost KROVA `cost_paise`: the cost plus CALL_MARKUP_PCT, rounded up."""
     return math.ceil(cost_paise * (100 + CALL_MARKUP_PCT) / 100)
 
 

@@ -95,7 +95,7 @@ async def post(
 
 
 async def settle_voice_usage(db: AsyncSession) -> int:
-    """Charge each wallet for the voice usage since last time: real cost + 25%. Returns wallets charged."""
+    """Charge each wallet for the voice usage since last time: real cost plus any platform charge (plans.CALL_MARKUP_PCT). Returns wallets charged."""
     cutoff = _now() - SETTLE_LAG
     charged = 0
     wallets = (await db.execute(select(Wallet.business_id))).scalars().all()
@@ -114,7 +114,7 @@ async def settle_voice_usage(db: AsyncSession) -> int:
         if cost and cost > 0:
             await post(
                 db, business_id=business_id, amount_paise=-plans.call_charge(int(cost)), kind="calls",
-                ref=cutoff.isoformat(), note="Voice calls (cost + platform charge)",
+                ref=cutoff.isoformat(), note="Voice calls",
             )
             charged += 1
     return charged

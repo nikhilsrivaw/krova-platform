@@ -49,10 +49,16 @@ def test_topup_limits(bad):
         plans.topup_charge(bad, 2.36)
 
 
-def test_calls_are_charged_cost_plus_25_percent_rounded_up():
+def test_calls_are_charged_cost_plus_the_platform_percent_rounded_up(monkeypatch):
+    monkeypatch.setattr(plans, "CALL_MARKUP_PCT", 25)  # the mechanism still works when the charge is on
     assert plans.call_charge(100) == 125
     assert plans.call_charge(101) == 127     # 126.25 -> 127
     assert plans.call_charge(0) == 0
+
+
+def test_calls_are_charged_at_cost_while_the_platform_charge_is_off():
+    assert plans.CALL_MARKUP_PCT == 0
+    assert plans.call_charge(150) == 150 and plans.call_charge(0) == 0
 
 
 def test_amounts_are_sent_to_payu_in_rupees_with_two_decimals():

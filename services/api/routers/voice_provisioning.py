@@ -681,7 +681,7 @@ class CallLogOut(BaseModel):
     cost_display: str
     cost_breakdown: dict
     # What the wallet is charged for this call: the real cost (speech + carrier + the AI that ran the call),
-    # plus the platform charge. cost_paise above is only the speech + carrier part.
+    # plus any platform charge (none for now). cost_paise above is only the speech + carrier part.
     ai_paise: int = 0
     platform_paise: int = 0
     charged_paise: int = 0

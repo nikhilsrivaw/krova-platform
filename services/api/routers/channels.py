@@ -386,6 +386,31 @@ async def disconnect_whatsapp(current_user: OwnerOrAdminDep, db: DbDep) -> None:
         )
 
 
+@router.delete("/instagram", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_instagram(current_user: OwnerOrAdminDep, db: DbDep) -> None:
+    """
+    Let go of the Instagram account. Same promise as disconnect_whatsapp: the stored token is destroyed,
+    not kept in case of a later reconnect. History (conversations, customers) stays; connecting again
+    reuses the same connection row.
+    """
+    result = await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == current_user.business,
+            ChannelConnection.channel == Channel.instagram,
+        )
+    )
+    for connection in result.scalars().all():
+        connection.access_token = None
+        connection.refresh_token = None
+        connection.status = ConnectionStatus.disconnected
+        connection.webhook_subscribed = False
+        logger.info(
+            "instagram disconnected business=%s account=%s",
+            current_user.business,
+            connection.external_account_id,
+        )
+
+
 class ConnectUrlOut(BaseModel):
     url: str
 
