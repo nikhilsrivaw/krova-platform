@@ -478,6 +478,34 @@ async def change_password(
     return await _issue_session(user, business, role, db, record_login=False)
 
 
+async def find_user_for_reset(destination: str, channel: str, db: AsyncSession) -> User | None:
+    """The account a verified email or phone number belongs to (`destination` is already normalised)."""
+    column = User.email if channel == "email" else User.phone
+    return (await db.execute(select(User).where(column == destination))).scalar_one_or_none()
+
+
+async def reset_password(destination: str, channel: str, new_password: str, db: AsyncSession) -> None:
+    """
+    Set a new password for the account at this email or phone number. The caller has ALREADY proved the
+    person controls it (shared/auth/otp.py verify) - this never checks the old password. Every session is
+    signed out, any lock-out is cleared, and the person signs in again with the new password.
+    """
+    from shared.auth.passwords import validate_password
+
+    user = await find_user_for_reset(destination, channel, db)
+    if user is None:
+        raise UserNotFound("No Krova account uses that email or phone number")
+    if not user.is_active:
+        raise AccountDisabled("This account has been disabled")
+    validate_password(new_password)
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+    user.failed_logins = 0
+    user.locked_until = None
+    await revoke_all_sessions(user.id, db)
+    logger.info("password reset user=%s via=%s", user.id, channel)
+
+
 async def refresh_session(refresh_token: str, db: AsyncSession) -> Session:
     """
     Exchange a refresh token for a new pair, and consume the old one.

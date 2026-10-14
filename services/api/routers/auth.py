@@ -355,6 +355,60 @@ async def otp_register(body: OtpRegisterIn, db: DbDep) -> SessionResponse:
     return _session_response(session)
 
 
+# ── Forgot password: prove the email or phone with a code, then choose a new password ──
+
+class PasswordResetRequestIn(BaseModel):
+    channel: Literal["email", "call"]
+    destination: str = Field(min_length=3, max_length=320)
+
+
+class PasswordResetConfirmIn(BaseModel):
+    channel: Literal["email", "call"]
+    destination: str = Field(min_length=3, max_length=320)
+    code: str = Field(min_length=4, max_length=8)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+
+@router.post("/password-reset/request", status_code=status.HTTP_204_NO_CONTENT)
+async def password_reset_request(body: PasswordResetRequestIn, db: DbDep) -> None:
+    """
+    Send a code to the email or phone number, if an active account is there. When there is none the person is
+    told so ("No account found"): that is clearer for them than a code that never arrives, and no code or call
+    is sent, so nothing is spent on a number that has no account.
+    """
+    try:
+        destination = otp.normalise_destination(body.destination, body.channel)
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+    user = await service.find_user_for_reset(destination, body.channel, db)
+    if user is None:
+        noun = "email address" if body.channel == "email" else "phone number"
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No account found with that {noun}.")
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This account has been disabled.")
+    try:
+        await otp.request(destination, body.channel, db, purpose="password_reset")
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+
+
+@router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
+async def password_reset_confirm(body: PasswordResetConfirmIn, db: DbDep) -> None:
+    try:
+        await otp.verify(body.destination, body.channel, body.code, db)
+    except otp.OtpError as exc:
+        raise _otp_error(exc) from exc
+    destination = otp.normalise_destination(body.destination, body.channel)
+    try:
+        await service.reset_password(destination, body.channel, body.new_password, db)
+    except service.UserNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except service.AccountDisabled as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except PasswordTooWeak as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
 class AddPhoneRequestIn(BaseModel):
     phone: str
 
