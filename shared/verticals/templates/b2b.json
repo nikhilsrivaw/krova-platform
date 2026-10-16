@@ -42,5 +42,34 @@
     "quality issue", "rejected", "invoice galat", "wrong invoice", "order cancel",
     "cancel order"
   ],
-  "flow_templates": []
+  "flow_templates": [],
+  "knowledge_card": {
+    "where": {
+      "title": "Where you are and where you supply",
+      "question": "Your address with a landmark, and the cities or states you supply to."
+    },
+    "offerings": {
+      "title": "Top products and rates",
+      "question": "Your most-asked products, up to 10 lines: rate, unit, minimum order and GST.",
+      "placeholder": "... - Rs ... per ..., minimum ..., GST ...%"
+    },
+    "how_to_buy": {
+      "title": "How to place an order",
+      "question": "How does a buyer order: details you need, minimum order, samples, how soon you confirm?",
+      "placeholder": "Send product, quantity and delivery city on WhatsApp. Minimum order ... . Samples ... ."
+    },
+    "payment": {
+      "title": "Payment and credit terms",
+      "question": "Advance, credit days, and how you invoice (GST).",
+      "placeholder": "...% advance, balance before dispatch. GST invoice. Credit ... days for approved buyers."
+    },
+    "timelines": {
+      "title": "Dispatch and delivery time",
+      "placeholder": "Dispatch in ... days; delivery to ... in ... days by ... ."
+    },
+    "changes": {
+      "title": "Damage, rejection and cancellation",
+      "question": "What happens if goods are damaged, short or rejected, or an order is cancelled?"
+    }
+  }
 }

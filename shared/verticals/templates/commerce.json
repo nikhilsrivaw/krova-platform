@@ -198,5 +198,29 @@
         ]
       }
     }
-  ]
+  ],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Bestsellers and prices",
+      "question": "Your bestsellers, up to 10 lines, with price and sizes or variants."
+    },
+    "full_list": {
+      "title": "Shop or catalogue link"
+    },
+    "how_to_buy": {
+      "title": "How to order",
+      "question": "How do people order (website, DM, catalogue)? Until when can they change an order or the address?"
+    },
+    "payment": {
+      "title": "Payment and cash on delivery",
+      "question": "Payment modes, and your cash-on-delivery rule (limit, fee, confirmation)."
+    },
+    "timelines": {
+      "title": "Shipping and delivery time",
+      "question": "How long shipping takes, which courier, shipping cost, how to track."
+    },
+    "changes": {
+      "title": "Returns, exchange and refund"
+    }
+  }
 }

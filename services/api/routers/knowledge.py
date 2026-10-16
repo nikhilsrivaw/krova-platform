@@ -20,7 +20,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
+from shared import verticals
 from shared.billing import limits as plan_limits
+from shared.verticals import knowledge_card
 from shared.db.models import (
     Business,
     BusinessDNA,
@@ -64,6 +66,8 @@ class KnowledgeOut(BaseModel):
     active: bool
     resolves_gap: str | None
     created_at: str
+    topic: str | None = None
+    valid_until: str | None = None
 
 
 class GapOut(BaseModel):
@@ -71,6 +75,8 @@ class GapOut(BaseModel):
     times_asked: int
     last_asked: str | None
     example_question: str | None
+    # The card field this most likely belongs to ("when", "payment", "team"...). A suggestion only.
+    suggested_field: str | None = None
 
 
 class KnowledgeStatus(BaseModel):
@@ -96,6 +102,8 @@ def _out(item: KnowledgeItem) -> KnowledgeOut:
         active=item.active,
         resolves_gap=item.resolves_gap,
         created_at=item.created_at.isoformat(),
+        topic=item.topic,
+        valid_until=item.valid_until.isoformat() if item.valid_until else None,
     )
 
 
@@ -134,68 +142,88 @@ async def list_knowledge(current_user: OwnerOrAdminDep, db: DbDep) -> list[Knowl
     return [_out(i) for i in result.scalars().all()]
 
 
+def _same_gap(a: str, b: str) -> bool:
+    """The same missing fact, worded slightly differently: one contains the other's opening words."""
+    x, y = (a or "").strip().lower(), (b or "").strip().lower()
+    return bool(x and y) and (x[:60] in y or y[:60] in x)
+
+
 @router.get("/gaps", response_model=list[GapOut])
 async def list_gaps(current_user: OwnerOrAdminDep, db: DbDep) -> list[GapOut]:
     """
-    What the agent has been asked and could not answer.
+    What the agent has been asked and could not answer, on text AND on calls.
 
-    The most valuable screen in the product for a new client, because it is
-    the only one that tells them something they did not already know about
-    their own business — which questions customers keep asking that nobody
-    has written down.
+    The list is the business's own record of gaps (BusinessDNA.known_gaps["learned"], written whenever the
+    agent hands something over, by text or by voice). Answering a gap, or dismissing it, removes it from
+    that record, so it stays gone. How often it was asked, when, and an example message come from the
+    escalated drafts that name the same gap.
     """
-    result = await db.execute(
-        select(MessageDraft)
-        .where(
-            MessageDraft.business_id == current_user.business,
-            MessageDraft.action == DraftAction.escalate,
-            MessageDraft.gap.isnot(None),
-        )
-        .order_by(MessageDraft.created_at.desc())
-        .limit(200)
-    )
-    drafts = result.scalars().all()
-
-    # Group near-duplicates. The same missing fact gets described slightly
-    # differently each time, and showing it five times as five gaps would bury
-    # the one that matters.
-    grouped: dict[str, dict] = {}
-    for draft in drafts:
-        key = (draft.gap or "").strip().lower()[:70]
-        if not key:
-            continue
-        entry = grouped.setdefault(
-            key,
-            {
-                "gap": draft.gap.strip(),
-                "times_asked": 0,
-                "last_asked": draft.created_at,
-                "example": None,
-            },
-        )
-        entry["times_asked"] += 1
-        if draft.created_at > entry["last_asked"]:
-            entry["last_asked"] = draft.created_at
-        if entry["example"] is None and draft.in_reply_to_id:
-            from shared.db.models import Message
-
-            source = await db.get(Message, draft.in_reply_to_id)
-            if source and source.content:
-                entry["example"] = source.content[:200]
-
-    return sorted(
-        (
-            GapOut(
-                gap=e["gap"],
-                times_asked=e["times_asked"],
-                last_asked=e["last_asked"].isoformat() if e["last_asked"] else None,
-                example_question=e["example"],
+    dna = await db.get(BusinessDNA, current_user.business)
+    learned = list((dna.known_gaps or {}).get("learned", [])) if dna else []
+    if not learned:
+        return []
+    drafts = (
+        await db.execute(
+            select(MessageDraft)
+            .where(
+                MessageDraft.business_id == current_user.business,
+                MessageDraft.action == DraftAction.escalate,
+                MessageDraft.gap.isnot(None),
             )
-            for e in grouped.values()
-        ),
-        key=lambda g: g.times_asked,
-        reverse=True,
-    )
+            .order_by(MessageDraft.created_at.desc())
+            .limit(500)
+        )
+    ).scalars().all()
+    out: list[GapOut] = []
+    for gap in learned[:100]:
+        matches = [d for d in drafts if _same_gap(gap, d.gap or "")]
+        example = None
+        for d in matches:
+            if d.in_reply_to_id:
+                from shared.db.models import Message
+
+                source = await db.get(Message, d.in_reply_to_id)
+                if source and source.content:
+                    example = source.content[:200]
+                    break
+        out.append(
+            GapOut(
+                gap=gap.strip(),
+                times_asked=max(len(matches), 1),
+                last_asked=matches[0].created_at.isoformat() if matches else None,
+                example_question=example,
+                suggested_field=knowledge_card.suggest_field(f"{gap} {example or ''}"),
+            )
+        )
+    return sorted(out, key=lambda g: g.times_asked, reverse=True)
+
+
+class GapDismissIn(BaseModel):
+    gap: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/gaps/handover", status_code=status.HTTP_204_NO_CONTENT)
+async def handover_gap(body: GapDismissIn, current_user: OwnerOrAdminDep, db: DbDep) -> None:
+    """
+    "Always hand this to me": from now on the agent passes this kind of question to a person instead of answering.
+    Kept short and owner-made, beside the template's own list (shared/ai/context.py::standing_gaps).
+    """
+    dna = await db.get(BusinessDNA, current_user.business)
+    if dna is None:
+        return
+    known = dict(dna.known_gaps or {})
+    rules = list(known.get("owner_rules", []))
+    if not any(_same_gap(r, body.gap) for r in rules):
+        rules.append(body.gap.strip()[:200])
+    known["owner_rules"] = rules[-30:]
+    known["learned"] = [g for g in known.get("learned", []) if not _same_gap(g, body.gap)]
+    dna.known_gaps = known
+
+
+@router.post("/gaps/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+async def dismiss_gap(body: GapDismissIn, current_user: OwnerOrAdminDep, db: DbDep) -> None:
+    """Take a gap off the list without writing anything: it is not a real gap, or it is already covered."""
+    await _clear_gap(current_user.business, body.gap, db)
 
 
 @router.get("/status", response_model=KnowledgeStatus)
@@ -240,7 +268,7 @@ async def knowledge_status(current_user: OwnerOrAdminDep, db: DbDep) -> Knowledg
     )
 
 
-async def _check_room(db, business_id: uuid.UUID, new_tokens: int) -> None:
+async def _check_room(db, business_id: uuid.UUID, new_tokens: int, exclude_id: uuid.UUID | None = None) -> None:
     """The AI reads all active knowledge before every reply, so each plan has a ceiling on how much."""
     business = await db.get(Business, business_id)
     if business is None or plan_limits.limits_for(business.plan) is None:
@@ -248,7 +276,9 @@ async def _check_room(db, business_id: uuid.UUID, new_tokens: int) -> None:
     used = (
         await db.execute(
             select(func.coalesce(func.sum(KnowledgeItem.token_estimate), 0)).where(
-                KnowledgeItem.business_id == business_id, KnowledgeItem.active == True  # noqa: E712
+                KnowledgeItem.business_id == business_id,
+                KnowledgeItem.active == True,  # noqa: E712
+                *([KnowledgeItem.id != exclude_id] if exclude_id else []),
             )
         )
     ).scalar_one()
@@ -325,6 +355,272 @@ async def upload_knowledge(
     return _out(item)
 
 
+class KnowledgePatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    content: str | None = Field(default=None, min_length=1, max_length=50_000)
+    kind: Literal["price_list", "faq", "policy", "hours", "service", "other"] | None = None
+    active: bool | None = None
+    valid_until: datetime | None = None
+    clear_valid_until: bool = False
+
+
+@router.patch("/{item_id}", response_model=KnowledgeOut)
+async def update_knowledge(
+    item_id: uuid.UUID, patch: KnowledgePatch, current_user: OwnerOrAdminDep, db: DbDep
+) -> KnowledgeOut:
+    """Edit an item, switch it off, or give it an end date. An item that is off is not sent to the agent."""
+    item = await db.get(KnowledgeItem, item_id)
+    if item is None or item.business_id != current_user.business:
+        raise HTTPException(status_code=404, detail="Not found")
+    content = patch.content.strip() if patch.content is not None else item.content
+    active = item.active if patch.active is None else patch.active
+    tokens = len(content) // CHARS_PER_TOKEN
+    if active and (not item.active or tokens > item.token_estimate):
+        await _check_room(db, current_user.business, tokens, exclude_id=item.id)
+    if patch.title is not None:
+        item.title = patch.title.strip()
+    if patch.kind is not None:
+        item.kind = KnowledgeKind(patch.kind)
+    item.content, item.token_estimate, item.active = content, tokens, active
+    if patch.clear_valid_until:
+        item.valid_until = None
+    elif patch.valid_until is not None:
+        item.valid_until = patch.valid_until
+    await db.flush()
+    return _out(item)
+
+
+class CardFieldOut(BaseModel):
+    key: str
+    title: str
+    question: str
+    placeholder: str
+    kind: str
+    limit: int
+    required: bool
+    expires: bool
+    link: bool
+    value: str | None
+    item_id: str | None
+    valid_until: str | None
+
+
+class TeamPerson(BaseModel):
+    name: str = Field(min_length=1, max_length=knowledge_card.TEAM_LIMITS["name"])
+    role: str = Field(default="", max_length=knowledge_card.TEAM_LIMITS["role"])
+    handles: str = Field(default="", max_length=knowledge_card.TEAM_LIMITS["handles"])
+    languages: str = Field(default="", max_length=knowledge_card.TEAM_LIMITS["languages"])
+
+
+class TeamCardIn(BaseModel):
+    contact: str = Field(default="", max_length=knowledge_card.TEAM_TEXT_LIMITS["contact"])
+    people: list[TeamPerson] = Field(default_factory=list, max_length=knowledge_card.TEAM_PEOPLE_LIMIT)
+    languages: str = Field(default="", max_length=knowledge_card.TEAM_TEXT_LIMITS["languages"])
+    response_note: str = Field(default="", max_length=knowledge_card.TEAM_TEXT_LIMITS["response_note"])
+    resolves_gap: str | None = None
+
+
+class TeamCardOut(BaseModel):
+    contact: str
+    people: list[TeamPerson]
+    languages: str
+    response_note: str
+    item_id: str | None
+
+
+class FaqOut(BaseModel):
+    id: str
+    question: str
+    answer: str
+    active: bool
+
+
+class CardCoverage(BaseModel):
+    required_total: int
+    required_done: int
+    fields_total: int
+    fields_done: int
+    team_done: int
+    faqs: int
+    faq_limit: int
+
+
+class CardOut(BaseModel):
+    vertical: str
+    vertical_label: str
+    fields: list[CardFieldOut]
+    team: TeamCardOut
+    faqs: list[FaqOut]
+    coverage: CardCoverage
+    tokens: int  # what the cards cost the AI to read on every message, roughly
+
+
+async def _business_vertical(db, business_id: uuid.UUID) -> str:
+    business = await db.get(Business, business_id)
+    return business.vertical if business is not None else "general"
+
+
+def _is_faq(item) -> bool:
+    return (item.extra or {}).get("card") == "faq"
+
+
+@router.get("/card", response_model=CardOut)
+async def card(current_user: OwnerOrAdminDep, db: DbDep) -> CardOut:
+    """
+    The Business Card, the Team Card and the top questions - the short, same-for-every-type knowledge the AI reads on
+    every message. The business type only rewords the fields (its template's knowledge_card block).
+    """
+    vertical = await _business_vertical(db, current_user.business)
+    fields = knowledge_card.fields_for(vertical)
+    rows = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
+    by_topic = {r.topic: r for r in rows if r.topic}
+    faqs = [r for r in rows if _is_faq(r)]
+    team_item = by_topic.get(knowledge_card.TEAM_TOPIC)
+    team = dict((team_item.extra or {}).get("team_card") or {}) if team_item else {}
+    answered = {f["key"] for f in fields if f["key"] in by_topic and by_topic[f["key"]].content.strip()}
+    try:
+        label = verticals.get(vertical).get("label", vertical)
+    except verticals.UnknownVertical:
+        label = vertical
+    tokens = sum(
+        r.token_estimate for r in rows
+        if r.active and (r.topic in knowledge_card.FIELD_KEYS or r.topic == knowledge_card.TEAM_TOPIC or _is_faq(r))
+    )
+    return CardOut(
+        vertical=vertical, vertical_label=label,
+        fields=[
+            CardFieldOut(
+                key=f["key"], title=f["title"], question=f["question"], placeholder=f["placeholder"], kind=f["kind"],
+                limit=f["limit"], required=f["required"], expires=f["expires"], link=f["link"],
+                value=by_topic[f["key"]].content if f["key"] in by_topic else None,
+                item_id=str(by_topic[f["key"]].id) if f["key"] in by_topic else None,
+                valid_until=by_topic[f["key"]].valid_until.isoformat() if f["key"] in by_topic and by_topic[f["key"]].valid_until else None,
+            )
+            for f in fields
+        ],
+        team=TeamCardOut(
+            contact=team.get("contact", ""), people=[TeamPerson(**p) for p in team.get("people", [])],
+            languages=team.get("languages", ""), response_note=team.get("response_note", ""),
+            item_id=str(team_item.id) if team_item else None,
+        ),
+        faqs=[FaqOut(id=str(r.id), question=r.title, answer=r.content, active=r.active) for r in faqs],
+        coverage=CardCoverage(**knowledge_card.coverage(fields, answered, team_item is not None, len(faqs))),
+        tokens=tokens,
+    )
+
+
+class CardFieldIn(BaseModel):
+    content: str = Field(max_length=2000)
+    valid_until: datetime | None = None
+    resolves_gap: str | None = None
+
+
+async def _topic_item(db, business_id: uuid.UUID, topic: str):
+    return (
+        await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == business_id, KnowledgeItem.topic == topic))
+    ).scalar_one_or_none()
+
+
+@router.put("/card/{key}", response_model=KnowledgeOut | None)
+async def save_card_field(key: str, body: CardFieldIn, current_user: OwnerOrAdminDep, db: DbDep) -> KnowledgeOut | None:
+    """Save one Business Card field. Empty removes it. Each field has a character limit, because the AI reads it every time."""
+    vertical = await _business_vertical(db, current_user.business)
+    field = next((f for f in knowledge_card.fields_for(vertical) if f["key"] == key), None)
+    if field is None:
+        raise HTTPException(status_code=404, detail="That is not a card field.")
+    content = body.content.strip()
+    problem = knowledge_card.check_value(field, content)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    existing = await _topic_item(db, current_user.business, key)
+    if not content:
+        if existing is not None:
+            await db.delete(existing)
+        return None
+    tokens = len(content) // CHARS_PER_TOKEN
+    await _check_room(db, current_user.business, tokens, exclude_id=existing.id if existing else None)
+    valid_until = body.valid_until if field["expires"] else None
+    if existing is None:
+        existing = KnowledgeItem(
+            business_id=current_user.business, title=field["title"], kind=KnowledgeKind(field["kind"]),
+            source=KnowledgeSource.typed, content=content, token_estimate=tokens, active=True, topic=key, valid_until=valid_until,
+        )
+        db.add(existing)
+    else:
+        existing.content, existing.token_estimate, existing.valid_until = content, tokens, valid_until
+        existing.title, existing.kind, existing.active = field["title"], KnowledgeKind(field["kind"]), True
+    if body.resolves_gap:
+        existing.resolves_gap = body.resolves_gap
+        await _clear_gap(current_user.business, body.resolves_gap, db)
+    await db.flush()
+    return _out(existing)
+
+
+@router.put("/team-card", response_model=TeamCardOut)
+async def save_team_card(body: TeamCardIn, current_user: OwnerOrAdminDep, db: DbDep) -> TeamCardOut:
+    """
+    Who customers can ask for, how to reach you, languages, when you reply. Saved as one short item the AI reads;
+    the rows are kept so the card can be edited.
+    """
+    card_data = {
+        "contact": body.contact.strip(), "languages": body.languages.strip(), "response_note": body.response_note.strip(),
+        "people": [p.model_dump() for p in body.people if p.name.strip()],
+    }
+    text = knowledge_card.render_team(card_data)
+    existing = await _topic_item(db, current_user.business, knowledge_card.TEAM_TOPIC)
+    if not text:
+        if existing is not None:
+            await db.delete(existing)
+        return TeamCardOut(contact="", people=[], languages="", response_note="", item_id=None)
+    tokens = len(text) // CHARS_PER_TOKEN
+    await _check_room(db, current_user.business, tokens, exclude_id=existing.id if existing else None)
+    if existing is None:
+        existing = KnowledgeItem(
+            business_id=current_user.business, title="Our team", kind=KnowledgeKind.other, source=KnowledgeSource.typed,
+            content=text, token_estimate=tokens, active=True, topic=knowledge_card.TEAM_TOPIC,
+        )
+        db.add(existing)
+    else:
+        existing.content, existing.token_estimate, existing.active = text, tokens, True
+    existing.extra = {**(existing.extra or {}), "team_card": card_data}
+    if body.resolves_gap:
+        await _clear_gap(current_user.business, body.resolves_gap, db)
+    await db.flush()
+    return TeamCardOut(
+        contact=card_data["contact"], people=[TeamPerson(**p) for p in card_data["people"]],
+        languages=card_data["languages"], response_note=card_data["response_note"], item_id=str(existing.id),
+    )
+
+
+class FaqIn(BaseModel):
+    question: str = Field(min_length=1, max_length=knowledge_card.FAQ_QUESTION_LIMIT)
+    answer: str = Field(min_length=1, max_length=knowledge_card.FAQ_ANSWER_LIMIT)
+    resolves_gap: str | None = None
+
+
+@router.post("/faqs", response_model=FaqOut, status_code=status.HTTP_201_CREATED)
+async def add_faq(body: FaqIn, current_user: OwnerOrAdminDep, db: DbDep) -> FaqOut:
+    """One short question and answer. At most FAQ_LIMIT: past that, replace the least useful one instead of adding."""
+    rows = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
+    if sum(1 for r in rows if _is_faq(r)) >= knowledge_card.FAQ_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"You already have {knowledge_card.FAQ_LIMIT} top questions. Edit or remove one first - the AI reads them on every message.",
+        )
+    answer = body.answer.strip()
+    tokens = (len(body.question) + len(answer)) // CHARS_PER_TOKEN
+    await _check_room(db, current_user.business, tokens)
+    item = KnowledgeItem(
+        business_id=current_user.business, title=body.question.strip(), kind=KnowledgeKind.faq, source=KnowledgeSource.typed,
+        content=answer, token_estimate=tokens, active=True, resolves_gap=body.resolves_gap, extra={"card": "faq"},
+    )
+    db.add(item)
+    if body.resolves_gap:
+        await _clear_gap(current_user.business, body.resolves_gap, db)
+    await db.flush()
+    return FaqOut(id=str(item.id), question=item.title, answer=item.content, active=True)
+
+
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_knowledge(
     item_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep
@@ -346,8 +642,6 @@ async def _clear_gap(business_id: uuid.UUID, gap: str, db: DbDep) -> None:
     if dna is None:
         return
     known = dict(dna.known_gaps or {})
-    learned = [
-        g for g in known.get("learned", []) if g.strip().lower() != gap.strip().lower()
-    ]
+    learned = [g for g in known.get("learned", []) if not _same_gap(g, gap)]
     known["learned"] = learned
     dna.known_gaps = known

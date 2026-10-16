@@ -60,5 +60,31 @@
     "nahi aayegi", "result nahi", "koi fayda nahi", "paise waste", "waste of money",
     "छोड़", "बंद कर"
   ],
-  "flow_templates": []
+  "flow_templates": [],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Top plans and fees",
+      "question": "Each plan, up to 10 lines: fee, how long it runs, and what is included."
+    },
+    "how_to_buy": {
+      "title": "How to join",
+      "question": "Who it is for, how to join, a trial or visit first, documents needed."
+    },
+    "payment": {
+      "title": "Fees and payment",
+      "question": "Payment modes, instalments, deposit or advance."
+    },
+    "timelines": {
+      "title": "Duration and batches",
+      "question": "How long it runs, batch or slot timings, when a new batch starts."
+    },
+    "changes": {
+      "title": "Renewal, pause, missed sessions and refund",
+      "question": "How to renew, pausing or freezing, missed sessions, notice period, and refunds."
+    },
+    "trust": {
+      "title": "Trainers, results and facilities",
+      "question": "Experience of your trainers or faculty, past results stated as facts (never as promises), facilities."
+    }
+  }
 }

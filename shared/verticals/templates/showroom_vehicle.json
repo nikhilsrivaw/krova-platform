@@ -1,0 +1,111 @@
+{
+  "key": "showroom_vehicle",
+  "label": "Car or bike showroom (dealership)",
+  "summary": "A showroom or dealership selling cars, bikes, scooters or EVs. Buyers enquire on WhatsApp, Instagram, calls and walk-ins, want a test drive and an on-road price, and the discount, exchange value, finance and delivery date get discussed over several conversations. After the sale the same customer comes back for service, insurance renewal and accessories.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "quotations",
+    "care_recall"
+  ],
+  "labels": {
+    "scheduling": {
+      "provider": "Sales executive",
+      "provider_plural": "Sales executives",
+      "credential_label": "Models handled",
+      "fee_label": "Booking amount",
+      "booking_noun": "test drive",
+      "booking_noun_plural": "test drives"
+    }
+  },
+  "tone": "Confident, friendly and quick. A vehicle is a big purchase, so buyers ask many questions and compare; answer the question first, then offer the next step (a test drive, a call from the sales executive). Never pushy and never pressure the buyer to book today. Match the customer's language: English, Hindi or Hinglish. Plain words, short sentences.",
+  "policies": "Quote only prices, offers and figures written in the business details; never estimate an on-road price, a discount or a 'roughly how much'. An on-road price depends on the city, the variant, insurance and the date, so give the breakup only as listed and say the sales executive will share a written cost sheet. Never agree to, hint at or promise a lower price, a discount, a free accessory, an exchange value or an exchange bonus; any request for the best or last price, or any negotiation, goes to a sales executive. Never value an old vehicle in chat: the value depends on kilometres, condition and owners and is fixed only after inspection. Never promise that a loan will be approved or state a final EMI; approval is the lender's decision, share only the finance partners and typical down payment listed. Never promise a delivery date, waiting period, allotment, colour or variant availability or that a vehicle is in stock beyond what the details or calendar say. Never confirm a test drive slot that is not free in the calendar. When a booking amount is discussed, state the refund and cancellation terms from the business details in the same message; never promise a refund outside them. Never tell a customer what the law or the RTO requires beyond the document list in the business details; say the showroom will guide them. Never criticise another brand or dealer. For anything about a vehicle already booked, serviced or delivered, use only what is on file; otherwise hand over to the team.",
+  "known_gaps": [
+    "The final on-road price, a discount, an offer or an exchange value that is not written in the business details",
+    "Whether a finance application will be approved, or the exact EMI",
+    "A waiting period, allotment or delivery date that is not in the business details",
+    "Whether a specific variant or colour is in stock right now, beyond the details",
+    "The status of a booking, a service job or a vehicle already with the showroom that is not on file"
+  ],
+  "watch_for": [
+    {
+      "kind": "meeting",
+      "note": "A test drive, showroom visit or service appointment agreed"
+    },
+    {
+      "kind": "payment",
+      "note": "A booking amount or advance, a balance due, or an amount agreed as a discount or exchange value"
+    },
+    {
+      "kind": "delivery",
+      "note": "A delivery or handover date promised, or a promise that a vehicle will arrive by a date"
+    },
+    {
+      "kind": "document",
+      "note": "Documents the customer will send (ID, address proof, loan papers) or papers the showroom will arrange (insurance, finance, registration)"
+    },
+    {
+      "kind": "callback",
+      "note": "A promise of a call from the sales executive or finance team with a price, an offer or a loan answer"
+    }
+  ],
+  "common_questions": [
+    "What is the on-road price of <model>?",
+    "Is <variant> available in <colour>, and how soon can I get it?",
+    "Can I book a test drive?",
+    "What is the waiting period?",
+    "What is the down payment and EMI?",
+    "What will you give for my old vehicle?",
+    "What offers or discount are running now?",
+    "What documents do I need to book?",
+    "What is the mileage, range or feature list?",
+    "When is the first service due and what does it cost?"
+  ],
+  "escalate_immediately": [
+    "Any request for a lower price, the best or last price, a discount or any negotiation",
+    "Any request to value an old vehicle, or to promise an exchange bonus",
+    "Any question on whether a loan will be approved or the exact EMI",
+    "Any complaint about a delivered vehicle, a service visit or a promise made earlier",
+    "Any accident, breakdown or safety problem",
+    "Any booking cancellation or refund request"
+  ],
+  "escalate_keywords": [
+    "discount", "best price", "last price", "final price", "lowest price", "negotiat", "kam karo", "kam kar do", "price kam",
+    "rate kam", "thoda kam", "exchange value", "exchange bonus", "old bike ka kitna", "old car ka kitna", "purani gaadi ka kitna",
+    "loan approve", "loan pass", "emi approve", "cancel booking", "booking cancel", "accident", "breakdown", "tow", "brake fail"
+  ],
+  "flow_templates": [],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Models and prices",
+      "question": "Your models and variants, up to 10 lines, with ex-showroom price and on-road price in your city.",
+      "placeholder": "Model ... Variant ... - ex-showroom Rs ..., on-road about Rs ... (road tax, insurance, registration)"
+    },
+    "full_list": {
+      "title": "Brochure or price list link"
+    },
+    "how_to_buy": {
+      "title": "Test drive, booking and documents",
+      "question": "How to book a test drive and a vehicle: booking amount, documents needed, home test drive."
+    },
+    "payment": {
+      "title": "Payment, finance and EMI",
+      "question": "Finance partners, usual down payment, tenure, processing fee. The AI never promises approval."
+    },
+    "timelines": {
+      "title": "Waiting period, delivery and first service",
+      "question": "Waiting period, delivery time, and when the first service is due."
+    },
+    "changes": {
+      "title": "Booking cancellation, refund and exchange",
+      "question": "Cancellation fee, refund time, and how exchange of an old vehicle works (valued only after inspection)."
+    },
+    "trust": {
+      "title": "Warranty, service centre and features",
+      "question": "Warranty, service centre address and timings, key features people ask (mileage, range)."
+    },
+    "offers": {
+      "title": "Offers and exchange bonus"
+    }
+  }
+}

@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
@@ -426,6 +426,31 @@ class AgentContext:
         return "\n".join(lines)
 
 
+
+def standing_gaps(dna) -> list[str]:
+    """
+    The template's standing "never answer, hand over" list. What the agent merely did not know yet ("learned")
+    is the owner's to-do list, not a rule: once the owner teaches it, telling the agent "you must NOT answer
+    this" would make it keep refusing what it now knows.
+    """
+    if dna and isinstance(dna.known_gaps, dict):
+        # plus what the owner chose "always hand this to me" for, from the Gaps page
+        return list(dna.known_gaps.get("from_template", [])) + list(dna.known_gaps.get("owner_rules", []))
+    return []
+
+
+def live_knowledge_query(business_id: uuid.UUID):
+    """What the agent may read: switched on, and not past its end date."""
+    return (
+        select(KnowledgeItem)
+        .where(
+            KnowledgeItem.business_id == business_id,
+            KnowledgeItem.active == True,  # noqa: E712
+            or_(KnowledgeItem.valid_until.is_(None), KnowledgeItem.valid_until >= func.now()),
+        )
+        .order_by(KnowledgeItem.kind, KnowledgeItem.id)
+    )
+
 async def build(
     business_id: uuid.UUID, customer_id: uuid.UUID, db: AsyncSession
 ) -> AgentContext:
@@ -467,14 +492,7 @@ async def build(
     )
     messages = list(rows.scalars().all())[::-1]
 
-    knowledge = await db.execute(
-        select(KnowledgeItem)
-        .where(
-            KnowledgeItem.business_id == business_id,
-            KnowledgeItem.active == True,  # noqa: E712
-        )
-        .order_by(KnowledgeItem.kind, KnowledgeItem.id)
-    )
+    knowledge = await db.execute(live_knowledge_query(business_id))
     knowledge_items = list(knowledge.scalars().all())
 
     carousels = await db.execute(
@@ -553,11 +571,7 @@ async def build(
                     owed.append(f"{c.description}{' - ' + amount if amount else ''}{due}")
                 pays_for.append({"name": d.display_name, "owed": owed})
 
-    gaps = []
-    if dna and isinstance(dna.known_gaps, dict):
-        gaps = list(dna.known_gaps.get("from_template", [])) + list(
-            dna.known_gaps.get("learned", [])
-        )
+    gaps = standing_gaps(dna)
 
     escalate_immediately = (
         verticals.get(business.vertical).get("escalate_immediately", []) if business else []
@@ -827,21 +841,10 @@ async def build_anonymous(
     business = await db.get(Business, business_id)
     dna = await db.get(BusinessDNA, business_id)
 
-    knowledge = await db.execute(
-        select(KnowledgeItem)
-        .where(
-            KnowledgeItem.business_id == business_id,
-            KnowledgeItem.active == True,  # noqa: E712
-        )
-        .order_by(KnowledgeItem.kind, KnowledgeItem.id)
-    )
+    knowledge = await db.execute(live_knowledge_query(business_id))
     knowledge_items = list(knowledge.scalars().all())
 
-    gaps = []
-    if dna and isinstance(dna.known_gaps, dict):
-        gaps = list(dna.known_gaps.get("from_template", [])) + list(
-            dna.known_gaps.get("learned", [])
-        )
+    gaps = standing_gaps(dna)
 
     escalate_immediately = (
         verticals.get(business.vertical).get("escalate_immediately", []) if business else []

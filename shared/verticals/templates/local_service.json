@@ -59,5 +59,25 @@
     "infection", "injury", "chot", "damage", "toot gaya", "tut gaya", "kharab kar diya",
     "bigad gaya"
   ],
-  "flow_templates": []
+  "flow_templates": [],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Top services and prices",
+      "question": "Your most-asked services, up to 10 lines, with price and how long each takes."
+    },
+    "full_list": {
+      "title": "Full menu or rate card link"
+    },
+    "how_to_buy": {
+      "title": "Booking or walk-in",
+      "question": "Do people book or walk in? Group bookings? Anything to bring or know before coming?"
+    },
+    "timelines": {
+      "title": "How long a visit or job takes",
+      "question": "How long a visit or a job takes, and for repairs how an estimate is approved."
+    },
+    "changes": {
+      "title": "Cancellation and no-show rule"
+    }
+  }
 }

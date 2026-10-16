@@ -20,7 +20,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -98,6 +98,13 @@ class KnowledgeItem(UUIDMixin, TimestampMixin, Base):
     )
     extra: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
+    # The guided-setup section this answers ("hours", "payment", "test_drive"...), when it came from the
+    # guide; None for anything the owner added freely. One item per topic per business.
+    topic: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    # A live fact (an offer, a price change) stops being sent to the agent after this moment.
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         Index("idx_knowledge_business_active", "business_id", "active"),
+        Index("uq_knowledge_topic", "business_id", "topic", unique=True, postgresql_where=text("topic IS NOT NULL")),
     )
