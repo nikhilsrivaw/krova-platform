@@ -125,7 +125,7 @@ _add("POST", "/escalations/{escalation_id}/acknowledge", "escalation_updated", "
 _add("POST", "/flows/{flow_id}/send", "flow_sent", "Sent a WhatsApp Flow to a customer", WORK)
 _add("POST", "/leads/manual", "lead_added", "Added a lead by hand", WORK)
 _add("POST", "/knowledge", "knowledge_changed", "Added to the knowledge base", WORK)
-_add("POST", "/knowledge/upload", "knowledge_changed", "Uploaded to the knowledge base", WORK)
+_add("POST", "/knowledge/read-file", "knowledge_changed", "Read a file to fill the knowledge card", WORK)
 _add("DELETE", "/knowledge/{item_id}", "knowledge_changed", "Removed from the knowledge base", WORK)
 
 # Reaches many customers, or keeps acting on its own.

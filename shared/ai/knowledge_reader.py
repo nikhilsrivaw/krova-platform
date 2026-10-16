@@ -1,0 +1,157 @@
+"""
+Reading an owner's file (price list, menu, brochure, FAQ sheet) into the Business Card - once.
+
+The old upload kept the whole file and the AI read all of it before every reply, so a 30-page brochure was paid for on
+every customer message. Here the file is read one time, the facts that answer the card's questions are pulled out
+within each field's character limit, and the owner checks them before anything is saved. The file itself is not kept.
+
+Never invents: a field the file does not answer comes back empty, the same discipline as every other AI-drafted thing
+on this platform - drafted, then a person decides.
+"""
+
+import base64
+from dataclasses import dataclass, field as dc_field
+from typing import Any
+
+from shared.ai import client
+from shared.verticals import knowledge_card
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+# What is read, by type. PDFs and photos go to Claude as they are (it reads both); text is sent as text.
+PDF_TYPES = {"application/pdf"}
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+TEXT_EXTENSIONS = (".txt", ".md", ".csv")
+_EXT_TYPES = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
+MAX_FILE_BYTES = 5 * 1024 * 1024
+# A text file past this is cut: the card holds about 4,000 characters, so the first ~10k tokens of a file are plenty
+# to fill it, and it keeps one read cheap.
+MAX_TEXT_CHARS = 40_000
+
+SYSTEM = """You fill in a small business's knowledge card from a document the owner gave you (a price list, menu,
+brochure, rate card, FAQ sheet or a photo of one).
+
+The card is read by the business's AI assistant before every customer reply, so it must be short and exact.
+
+Rules:
+- Use ONLY facts written in the document. If the document does not answer a field, return an empty string for it.
+  Never guess, never fill in typical values, never invent prices, dates, names, phone numbers or policies.
+- Keep every field within its character limit. Prefer the facts customers ask about most; drop marketing words.
+- Prices exactly as written, with their unit ("Rs 1,200 per month"). For a long list, put the most important items in
+  "offerings" (up to 10 lines) - the full list stays with the owner.
+- "full_list" is only a web link written in the document (http... or https...), otherwise empty.
+- "offers" only for an offer or notice the document states, with its end date if given.
+- Top questions: only question-and-answer pairs the document itself answers, at most the number asked for,
+  each answer one or two short sentences.
+- Write in the language the document is written in."""
+
+
+@dataclass(slots=True)
+class CardReading:
+    fields: dict[str, str]
+    faqs: list[tuple[str, str]] = dc_field(default_factory=list)
+    truncated: bool = False
+    cost_paise: int = 0
+
+
+class UnreadableFile(Exception):
+    """The file is of a kind this cannot read, or has nothing in it."""
+
+
+def media_type_for(filename: str, content_type: str | None) -> str:
+    """The type the file is read as: 'text', or a PDF/image media type. Raises UnreadableFile otherwise."""
+    lowered = (filename or "").lower()
+    if lowered.endswith(TEXT_EXTENSIONS) or (content_type or "").startswith("text/"):
+        return "text"
+    for ext, mt in _EXT_TYPES.items():
+        if lowered.endswith(ext):
+            return mt
+    if content_type in PDF_TYPES | IMAGE_TYPES:
+        return content_type
+    raise UnreadableFile("Upload a PDF, a photo (JPG, PNG, WebP) or a text file (.txt, .md, .csv).")
+
+
+def _tool(fields: list[dict[str, Any]], faq_room: int) -> dict[str, Any]:
+    props: dict[str, Any] = {
+        f["key"]: {
+            "type": "string",
+            "description": f"{f['title']}: {f['question']} At most {f['limit']} characters. Empty if the document does not say.",
+        }
+        for f in fields
+    }
+    props["faqs"] = {
+        "type": "array",
+        "maxItems": faq_room,
+        "description": f"Up to {faq_room} questions customers would ask that the document answers.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": f"At most {knowledge_card.FAQ_QUESTION_LIMIT} characters."},
+                "answer": {"type": "string", "description": f"At most {knowledge_card.FAQ_ANSWER_LIMIT} characters."},
+            },
+            "required": ["question", "answer"],
+        },
+    }
+    return {
+        "name": "fill_card",
+        "description": "Fill the knowledge card from the document.",
+        "input_schema": {"type": "object", "properties": props, "required": [f["key"] for f in fields] + ["faqs"]},
+    }
+
+
+def _content(raw: bytes, media_type: str) -> tuple[dict[str, Any], bool]:
+    if media_type == "text":
+        text = raw.decode("utf-8", errors="replace").strip()
+        if not text:
+            raise UnreadableFile("We could not find any text in that file.")
+        return {"type": "text", "text": f"<document>\n{text[:MAX_TEXT_CHARS]}\n</document>"}, len(text) > MAX_TEXT_CHARS
+    data = base64.standard_b64encode(raw).decode("ascii")
+    kind = "document" if media_type in PDF_TYPES else "image"
+    return {"type": kind, "source": {"type": "base64", "media_type": media_type, "data": data}}, False
+
+
+def clean(fields: list[dict[str, Any]], tool_input: dict[str, Any] | None, faq_room: int) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Keep only usable answers: within limits, links that are links, no empty pairs."""
+    raw = tool_input or {}
+    out: dict[str, str] = {}
+    for f in fields:
+        value = raw.get(f["key"])
+        if not isinstance(value, str) or not value.strip():
+            continue
+        value = value.strip()[: f["limit"]]
+        if knowledge_card.check_value(f, value) is None:
+            out[f["key"]] = value
+    faqs: list[tuple[str, str]] = []
+    for pair in raw.get("faqs") or []:
+        if not isinstance(pair, dict):
+            continue
+        q = str(pair.get("question") or "").strip()[: knowledge_card.FAQ_QUESTION_LIMIT]
+        a = str(pair.get("answer") or "").strip()[: knowledge_card.FAQ_ANSWER_LIMIT]
+        if q and a:
+            faqs.append((q, a))
+    return out, faqs[:faq_room]
+
+
+async def read_into_card(*, raw: bytes, filename: str, content_type: str | None, vertical: str, faq_room: int) -> CardReading:
+    """One read of the file; returns suggestions for the card. Saves nothing."""
+    if len(raw) > MAX_FILE_BYTES:
+        raise UnreadableFile("That file is too large. Keep it under 5 MB.")
+    if not raw:
+        raise UnreadableFile("That file is empty.")
+    media_type = media_type_for(filename, content_type)
+    block, truncated = _content(raw, media_type)
+    fields = knowledge_card.fields_for(vertical)
+    completion = await client.complete(
+        system=SYSTEM,
+        messages=[{"role": "user", "content": [block, {"type": "text", "text": "Fill the card from this document."}]}],
+        speed="fast",
+        task="knowledge_read_file",
+        tool=_tool(fields, max(0, faq_room)),
+        max_tokens=3000,
+    )
+    values, faqs = clean(fields, completion.tool_input, max(0, faq_room))
+    if not values and not faqs:
+        logger.info("knowledge file read found nothing usable file=%s", filename)
+    return CardReading(fields=values, faqs=faqs, truncated=truncated, cost_paise=completion.cost_paise)

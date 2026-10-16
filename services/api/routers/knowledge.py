@@ -10,12 +10,11 @@ completes; a list saying "seven customers asked about braces pricing and we
 had to escalate" is a task with an obvious payoff.
 """
 
-import io
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -23,6 +22,8 @@ from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.billing import limits as plan_limits
 from shared.verticals import knowledge_card
+from shared.ai import knowledge_reader
+from shared.ai.client import AIError
 from shared.db.models import (
     Business,
     BusinessDNA,
@@ -42,7 +43,6 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 # client has outgrown whole-document injection.
 CHARS_PER_TOKEN = 4
 
-MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 # Above this the whole-document approach stops being sensible and retrieval
 # starts earning its complexity.
 RETRIEVAL_THRESHOLD_TOKENS = 12_000
@@ -50,7 +50,7 @@ RETRIEVAL_THRESHOLD_TOKENS = 12_000
 
 class KnowledgeIn(BaseModel):
     title: str = Field(min_length=1, max_length=255)
-    content: str = Field(min_length=1, max_length=50_000)
+    content: str = Field(min_length=1, max_length=knowledge_card.OTHER_CHARS_LIMIT)
     kind: Literal["price_list", "faq", "policy", "hours", "service", "other"] = "other"
     resolves_gap: str | None = None
 
@@ -68,6 +68,8 @@ class KnowledgeOut(BaseModel):
     created_at: str
     topic: str | None = None
     valid_until: str | None = None
+    # "faq" for a top question; None for a card field (see topic) or a free note
+    card: str | None = None
 
 
 class GapOut(BaseModel):
@@ -83,6 +85,10 @@ class KnowledgeStatus(BaseModel):
     items: int
     total_tokens: int
     fits_in_context: bool
+    other_items: int = 0
+    other_tokens: int = 0
+    other_items_limit: int = knowledge_card.OTHER_ITEMS_LIMIT
+    other_tokens_limit: int = knowledge_card.OTHER_TOKENS_LIMIT
     advice: str
 
 
@@ -104,31 +110,7 @@ def _out(item: KnowledgeItem) -> KnowledgeOut:
         created_at=item.created_at.isoformat(),
         topic=item.topic,
         valid_until=item.valid_until.isoformat() if item.valid_until else None,
-    )
-
-
-def _extract(raw: bytes, content_type: str | None, filename: str) -> str:
-    """
-    Pull readable text out of an upload.
-
-    Plain text and CSV only for now. A PDF parser is a dependency and a class
-    of failure - malformed files, scanned images with no text layer - and it
-    is better to tell an owner plainly that we cannot read their PDF than to
-    silently give the agent an empty document and let it escalate forever.
-    """
-    lowered = (filename or "").lower()
-    if lowered.endswith((".txt", ".md", ".csv")) or (
-        content_type and content_type.startswith("text/")
-    ):
-        return raw.decode("utf-8", errors="replace").strip()
-
-    raise HTTPException(
-        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-        detail=(
-            "Only text files are supported at the moment (.txt, .md, .csv). "
-            "For a PDF or spreadsheet, copy the text in directly — it works "
-            "just as well and we can be sure of what the agent reads."
-        ),
+        card=(item.extra or {}).get("card"),
     )
 
 
@@ -263,8 +245,10 @@ async def knowledge_status(current_user: OwnerOrAdminDep, db: DbDep) -> Knowledg
             "We should switch to retrieving only the relevant parts."
         )
 
+    others = await _active_others(db, current_user.business)
     return KnowledgeStatus(
-        items=int(count), total_tokens=tokens, fits_in_context=fits, advice=advice
+        items=int(count), total_tokens=tokens, fits_in_context=fits, advice=advice,
+        other_items=len(others), other_tokens=sum(t for _, t in others),
     )
 
 
@@ -285,11 +269,28 @@ async def _check_room(db, business_id: uuid.UUID, new_tokens: int, exclude_id: u
     plan_limits.check_size(business.plan, "knowledge_tokens", "tokens of business information the AI reads (about 670 tokens a page)", int(used) + new_tokens)
 
 
+async def _active_others(db, business_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> list[tuple[uuid.UUID, int]]:
+    rows = (
+        await db.execute(
+            select(KnowledgeItem).where(KnowledgeItem.business_id == business_id, KnowledgeItem.active == True)  # noqa: E712
+        )
+    ).scalars().all()
+    return [(r.id, r.token_estimate) for r in rows if knowledge_card.is_other(r) and r.id != exclude_id]
+
+
+async def _check_other_room(db, business_id: uuid.UUID, new_tokens: int, exclude_id: uuid.UUID | None = None) -> None:
+    """Free notes have their own small budget, inside the plan's: they are for what fits no card field."""
+    problem = knowledge_card.check_other_room(await _active_others(db, business_id, exclude_id), new_tokens)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+
+
 @router.post("", response_model=KnowledgeOut, status_code=status.HTTP_201_CREATED)
 async def add_knowledge(
     body: KnowledgeIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> KnowledgeOut:
-    """Write something down for the agent."""
+    """Write a short free note for the agent - something that fits no card field."""
+    await _check_other_room(db, current_user.business, len(body.content) // CHARS_PER_TOKEN)
     await _check_room(db, current_user.business, len(body.content) // CHARS_PER_TOKEN)
     item = KnowledgeItem(
         business_id=current_user.business,
@@ -316,48 +317,100 @@ async def add_knowledge(
     return _out(item)
 
 
-@router.post("/upload", response_model=KnowledgeOut, status_code=status.HTTP_201_CREATED)
-async def upload_knowledge(
-    current_user: OwnerOrAdminDep,
-    db: DbDep,
-    file: UploadFile = File(...),
-    title: str = Form(...),
-    kind: str = Form(default="other"),
-) -> KnowledgeOut:
+FILE_READS_PER_DAY = 5
+
+
+class ReadFieldOut(BaseModel):
+    key: str
+    title: str
+    limit: int
+    current: str | None
+    suggested: str
+
+
+class ReadFaqOut(BaseModel):
+    question: str
+    answer: str
+
+
+class ReadFileOut(BaseModel):
+    fields: list[ReadFieldOut]
+    faqs: list[ReadFaqOut]
+    truncated: bool
+    reads_left_today: int
+
+
+def _take_file_read(business: Business) -> int:
+    """Count one file read for today; returns how many are left. Each read is one AI call, so a day has a few."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    settings_ = dict(business.settings or {})
+    used = settings_.get("knowledge_file_reads") or {}
+    count = used.get("count", 0) if used.get("day") == today else 0
+    if count >= FILE_READS_PER_DAY:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You can read {FILE_READS_PER_DAY} files a day. Try again tomorrow, or type it into the card.",
+        )
+    settings_["knowledge_file_reads"] = {"day": today, "count": count + 1}
+    business.settings = settings_
+    return FILE_READS_PER_DAY - count - 1
+
+
+@router.post("/read-file", response_model=ReadFileOut)
+async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile = File(...)) -> ReadFileOut:
+    """
+    Read a price list, menu, brochure or FAQ sheet (PDF, photo or text) ONCE and suggest what goes on the card.
+    Nothing is saved and the file is not kept: the owner checks the suggestions and saves the ones they want.
+    The AI then reads only the short card on each message, never the whole file.
+    """
     raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="That file is too large. Keep documents under 2 MB.",
-        )
+    try:
+        knowledge_reader.media_type_for(file.filename or "", file.content_type)
+    except knowledge_reader.UnreadableFile as exc:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
+    if len(raw) > knowledge_reader.MAX_FILE_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="That file is too large. Keep it under 5 MB.")
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    left = _take_file_read(business)
 
-    text = _extract(raw, file.content_type, file.filename or "")
-    if not text:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="We could not read any text from that file.",
+    vertical = business.vertical or "general"
+    rows = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
+    by_topic = {r.topic: r for r in rows if r.topic}
+    faq_room = knowledge_card.FAQ_LIMIT - sum(1 for r in rows if _is_faq(r))
+    try:
+        reading = await knowledge_reader.read_into_card(
+            raw=raw, filename=file.filename or "", content_type=file.content_type, vertical=vertical, faq_room=faq_room,
         )
-
-    await _check_room(db, current_user.business, len(text) // CHARS_PER_TOKEN)
-    item = KnowledgeItem(
-        business_id=current_user.business,
-        title=title.strip(),
-        kind=KnowledgeKind(kind) if kind in KnowledgeKind._value2member_map_ else KnowledgeKind.other,
-        source=KnowledgeSource.upload,
-        content=text,
-        filename=file.filename,
-        content_type=file.content_type,
-        token_estimate=len(text) // CHARS_PER_TOKEN,
-        active=True,
-    )
-    db.add(item)
+    except knowledge_reader.UnreadableFile as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not read the file right now. Try again in a minute.") from exc
     await db.flush()
-    return _out(item)
+    logger.info(
+        "knowledge file read business=%s fields=%s faqs=%s cost_paise=%s",
+        current_user.business, len(reading.fields), len(reading.faqs), reading.cost_paise,
+    )
+
+    return ReadFileOut(
+        fields=[
+            ReadFieldOut(
+                key=f["key"], title=f["title"], limit=f["limit"],
+                current=by_topic[f["key"]].content if f["key"] in by_topic else None,
+                suggested=reading.fields[f["key"]],
+            )
+            for f in knowledge_card.fields_for(vertical) if f["key"] in reading.fields
+        ],
+        faqs=[ReadFaqOut(question=q, answer=a) for q, a in reading.faqs],
+        truncated=reading.truncated,
+        reads_left_today=left,
+    )
 
 
 class KnowledgePatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
-    content: str | None = Field(default=None, min_length=1, max_length=50_000)
+    content: str | None = Field(default=None, min_length=1, max_length=knowledge_card.OTHER_CHARS_LIMIT)
     kind: Literal["price_list", "faq", "policy", "hours", "service", "other"] | None = None
     active: bool | None = None
     valid_until: datetime | None = None
@@ -376,6 +429,8 @@ async def update_knowledge(
     active = item.active if patch.active is None else patch.active
     tokens = len(content) // CHARS_PER_TOKEN
     if active and (not item.active or tokens > item.token_estimate):
+        if knowledge_card.is_other(item):
+            await _check_other_room(db, current_user.business, tokens, exclude_id=item.id)
         await _check_room(db, current_user.business, tokens, exclude_id=item.id)
     if patch.title is not None:
         item.title = patch.title.strip()

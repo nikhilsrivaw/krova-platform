@@ -90,7 +90,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("PUT", "/capabilities/{key}"), ("POST", "/capabilities/{key}/templates"),
     ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
     # what the AI is taught to say
-    ("POST", "/knowledge"), ("POST", "/knowledge/upload"), ("DELETE", "/knowledge/{item_id}"),
+    ("POST", "/knowledge"), ("POST", "/knowledge/read-file"), ("DELETE", "/knowledge/{item_id}"),
     ("POST", "/voice-onboarding/preview-voice"), ("POST", "/templates/carousel/draft"),
     ("POST", "/templates/carousel/image"),
     # how the business is set up (who can be booked and when, the walk-in kiosk, connected shops,

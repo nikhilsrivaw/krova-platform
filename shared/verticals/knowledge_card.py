@@ -24,6 +24,11 @@ FAQ_LIMIT = 10
 FAQ_QUESTION_LIMIT = 150
 FAQ_ANSWER_LIMIT = 250
 
+# "Other entries": free notes for what fits no card field. Kept small on purpose - the AI reads them on every message.
+OTHER_ITEMS_LIMIT = 5
+OTHER_TOKENS_LIMIT = 1000
+OTHER_CHARS_LIMIT = OTHER_TOKENS_LIMIT * 4
+
 TEAM_TOPIC = "team"
 TEAM_PEOPLE_LIMIT = 10
 TEAM_LIMITS = {"name": 40, "role": 60, "handles": 150, "languages": 60}
@@ -102,6 +107,30 @@ def fields_for(vertical: str) -> list[dict[str, Any]]:
         f["link"] = bool(f.get("link"))
         out.append(f)
     return out
+
+
+def is_other(item: Any) -> bool:
+    """A free note: not a card field, not the Team Card, not a top question."""
+    return not getattr(item, "topic", None) and (getattr(item, "extra", None) or {}).get("card") != "faq"
+
+
+def check_other_room(active_others: list[tuple[Any, int]], new_tokens: int) -> str | None:
+    """
+    A reason one more (or a bigger) free note cannot be switched on, or None.
+    `active_others` is (id, tokens) for every active free note except the one being saved.
+    """
+    if len(active_others) + 1 > OTHER_ITEMS_LIMIT:
+        return (
+            f"You can keep {OTHER_ITEMS_LIMIT} other entries switched on. Put this on the Business card, "
+            "or switch an entry off first - the AI reads every entry on every message."
+        )
+    used = sum(t for _, t in active_others)
+    if used + new_tokens > OTHER_TOKENS_LIMIT:
+        return (
+            f"Other entries are kept to about {OTHER_TOKENS_LIMIT} tokens in total ({OTHER_CHARS_LIMIT} characters); "
+            f"{used} are used. Shorten this, or put it on the Business card."
+        )
+    return None
 
 
 def check_value(field: dict[str, Any], content: str) -> str | None:
