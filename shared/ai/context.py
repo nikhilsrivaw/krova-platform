@@ -57,7 +57,7 @@ from shared.db.models import (
 )
 from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import queue_booking
-from shared.verticals import labels
+from shared.verticals import knowledge_card, labels
 
 # Doctors listed per reply, when the business has the scheduling capability.
 # Bounded deliberately - this sits on the same latency-sensitive path as the
@@ -253,16 +253,7 @@ class AgentContext:
         if self.opening_hours:
             lines.append(f"\nOpening hours:\n{self.opening_hours}")
 
-        for item in self.knowledge:
-            # A price list is authoritative and must be quoted exactly; an FAQ
-            # is a suggested answer the agent may rephrase. Saying which is
-            # which changes how it uses them.
-            weight = (
-                "quote this exactly"
-                if item["kind"] in ("price_list", "policy", "hours")
-                else "use as reference"
-            )
-            lines.append(f"\n{item['title']} ({weight}):\n{item['content']}")
+        lines.extend(render_knowledge(self.knowledge))
 
         if self.instagram_carousels:
             lines.append(
@@ -437,6 +428,65 @@ def standing_gaps(dna) -> list[str]:
         # plus what the owner chose "always hand this to me" for, from the Gaps page
         return list(dna.known_gaps.get("from_template", [])) + list(dna.known_gaps.get("owner_rules", []))
     return []
+
+
+def knowledge_dict(k: KnowledgeItem) -> dict:
+    return {
+        "title": k.title,
+        "kind": k.kind.value if hasattr(k.kind, "value") else str(k.kind),
+        "content": k.content,
+        "topic": k.topic,
+        "card": (k.extra or {}).get("card"),
+    }
+
+
+async def business_knowledge(business_id: uuid.UUID, db: AsyncSession) -> list[dict]:
+    """The knowledge the agent may read right now, as render_knowledge takes it."""
+    return [knowledge_dict(k) for k in (await db.execute(live_knowledge_query(business_id))).scalars().all()]
+
+
+def render_knowledge(items: list[dict]) -> list[str]:
+    """
+    The owner's knowledge, laid out for the model: the Business Card as one block of facts in the card's own order,
+    then the Team Card, the top questions, and any other entries. Card facts are the business's own words, so prices,
+    addresses, numbers, timings and links are quoted exactly and nothing missing is guessed.
+    """
+    order = [f["key"] for f in knowledge_card.CARD_FIELDS]
+    card = {i["topic"]: i for i in items if i.get("topic") in knowledge_card.FIELD_KEYS}
+    team = next((i for i in items if i.get("topic") == knowledge_card.TEAM_TOPIC), None)
+    faqs = [i for i in items if i.get("card") == "faq" and not i.get("topic")]
+    others = [i for i in items if not i.get("topic") and i.get("card") != "faq"]
+    lines: list[str] = []
+
+    if card:
+        lines.append(
+            "\nBusiness card - this business's own facts. Quote prices, addresses, phone numbers, timings and links "
+            "exactly as written. If a customer asks something that is not here, do not guess - hand it to a person."
+        )
+        for key in order:
+            if key in card:
+                body = card[key]["content"].strip().replace("\n", "\n  ")
+                lines.append(f"- {card[key]['title']}: {body}")
+        if "full_list" in card:
+            lines.append("When a customer wants the full list, menu or catalogue, send the full list link above.")
+
+    if team:
+        lines.append(
+            "\nTeam - who customers can reach. Share these contact details when asked; never say a person is free right now:\n"
+            f"{team['content']}"
+        )
+
+    if faqs:
+        lines.append("\nTop questions - answer these in your own words, keeping every fact the same:")
+        lines.extend(f"Q: {f['title']}\nA: {f['content']}" for f in faqs)
+
+    for item in others:
+        # A price list is authoritative and must be quoted exactly; an FAQ
+        # is a suggested answer the agent may rephrase. Saying which is
+        # which changes how it uses them.
+        weight = "quote this exactly" if item["kind"] in ("price_list", "policy", "hours") else "use as reference"
+        lines.append(f"\n{item['title']} ({weight}):\n{item['content']}")
+    return lines
 
 
 def live_knowledge_query(business_id: uuid.UUID):
@@ -751,14 +801,7 @@ async def build(
         claims=claims_text,
         claim_party_noun=claim_party_noun,
         open_shifts=open_shifts_text,
-        knowledge=[
-            {
-                "title": k.title,
-                "kind": k.kind.value if hasattr(k.kind, "value") else str(k.kind),
-                "content": k.content,
-            }
-            for k in knowledge_items
-        ],
+        knowledge=[knowledge_dict(k) for k in knowledge_items],
         instagram_carousels=[
             {
                 "name": c.name,
@@ -899,14 +942,7 @@ async def build_anonymous(
         properties=None,
         claims=None,
         open_shifts=open_shifts_text,
-        knowledge=[
-            {
-                "title": k.title,
-                "kind": k.kind.value if hasattr(k.kind, "value") else str(k.kind),
-                "content": k.content,
-            }
-            for k in knowledge_items
-        ],
+        knowledge=[knowledge_dict(k) for k in knowledge_items],
         customer_name=None,
         customer_summary=None,
         customer_since=None,
@@ -1030,6 +1066,8 @@ class ScriptedContext:
     business_name: str
     purpose: str  # "lead_qualification" | "survey"
     questions: list[str]
+    # The business's knowledge (render_knowledge's shape), so a question asked mid-call gets a real answer.
+    knowledge: list[dict] = field(default_factory=list)
 
     def render(self) -> str:
         numbered = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(self.questions))
@@ -1049,4 +1087,13 @@ class ScriptedContext:
             "before you asked it) and ask the next one that hasn't. Once every "
             "question has a real answer, thank them and end the call - do not keep "
             "talking past that point."
+        ) + self._knowledge_block()
+
+    def _knowledge_block(self) -> str:
+        lines = render_knowledge(self.knowledge)
+        if not lines:
+            return ""
+        return (
+            "\n\nIf they ask about the business, answer briefly from these facts only, then go back to your next "
+            "question:\n" + "\n".join(lines)
         )

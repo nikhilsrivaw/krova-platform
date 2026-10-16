@@ -154,6 +154,7 @@ async def build_context(
             call_script_id=script.id,
             scripted_context=agent_context.ScriptedContext(
                 business_name=route.business_name, purpose=script.purpose, questions=list(script.questions or []),
+                knowledge=await agent_context.business_knowledge(campaign.business_id, db),
             ),
         )
 
