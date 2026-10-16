@@ -235,3 +235,45 @@ def test_read_file_route_refuses_a_spreadsheet_without_counting_a_read():
         asyncio.run(knowledge.read_file(current_user=user, db=Db(), file=_Upload("a.xlsx", b"x")))
     assert exc.value.status_code == 415
     assert business.settings == {}
+
+
+# ── the card comes back in English (or the document's Hindi/Hinglish), never the model's own language ──────────
+
+FRENCH = ("KROVA est une couche d'IA pour les entreprises qui gère les conversations sur WhatsApp, Instagram DM et "
+          "appels téléphoniques. Elle répond dans le ton de l'entreprise et suit les engagements pris.")
+
+
+def test_french_is_spotted():
+    assert kr.looks_foreign({"about": FRENCH}, [])
+
+
+@pytest.mark.parametrize("text", [
+    "KROVA is an AI layer for businesses that handles conversations on WhatsApp, Instagram DM and phone calls.",
+    "Hum Mon se Sat 10 baje se 7 baje tak khule hain. Sunday band rehta hai. Delivery 2 din mein ho jaati hai.",
+    "Screen repair Rs 1500, battery Rs 900, home pickup available in Lucknow for orders above Rs 500.",
+])
+def test_english_and_hinglish_are_not_flagged(text):
+    assert not kr.looks_foreign({"about": text}, [("Do you deliver?", "Yes, across the city.")])
+
+
+def test_a_french_answer_is_asked_again_in_english(monkeypatch):
+    answers = [{"about": FRENCH}, {"about": "KROVA is an AI layer for business conversations."}]
+    asks: list[str] = []
+
+    async def complete(**kwargs):
+        asks.append(kwargs["messages"][0]["content"][1]["text"])
+        return SimpleNamespace(tool_input=answers[len(asks) - 1], cost_paise=5)
+
+    monkeypatch.setattr(kr.client, "complete", complete)
+    reading = asyncio.run(kr.read_into_card(raw=b"KROVA notes", filename="a.txt", content_type=None, vertical="general", faq_room=0))
+    assert reading.fields["about"].startswith("KROVA is")
+    assert len(asks) == 2 and "English" in asks[1] and reading.cost_paise == 10
+
+
+def test_french_twice_is_refused_not_shown(monkeypatch):
+    async def complete(**kwargs):
+        return SimpleNamespace(tool_input={"about": FRENCH}, cost_paise=5)
+
+    monkeypatch.setattr(kr.client, "complete", complete)
+    with pytest.raises(kr.UnreadableFile):
+        asyncio.run(kr.read_into_card(raw=b"KROVA notes", filename="a.txt", content_type=None, vertical="general", faq_room=0))

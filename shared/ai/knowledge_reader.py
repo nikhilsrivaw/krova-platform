@@ -11,6 +11,7 @@ on this platform - drafted, then a person decides.
 
 import base64
 import io
+import re
 from dataclasses import dataclass, field as dc_field
 from typing import Any
 
@@ -49,7 +50,8 @@ Rules:
 - "offers" only for an offer or notice the document states, with its end date if given.
 - Top questions: only question-and-answer pairs the document itself answers, at most the number asked for,
   each answer one or two short sentences.
-- Write in the language the document is written in."""
+- Language: write in ENGLISH. Only if the document itself is written in Hindi or Hinglish, write in that. Never French,
+  Spanish or any other language, whatever language you usually answer in."""
 
 
 @dataclass(slots=True)
@@ -165,6 +167,21 @@ def clean(fields: list[dict[str, Any]], tool_input: dict[str, Any] | None, faq_r
     return out, faqs[:faq_room]
 
 
+# Words common in French and Spanish and rare in English, Hindi or Hinglish. Enough of them means the model answered
+# in the wrong language.
+_FOREIGN_WORDS = {"est", "les", "des", "une", "pour", "avec", "dans", "sur", "vous", "nous", "aux", "qui", "sont",
+                  "entreprise", "appels", "sont", "los", "las", "para", "con", "una", "del", "empresa"}
+
+
+def looks_foreign(values: dict[str, str], faqs: list[tuple[str, str]]) -> bool:
+    text = " ".join([*values.values(), *(q + " " + a for q, a in faqs)]).lower()
+    words = re.findall(r"[a-zà-ÿ]+", text)
+    if len(words) < 8:
+        return False
+    hits = sum(1 for w in words if w in _FOREIGN_WORDS)
+    return hits >= 4 and hits / len(words) > 0.04
+
+
 async def read_into_card(*, raw: bytes, filename: str, content_type: str | None, vertical: str, faq_room: int) -> CardReading:
     """One read of the file; returns suggestions for the card. Saves nothing."""
     if len(raw) > MAX_FILE_BYTES:
@@ -174,15 +191,27 @@ async def read_into_card(*, raw: bytes, filename: str, content_type: str | None,
     media_type = media_type_for(filename, content_type)
     block, truncated = _content(raw, media_type)
     fields = knowledge_card.fields_for(vertical)
+    tool = _tool(fields, max(0, faq_room))
+    ask = "Fill the card from this document. Write in English (or Hindi/Hinglish only if the document is in that)."
     completion = await client.complete(
         system=SYSTEM,
-        messages=[{"role": "user", "content": [block, {"type": "text", "text": "Fill the card from this document."}]}],
-        speed="fast",
-        task="knowledge_read_file",
-        tool=_tool(fields, max(0, faq_room)),
-        max_tokens=3000,
+        messages=[{"role": "user", "content": [block, {"type": "text", "text": ask}]}],
+        speed="fast", task="knowledge_read_file", tool=tool, max_tokens=3000,
     )
+    cost = completion.cost_paise
     values, faqs = clean(fields, completion.tool_input, max(0, faq_room))
+    if looks_foreign(values, faqs):
+        # Some models drift into their own home language (Mistral into French). One retry, told plainly.
+        logger.warning("knowledge file read came back in another language, asking again file=%s", filename)
+        completion = await client.complete(
+            system=SYSTEM,
+            messages=[{"role": "user", "content": [block, {"type": "text", "text": ask + " Your last answer was in French - answer in English."}]}],
+            speed="fast", task="knowledge_read_file", tool=tool, max_tokens=3000,
+        )
+        cost += completion.cost_paise
+        values, faqs = clean(fields, completion.tool_input, max(0, faq_room))
+        if looks_foreign(values, faqs):
+            raise UnreadableFile("We could not read this file in English. Try again, or type it into the card.")
     if not values and not faqs:
         logger.info("knowledge file read found nothing usable file=%s", filename)
-    return CardReading(fields=values, faqs=faqs, truncated=truncated, cost_paise=completion.cost_paise)
+    return CardReading(fields=values, faqs=faqs, truncated=truncated, cost_paise=cost)
