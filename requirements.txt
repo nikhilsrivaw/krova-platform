@@ -29,6 +29,8 @@ apscheduler==3.11.0
 
 # ── AI ───────────────────────────────────────────────────────────────────────
 anthropic==0.64.0
+# Text out of an owner's PDF price list, read once into the knowledge card (shared/ai/knowledge_reader.py)
+pypdf==6.10.2
 
 # ── Dev ──────────────────────────────────────────────────────────────────────
 pytest==8.4.1

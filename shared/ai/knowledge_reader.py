@@ -10,8 +10,11 @@ on this platform - drafted, then a person decides.
 """
 
 import base64
+import io
 from dataclasses import dataclass, field as dc_field
 from typing import Any
+
+from pypdf import PdfReader
 
 from shared.ai import client
 from shared.verticals import knowledge_card
@@ -19,7 +22,7 @@ from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# What is read, by type. PDFs and photos go to Claude as they are (it reads both); text is sent as text.
+# What is read, by type. A PDF's text is pulled out here and sent as text; a photo goes to the model as an image.
 PDF_TYPES = {"application/pdf"}
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 TEXT_EXTENSIONS = (".txt", ".md", ".csv")
@@ -29,6 +32,7 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 # A text file past this is cut: the card holds about 4,000 characters, so the first ~10k tokens of a file are plenty
 # to fill it, and it keeps one read cheap.
 MAX_TEXT_CHARS = 40_000
+MAX_PDF_PAGES = 30
 
 SYSTEM = """You fill in a small business's knowledge card from a document the owner gave you (a price list, menu,
 brochure, rate card, FAQ sheet or a photo of one).
@@ -101,15 +105,42 @@ def _tool(fields: list[dict[str, Any]], faq_room: int) -> dict[str, Any]:
     }
 
 
+def pdf_text(raw: bytes) -> str:
+    """
+    The text layer of a PDF, read here rather than by the model: it works with every model (the Bedrock ones take no
+    PDF input) and a page of text costs far fewer tokens than a page sent as a document. A scanned PDF has no text
+    layer - the owner is asked for a photo instead, which the model can read.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise UnreadableFile("That PDF is locked with a password. Upload an unlocked copy, or a photo of it.")
+        parts: list[str] = []
+        size = 0
+        for page in reader.pages[:MAX_PDF_PAGES]:
+            text = (page.extract_text() or "").strip()
+            parts.append(text)
+            size += len(text)
+            if size > MAX_TEXT_CHARS:
+                break
+    except UnreadableFile:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a broken PDF is the owner's file, not our error
+        raise UnreadableFile("We could not open that PDF. Try a photo of it instead.") from exc
+    text = "\n\n".join(p for p in parts if p)
+    if len(text) < 20:
+        raise UnreadableFile("This PDF looks like a scan with no text in it. Upload a photo of the page instead.")
+    return text
+
+
 def _content(raw: bytes, media_type: str) -> tuple[dict[str, Any], bool]:
-    if media_type == "text":
-        text = raw.decode("utf-8", errors="replace").strip()
+    if media_type in ("text", *PDF_TYPES):
+        text = pdf_text(raw) if media_type in PDF_TYPES else raw.decode("utf-8", errors="replace").strip()
         if not text:
             raise UnreadableFile("We could not find any text in that file.")
         return {"type": "text", "text": f"<document>\n{text[:MAX_TEXT_CHARS]}\n</document>"}, len(text) > MAX_TEXT_CHARS
     data = base64.standard_b64encode(raw).decode("ascii")
-    kind = "document" if media_type in PDF_TYPES else "image"
-    return {"type": kind, "source": {"type": "base64", "media_type": media_type, "data": data}}, False
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}, False
 
 
 def clean(fields: list[dict[str, Any]], tool_input: dict[str, Any] | None, faq_room: int) -> tuple[dict[str, str], list[tuple[str, str]]]:

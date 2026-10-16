@@ -617,6 +617,41 @@ async def _converse_voice(model_id: str, agent_context: ctx.AgentContext) -> _Bu
     return _Buffered(_escalate_floor(answer.text, agent_context), answer.cost_paise)
 
 
+def _turns_text(turns: list[dict]) -> str:
+    who = {"user": "Caller", "assistant": "You"}
+    return "\n".join(f"{who.get(t.get('role'), t.get('role'))}: {t.get('content')}" for t in turns if isinstance(t.get("content"), str))
+
+
+async def _routed_turns_voice(*, task: str, system: str, messages: list[dict], facts: str, customer_text: str = ""):
+    """
+    The owner's own call and a scripted campaign call, on whatever model AI_LIVE_ROUTES names for `task` - the same
+    two Bedrock paths a customer call already has (_buffered_voice / _converse_voice). With no route, Claude streams
+    as before. A non-Claude answer goes through the same voice guard before anything is spoken.
+    """
+    route = router.live_for(task)
+    if route is None:
+        return client.stream_text(system=system, messages=messages, speed="fast", task=task, max_tokens=200)
+    start = time.perf_counter()
+    if route.startswith(CONVERSE_ROUTE_PREFIX):
+        answer = await bedrock_claude.converse(
+            model_id=route[len(CONVERSE_ROUTE_PREFIX):], system=system,
+            stable=str(messages[0]["content"]), volatile=_turns_text(messages[1:]), max_tokens=200, task=task,
+        )
+        text, cost, guarded = answer.text or "", answer.cost_paise, False
+    else:
+        answer = await providers.call(route, {"system": system, "messages": messages, "max_tokens": 200})
+        client._log_usage(task, route, answer.usage, answer.cost_paise)
+        text, cost, guarded = answer.text or "", answer.cost_paise, True
+    logger.info("%s from %s in %.2fs", task, route, time.perf_counter() - start)
+    hit = auto_send_gate.must_escalate(customer_text) if customer_text else None
+    if hit and text.strip().upper().startswith("REPLY"):
+        return _Buffered(f"ESCALATE\n\nneeds a person: {hit}", cost)
+    if guarded and not _grounded(text, facts):
+        logger.warning("voice guard replaced an ungrounded %s reply from %s with a holding line", task, route)
+        return _Buffered(GUARD_FALLBACK_REPLY, cost)
+    return _Buffered(text, cost)
+
+
 async def stream_reply(agent_context: ctx.AgentContext):
     """
     The streaming counterpart to draft_reply, for a live call only.
@@ -841,12 +876,8 @@ async def stream_owner_reply(owner_context: ctx.OwnerContext, recent_turns: list
         *recent_turns,
     ]
 
-    stream = client.stream_text(
-        system=OWNER_SYSTEM_STREAM,
-        messages=messages,
-        speed="fast",
-        task="reply_owner_voice",
-        max_tokens=200,
+    stream = await _routed_turns_voice(
+        task="reply_owner_voice", system=OWNER_SYSTEM_STREAM, messages=messages, facts=context_block,
     )
 
     buffer = ""
@@ -935,12 +966,10 @@ async def stream_scripted_reply(scripted_context: ctx.ScriptedContext, recent_tu
         *recent_turns,
     ]
 
-    stream = client.stream_text(
-        system=SCRIPTED_SYSTEM_STREAM,
-        messages=messages,
-        speed="fast",
-        task="reply_scripted_voice",
-        max_tokens=200,
+    last_caller = next((t.get("content") for t in reversed(recent_turns) if t.get("role") == "user"), "")
+    stream = await _routed_turns_voice(
+        task="reply_scripted_voice", system=SCRIPTED_SYSTEM_STREAM, messages=messages, facts=context_block,
+        customer_text=last_caller if isinstance(last_caller, str) else "",
     )
 
     buffer = ""

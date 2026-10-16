@@ -373,6 +373,7 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status_code=404, detail="Not found")
+    # A read that fails below raises, and get_db rolls back on any exception, so a failed read is not counted.
     left = _take_file_read(business)
 
     vertical = business.vertical or "general"

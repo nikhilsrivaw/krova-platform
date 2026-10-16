@@ -115,14 +115,49 @@ def _fake_complete(answer, seen):
     return complete
 
 
-def test_a_pdf_is_sent_as_a_document_and_nothing_is_invented(monkeypatch):
+def _pdf(text: str | None) -> bytes:
+    """A one-page PDF, with a text layer when `text` is given and none (like a scan) when it is not."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode() if text else b""
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out, offsets = b"%PDF-1.4\n", []
+    for i, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+def test_a_pdf_is_read_here_and_sent_as_text_so_any_model_can_take_it(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(kr.client, "complete", _fake_complete({"about": "We fix phones.", "when": "", "faqs": []}, seen))
-    reading = asyncio.run(kr.read_into_card(raw=b"%PDF-1.4 x", filename="a.pdf", content_type=None, vertical="general", faq_room=10))
+    raw = _pdf("Screen repair Rs 1500. Open Mon to Sat.")
+    reading = asyncio.run(kr.read_into_card(raw=raw, filename="a.pdf", content_type=None, vertical="general", faq_room=10))
     block = seen["messages"][0]["content"][0]
-    assert block["type"] == "document" and block["source"]["media_type"] == "application/pdf"
+    assert block["type"] == "text" and "Screen repair Rs 1500" in block["text"]
     assert seen["speed"] == "fast" and seen["task"] == "knowledge_read_file"
     assert reading.fields == {"about": "We fix phones."}
+
+
+def test_a_scanned_pdf_asks_for_a_photo_without_an_ai_call(monkeypatch):
+    async def boom(**kwargs):
+        raise AssertionError("must not call the AI")
+    monkeypatch.setattr(kr.client, "complete", boom)
+    with pytest.raises(kr.UnreadableFile, match="photo"):
+        asyncio.run(kr.read_into_card(raw=_pdf(None), filename="scan.pdf", content_type=None, vertical="general", faq_room=1))
+
+
+def test_a_broken_pdf_is_refused_plainly():
+    with pytest.raises(kr.UnreadableFile):
+        kr.pdf_text(b"%PDF-1.4 not really a pdf")
 
 
 def test_a_photo_is_sent_as_an_image(monkeypatch):
