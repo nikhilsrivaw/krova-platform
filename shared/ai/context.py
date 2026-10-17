@@ -62,7 +62,9 @@ from shared.verticals import knowledge_card, knowledge_lookup, labels
 # Doctors listed per reply, when the business has the scheduling capability.
 # Bounded deliberately - this sits on the same latency-sensitive path as the
 # rest of AgentContext.build(), and each doctor costs its own slot scan.
-MAX_DOCTORS_IN_CONTEXT = 5
+# 8, not 5: a provider is any bookable calendar, and a showroom's sales
+# executives plus its demo vehicles passed 5 (about 30 tokens a line).
+MAX_DOCTORS_IN_CONTEXT = 8
 
 # Orders listed per reply, when the business has order_sync. A WISMO
 # question is almost always about the most recent order, occasionally the
@@ -680,6 +682,7 @@ async def build(
             await db.execute(
                 select(Doctor)
                 .where(Doctor.business_id == business_id, Doctor.active == True)  # noqa: E712
+                .order_by(Doctor.name)
                 .limit(MAX_DOCTORS_IN_CONTEXT)
             )
         ).scalars().all()
@@ -935,6 +938,7 @@ async def build_anonymous(
             await db.execute(
                 select(Doctor)
                 .where(Doctor.business_id == business_id, Doctor.active == True)  # noqa: E712
+                .order_by(Doctor.name)
                 .limit(MAX_DOCTORS_IN_CONTEXT)
             )
         ).scalars().all()

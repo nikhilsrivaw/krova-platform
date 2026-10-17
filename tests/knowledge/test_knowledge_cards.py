@@ -315,3 +315,36 @@ def test_an_item_can_be_edited_and_switched_off_but_not_another_businesses():
     with pytest.raises(HTTPException) as e:
         run(knowledge.update_knowledge(other.id, knowledge.KnowledgePatch(active=False), who(), FakeDb(item_by_id=other)))
     assert e.value.status_code == 404
+
+
+def test_the_showroom_collects_exchange_and_finance_details_before_handing_over():
+    t = verticals.get("showroom_vehicle")
+    policies = t["policies"].lower()
+    for detail in ("kilometres driven", "number of owners", "fuel type", "photos", "salaried or self-employed", "down payment"):
+        assert detail in policies, detail
+    assert "never ask for a pan, aadhaar or bank account number" in policies
+    assert "never value an old vehicle" in policies and "never promise that a loan will be approved" in policies
+    # the hand-over now comes after the details, not before them
+    assert all("once" in e for e in t["escalate_immediately"] if "old vehicle" in e or "loan" in e)
+    # and those words still hold a reply for a person before it is sent
+    assert {"exchange value", "loan approve"} <= set(t["escalate_keywords"])
+
+
+def test_a_demo_vehicle_can_be_its_own_calendar():
+    labels = verticals.get("showroom_vehicle")["labels"]["scheduling"]
+    assert "demo vehicle" in labels["provider"] and "demo vehicles" in labels["provider_plural"]
+
+
+def test_the_booking_checklist_is_tracked_item_by_item():
+    notes = {w["kind"]: w["note"].lower() for w in verticals.get("showroom_vehicle")["watch_for"]}
+    for doc in ("id proof", "address proof", "loan or income papers", "rc", "insurance policy", "registration"):
+        assert doc in notes["document"], doc
+    for step in ("booking amount", "down payment", "balance before delivery"):
+        assert step in notes["payment"], step
+
+
+def test_up_to_eight_calendars_are_shown_the_same_ones_every_time():
+    import inspect
+    assert context.MAX_DOCTORS_IN_CONTEXT == 8
+    src = inspect.getsource(context)
+    assert src.count(".order_by(Doctor.name)\n                .limit(MAX_DOCTORS_IN_CONTEXT)") == 2
