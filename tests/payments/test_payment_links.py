@@ -272,3 +272,74 @@ def test_no_phone_still_makes_the_link_to_share_another_way(wiring):
 
 def test_rupees_reads_naturally():
     assert links.rupees(50000) == "Rs 500" and links.rupees(150050) == "Rs 1,500.50"
+
+
+# ── sent by itself after the AI books ────────────────────────────────────────
+
+def _biz(auto=None):
+    settings_ = {"payments": {"auto_link": auto}} if auto is not None else {}
+    return SimpleNamespace(id=BIZ, settings=settings_)
+
+
+def test_auto_links_are_off_unless_switched_on():
+    assert links.auto_settings(_biz()) == {"tokens": False, "appointments": False, "default_fee_paise": None}
+    s = links.auto_settings(_biz({"tokens": True, "default_fee_paise": 30000}))
+    assert s == {"tokens": True, "appointments": False, "default_fee_paise": 30000}
+    assert links.auto_settings(_biz({"tokens": "yes", "default_fee_paise": 5}))["tokens"] is False
+
+
+def _auto(monkeypatch, *, business, gateway=True, fail=False, **kwargs):
+    sent = {}
+
+    async def connection_for(db, business_id):
+        return SimpleNamespace(status=ConnectionStatus.active) if gateway else None
+
+    async def send_link(db, *, business, commitment, user_id):
+        if fail:
+            raise RuntimeError("WhatsApp down")
+        sent["commitment"] = commitment
+        return SimpleNamespace(id="l"), True, None
+
+    db = SimpleNamespace(add=lambda row: sent.setdefault("added", row), flush=lambda: _noop())
+    monkeypatch.setattr(links, "connection_for", connection_for)
+    monkeypatch.setattr(links, "send_link", send_link)
+    link = asyncio.run(links.auto_link_after_booking(db, business=business, customer_id=uuid.uuid4(), **kwargs))
+    return link, sent
+
+
+async def _noop():
+    return None
+
+
+def test_switched_off_sends_nothing(monkeypatch):
+    link, sent = _auto(monkeypatch, business=_biz({"tokens": False}), kind="tokens", description="Fee for token 3")
+    assert link is None and sent == {}
+
+
+def test_a_token_uses_the_default_fee(monkeypatch):
+    link, sent = _auto(monkeypatch, business=_biz({"tokens": True, "default_fee_paise": 30000}), kind="tokens",
+                       description="Fee for token 3")
+    assert link is not None
+    c = sent["commitment"]
+    assert c.amount_paise == 30000 and c.description == "Fee for token 3"
+    assert c.direction == CommitmentDirection.they_owe and c.status == CommitmentStatus.open
+
+
+def test_an_appointment_prefers_the_doctors_fee(monkeypatch):
+    _, sent = _auto(monkeypatch, business=_biz({"appointments": True, "default_fee_paise": 30000}), kind="appointments",
+                    description="Fee for the appointment", doctor_fee_paise=70000)
+    assert sent["commitment"].amount_paise == 70000
+
+
+def test_no_fee_known_or_no_gateway_sends_nothing(monkeypatch):
+    link, sent = _auto(monkeypatch, business=_biz({"tokens": True}), kind="tokens", description="x")
+    assert link is None and sent == {}
+    link, sent = _auto(monkeypatch, business=_biz({"tokens": True, "default_fee_paise": 30000}), gateway=False,
+                       kind="tokens", description="x")
+    assert link is None and sent == {}
+
+
+def test_a_failure_never_breaks_the_booking(monkeypatch):
+    link, _ = _auto(monkeypatch, business=_biz({"tokens": True, "default_fee_paise": 30000}), fail=True,
+                    kind="tokens", description="x")
+    assert link is None

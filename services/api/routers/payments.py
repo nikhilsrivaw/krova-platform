@@ -119,6 +119,31 @@ async def disconnect_gateway(current_user: OwnerOrAdminDep, db: DbDep) -> None:
         await db.delete(row)
 
 
+class AutoLinkIn(BaseModel):
+    tokens: bool = False
+    appointments: bool = False
+    # used when the doctor has no consultation fee set (a token the AI books has no doctor)
+    default_fee_paise: int | None = Field(default=None, ge=100, le=50_000_000)
+
+
+@router.get("/auto", response_model=AutoLinkIn)
+async def get_auto(current_user: CurrentUserDep, db: DbDep) -> AutoLinkIn:
+    return AutoLinkIn(**links.auto_settings(await _business(db, current_user)))
+
+
+@router.put("/auto", response_model=AutoLinkIn)
+async def set_auto(body: AutoLinkIn, current_user: OwnerOrAdminDep, db: DbDep) -> AutoLinkIn:
+    """Send the fee link by itself right after the AI books a token or an appointment on WhatsApp."""
+    business = await _business(db, current_user)
+    settings_ = dict(business.settings or {})
+    pay = dict(settings_.get("payments") or {})
+    pay["auto_link"] = body.model_dump()
+    settings_["payments"] = pay
+    business.settings = settings_
+    await db.flush()
+    return AutoLinkIn(**links.auto_settings(business))
+
+
 # ── links ────────────────────────────────────────────────────────────────────
 
 async def _send(db, current_user, commitment: Commitment, template_name: str | None, template_language: str) -> SendOut:

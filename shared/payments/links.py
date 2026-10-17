@@ -243,6 +243,54 @@ async def send_link(
     return link, True, None
 
 
+# ── sent by itself after the AI books ────────────────────────────────────────
+
+def auto_settings(business: Business) -> dict:
+    """
+    Business.settings["payments"]["auto_link"]: {"tokens": bool, "appointments": bool, "default_fee_paise": int|None}.
+    Off unless the business switches it on.
+    """
+    raw = ((business.settings or {}).get("payments") or {}).get("auto_link") or {}
+    fee = raw.get("default_fee_paise")
+    return {
+        "tokens": raw.get("tokens") is True,
+        "appointments": raw.get("appointments") is True,
+        "default_fee_paise": fee if isinstance(fee, int) and fee >= 100 else None,
+    }
+
+
+async def auto_link_after_booking(
+    db: AsyncSession, *, business: Business, customer_id: uuid.UUID, kind: str, description: str,
+    doctor_fee_paise: int | None = None, appointment_id: uuid.UUID | None = None,
+) -> PaymentLink | None:
+    """
+    When the AI has just booked a token or an appointment on WhatsApp, send the fee link straight after - if the
+    business switched it on and its gateway is connected. The fee is the doctor's consultation fee, else the business's
+    default fee. Never raises: a booking that worked must not fail because a link could not be sent.
+    """
+    try:
+        settings_ = auto_settings(business)
+        if not settings_.get(kind):
+            return None
+        amount = doctor_fee_paise or settings_["default_fee_paise"]
+        gateway_row = await connection_for(db, business.id)
+        if not amount or gateway_row is None or gateway_row.status != ConnectionStatus.active:
+            return None
+        commitment = fee_commitment(
+            business_id=business.id, customer_id=customer_id, amount_paise=amount, description=description,
+            appointment_id=appointment_id,
+        )
+        db.add(commitment)
+        await db.flush()
+        link, sent, reason = await send_link(db, business=business, commitment=commitment, user_id=None)
+        if not sent:
+            logger.info("auto payment link made but not sent business=%s: %s", business.id, reason)
+        return link
+    except Exception:  # noqa: BLE001 - the booking stands whatever happens here
+        logger.exception("auto payment link failed business=%s kind=%s", business.id, kind)
+        return None
+
+
 # ── noticing payment ─────────────────────────────────────────────────────────
 
 def apply_status(link: PaymentLink, commitment: Commitment | None, *, status: str, amount_paid_paise: int,

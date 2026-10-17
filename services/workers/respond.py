@@ -58,6 +58,7 @@ from shared.db.worker_runner import run_worker_process
 from shared.scheduling import booking as scheduling_booking
 from shared.scheduling import notify
 from shared.scheduling import queue_booking
+from shared.payments import links as payment_links
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -327,6 +328,13 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                     db, business=business, customer=customer,
                     doctor=doctor, starts_at=appointment.starts_at,
                 )
+            if channel == "whatsapp":
+                # The fee link straight after the confirmation, when the business switched it on.
+                await payment_links.auto_link_after_booking(
+                    db, business=business, customer_id=customer.id, kind="appointments",
+                    description=f"Fee for the appointment on {appointment.starts_at.strftime('%d %b, %I:%M %p')}",
+                    doctor_fee_paise=doctor.consultation_fee_paise if doctor else None, appointment_id=appointment.id,
+                )
 
     if proposal.cancel_appointment_at:
         cancelled = await _try_cancel(proposal, business=business, customer=customer, db=db)
@@ -362,6 +370,12 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         # No separate confirmation send here - queue_booking.issue_token
         # already fires notify.send_queue_checkin itself on success, unlike
         # scheduling's book() which leaves the confirmation to the caller.
+        elif channel == "whatsapp":
+            # The fee link straight after the token, when the business switched it on.
+            await payment_links.auto_link_after_booking(
+                db, business=business, customer_id=customer.id, kind="tokens",
+                description=f"Fee for token {queue_entry.queue_number} ({queue_entry.queue_date.strftime('%d %b')})",
+            )
 
     draft = MessageDraft(
         business_id=message.business_id,
