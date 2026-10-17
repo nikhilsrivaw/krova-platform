@@ -127,6 +127,11 @@ _add("POST", "/leads/manual", "lead_added", "Added a lead by hand", WORK)
 _add("POST", "/knowledge", "knowledge_changed", "Added to the knowledge base", WORK)
 _add("POST", "/knowledge/read-file", "knowledge_changed", "Read a file to fill the knowledge card", WORK)
 _add("DELETE", "/knowledge/{item_id}", "knowledge_changed", "Removed from the knowledge base", WORK)
+_add("POST", "/payments/links", "payment_link_sent", "Sent a payment link", WORK)
+_add("POST", "/payments/queue/{entry_id}/link", "payment_link_sent", "Sent a payment link for a token", WORK)
+_add("POST", "/payments/appointments/{appointment_id}/link", "payment_link_sent", "Sent a payment link for an appointment", WORK)
+_add("PUT", "/payments/gateway", "payment_gateway_connected", "Connected the payment gateway", SECURITY)
+_add("DELETE", "/payments/gateway", "payment_gateway_disconnected", "Disconnected the payment gateway", SECURITY)
 
 # Reaches many customers, or keeps acting on its own.
 _add("POST", "/campaigns", "campaign_created", "Created a WhatsApp campaign", CONFIG)

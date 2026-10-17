@@ -496,6 +496,21 @@ async def check_deadline_calls() -> None:
         logger.exception("deadline call sweep failed")
 
 
+async def sync_payment_links() -> None:
+    """Ask each business's own gateway whether its open payment links were paid. See shared/payments/links.py."""
+    from shared.db.session import AsyncSessionLocal
+    from shared.payments import links
+
+    try:
+        async with AsyncSessionLocal() as db:
+            paid = await links.sync_open_links(db)
+            await db.commit()
+            if paid:
+                logger.info("payment links: %s newly paid", paid)
+    except Exception:
+        logger.exception("payment link sweep failed")
+
+
 async def check_reply_times() -> None:
     """Remind the chat's owner (then the supervisors) when a customer has waited past the first-reply target."""
     from shared.care import reply_sla
@@ -792,6 +807,14 @@ def build() -> AsyncIOScheduler:
         id="run_wallet_sweep",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    scheduler.add_job(
+        sync_payment_links,
+        IntervalTrigger(minutes=2),
+        id="sync_payment_links",
+        replace_existing=True,
+        misfire_grace_time=300,
     )
 
     scheduler.add_job(

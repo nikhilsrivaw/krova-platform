@@ -57,6 +57,7 @@ from services.api.routers import (
     messages,
     onboarding,
     orders,
+    payments,
     products,
     quotations,
     properties,
@@ -169,6 +170,7 @@ app.include_router(admin.router, prefix=API_PREFIX)
 app.include_router(billing.router, prefix=API_PREFIX)
 app.include_router(channels.router, prefix=API_PREFIX)
 app.include_router(ledger.router, prefix=API_PREFIX)
+app.include_router(payments.router, prefix=API_PREFIX)
 app.include_router(templates.router, prefix=API_PREFIX)
 app.include_router(account.router, prefix=API_PREFIX)
 app.include_router(messages.router, prefix=API_PREFIX)

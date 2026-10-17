@@ -86,6 +86,7 @@ from shared.db.models.number_request import NumberRequest, NumberRequestStatus, 
 from shared.db.models.order import AbandonedCheckout, Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.db.models.otp import OtpCode
 from shared.db.models.product import Product, ProductVariant
+from shared.db.models.payment_link import PaymentGatewayConnection, PaymentLink
 from shared.db.models.quotation import OPEN_STATUSES, Quotation, QuotationItem, QuotationStatus
 from shared.db.models.property import ListingType, Property, PropertyStatus
 from shared.db.models.queue import QueueEntry, QueueStatus
@@ -204,6 +205,8 @@ __all__ = [
     "ShippingConnection",
     "StoreConnection",
     "StripeConnection",
+    "PaymentGatewayConnection",
+    "PaymentLink",
     "TemplateCategory",
     "TemplateStatus",
     "UsageEvent",
