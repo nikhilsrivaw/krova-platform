@@ -1,0 +1,376 @@
+{
+  "key": "health_therapy",
+  "label": "Physio, therapy or AYUSH clinic",
+  "group": "Healthcare",
+  "summary": "A physiotherapy, rehab, speech or occupational therapy, ayurveda, homeopathy, panchakarma or diet clinic where care runs as a course of sessions or a package over weeks - people ask the package price, book and move sessions, need reminding for each one, and come back for follow-ups and refills.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "care_recall"
+  ],
+  "labels": {
+    "scheduling": {
+      "provider": "Therapist or doctor",
+      "provider_plural": "Therapists and doctors",
+      "credential_label": "Qualifications",
+      "fee_label": "Session fee",
+      "booking_noun": "session",
+      "booking_noun_plural": "sessions"
+    }
+  },
+  "tone": "Calm, precise and reassuring. People messaging about their health or a family member's are often worried. Answer the question first, then offer the next step. Never sound rushed and never sound like an advertisement. Match the patient's language: English, Hindi or Hinglish. Plain words, short sentences.",
+  "policies": "Never give medical advice, never suggest a diagnosis, never interpret a report or a test value, and never estimate whether a symptom is serious. Those go to the doctor, always. Never name a specific medical condition, diagnosis, test result or medicine in any message, including reminders - describe it generically ('your follow-up visit', 'your report', 'your refill reminder'). Never recommend, sell or promote a medicine. Quote only fees, charges and packages written in the business details, factually; costs that depend on examination are given by the doctor or the desk. Never offer, invent or hint at a discount, a free test, a limited-period offer or a coupon. Never ask a patient for a review, rating or testimonial, and never share anything about another patient. Ask only for what a booking needs (name, phone, preferred time, and the reason in the patient's own words); never ask for an ID number, insurance card number or medical history in chat. Never confirm a slot that is not free in the calendar. Anything beyond scheduling, billing or logistics - symptoms, medicines, results, treatment choices - is handed to the doctor or the team, never sent automatically, whatever the business's autonomy setting. Quote session and package prices only as listed, and how many sessions a package has. Never promise a result, a recovery time or a cure. Give pre- or post-session instructions only as written in the business details.",
+  "known_gaps": [
+    "Any clinical or diagnostic question, or what a report or test value means",
+    "Whether a specific treatment, test or medicine is right for a patient",
+    "Costs that depend on examination or on the case",
+    "How many sessions a patient will need, or how long recovery will take",
+    "Whether a therapy or medicine suits a patient"
+  ],
+  "watch_for": [
+    {
+      "kind": "meeting",
+      "note": "An appointment booked, moved or cancelled, and any follow-up visit promised ('come back in three months') even before it is booked - a recall reminder is built from it."
+    },
+    {
+      "kind": "callback",
+      "note": "A promise that the doctor or the desk will call back, with an answer, an estimate or a time."
+    },
+    {
+      "kind": "payment",
+      "note": "A package bought, its instalments, or a balance due - each part on its own."
+    },
+    {
+      "kind": "document",
+      "note": "An exercise plan, diet chart, prescription or progress note promised to a patient."
+    },
+    {
+      "kind": "other",
+      "note": "A home exercise or a test the patient was asked to do before the next session."
+    }
+  ],
+  "common_questions": [
+    "What does a session or a package cost?",
+    "How many sessions are in the package?",
+    "Can I move tomorrow's session?",
+    "Do you do home visits?",
+    "What should I wear or bring?",
+    "When is my next session?",
+    "Is the doctor available on Sunday?"
+  ],
+  "escalate_immediately": [
+    "Any message describing severe pain, bleeding, breathlessness, unconsciousness, an accident or any emergency - tell them to call emergency services or come to the emergency now, and hand over",
+    "Any request to change, explain or interpret a medicine, a dose, a prescription or a report",
+    "Any complaint about treatment, a bill or a staff member",
+    "Any request to guarantee a result or a cure"
+  ],
+  "escalate_keywords": [
+    "bleeding",
+    "khoon",
+    "chest pain",
+    "seene mein dard",
+    "saans nahi",
+    "saans lene mein",
+    "behosh",
+    "unconscious",
+    "emergency",
+    "accident",
+    "heart attack",
+    "stroke",
+    "fits aa",
+    "mirgi",
+    "daura pad",
+    "seizure",
+    "suicide",
+    "khudkushi",
+    "poison",
+    "zeher",
+    "prescription",
+    "dose badha",
+    "dose kam",
+    "side effect",
+    "allergy",
+    "allergic",
+    "complaint",
+    "refund",
+    "खून",
+    "सीने में दर्द",
+    "बेहोश",
+    "guarantee",
+    "pakka theek",
+    "100% theek"
+  ],
+  "review_requests": false,
+  "flow_templates": [
+    {
+      "key": "book_followup",
+      "name": "Book a follow-up",
+      "description": "Patient picks a reason and a preferred date for a follow-up visit - lands as one structured request instead of a back-and-forth.",
+      "categories": [
+        "APPOINTMENT_BOOKING"
+      ],
+      "cta": "Book",
+      "body": "Let's get your follow-up booked:",
+      "screen": "BOOK_FOLLOWUP",
+      "flow_json": {
+        "version": "5.0",
+        "screens": [
+          {
+            "id": "BOOK_FOLLOWUP",
+            "title": "Book a follow-up",
+            "terminal": true,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "TextInput",
+                      "name": "full_name",
+                      "label": "Full name",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "phone",
+                      "label": "Phone number",
+                      "input-type": "phone",
+                      "required": true
+                    },
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "reason",
+                      "label": "Reason for the visit",
+                      "required": true,
+                      "data-source": [
+                        {
+                          "id": "followup",
+                          "title": "Scheduled follow-up"
+                        },
+                        {
+                          "id": "report",
+                          "title": "Report or prescription review"
+                        },
+                        {
+                          "id": "new",
+                          "title": "New concern"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "DatePicker",
+                      "name": "preferred_date",
+                      "label": "Preferred date",
+                      "required": true
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Request slot",
+                      "on-click-action": {
+                        "name": "complete",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "reason": "${form.reason}",
+                          "preferred_date": "${form.preferred_date}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "book_followup_live",
+      "name": "Book a follow-up (Beta - live availability)",
+      "description": "Same as 'Book a follow-up', but the second screen shows only the doctor's REAL open slots - computed live, never a blind date picker. Needs 'Enable live data' on this flow after creating it (Flows page). Not live-tested against a real WABA - the data-exchange screen's exact JSON syntax is Meta's own, best-grounded from their docs, not confirmed by a real upload yet.",
+      "categories": [
+        "APPOINTMENT_BOOKING"
+      ],
+      "cta": "Book",
+      "body": "Let's get your follow-up booked:",
+      "screen": "BOOK_FOLLOWUP_LIVE",
+      "flow_json": {
+        "version": "7.0",
+        "screens": [
+          {
+            "id": "BOOK_FOLLOWUP_LIVE",
+            "title": "Book a follow-up",
+            "terminal": false,
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "TextInput",
+                      "name": "full_name",
+                      "label": "Full name",
+                      "required": true
+                    },
+                    {
+                      "type": "TextInput",
+                      "name": "phone",
+                      "label": "Phone number",
+                      "input-type": "phone",
+                      "required": true
+                    },
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "reason",
+                      "label": "Reason for the visit",
+                      "required": true,
+                      "data-source": [
+                        {
+                          "id": "followup",
+                          "title": "Scheduled follow-up"
+                        },
+                        {
+                          "id": "report",
+                          "title": "Report or prescription review"
+                        },
+                        {
+                          "id": "new",
+                          "title": "New concern"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "See open slots",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                          "full_name": "${form.full_name}",
+                          "phone": "${form.phone}",
+                          "reason": "${form.reason}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "SELECT_SLOT",
+            "title": "Pick a time",
+            "terminal": true,
+            "data": {
+              "available_slots": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "__example__": [
+                  {
+                    "id": "2026-01-01T10:00:00+05:30",
+                    "title": "Thu 1 Jan, 10:00 AM"
+                  }
+                ]
+              },
+              "full_name": {
+                "type": "string",
+                "__example__": "Jane Doe"
+              },
+              "phone": {
+                "type": "string",
+                "__example__": "+919876543210"
+              },
+              "reason": {
+                "type": "string",
+                "__example__": "followup"
+              },
+              "error_message": {
+                "type": "string",
+                "__example__": ""
+              }
+            },
+            "layout": {
+              "type": "SingleColumnLayout",
+              "children": [
+                {
+                  "type": "TextBody",
+                  "text": "${data.error_message}",
+                  "visible": "${data.error_message}"
+                },
+                {
+                  "type": "Form",
+                  "name": "form",
+                  "children": [
+                    {
+                      "type": "RadioButtonsGroup",
+                      "name": "selected_slot",
+                      "label": "Available times",
+                      "required": true,
+                      "data-source": "${data.available_slots}"
+                    },
+                    {
+                      "type": "Footer",
+                      "label": "Confirm booking",
+                      "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                          "selected_slot": "${form.selected_slot}",
+                          "full_name": "${data.full_name}",
+                          "phone": "${data.phone}",
+                          "reason": "${data.reason}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "knowledge_card": {
+    "offers": {
+      "title": "Notices",
+      "question": "Anything patients should know right now: a holiday closure, a doctor on leave, changed timings. No discounts or offers - medical rules do not allow them. Set the last day.",
+      "placeholder": "Closed on ... . Dr ... on leave from ... to ... ."
+    },
+    "trust": {
+      "title": "Qualifications and facilities",
+      "question": "Registration, qualifications, accreditation (NABH, NABL), years running, and facilities (parking, wheelchair access, pharmacy). Facts only - no patient reviews or testimonials.",
+      "placeholder": "Dr ... , MBBS, MD (...), registration no. ... . Parking and lift available."
+    },
+    "changes": {
+      "title": "Cancel, reschedule and refund",
+      "question": "How to cancel or move an appointment, any fee for a missed visit, and when an advance is refunded.",
+      "placeholder": "Reschedule free up to ... before. Advance refunded within ... days if cancelled ... ."
+    },
+    "offerings": {
+      "title": "Sessions, packages and prices",
+      "question": "Session fee, packages with number of sessions and price, home visit charge (up to 10 lines).",
+      "placeholder": "Single session - Rs ... \n10-session package - Rs ... \nHome visit - Rs ... extra"
+    },
+    "how_to_buy": {
+      "title": "Booking, first visit and what to bring",
+      "question": "How to book, what happens at the first visit, what to wear or bring, home visits."
+    },
+    "timelines": {
+      "title": "Session length and schedule",
+      "question": "How long a session is, usual schedule (e.g. 3 a week), and follow-up timing."
+    }
+  }
+}

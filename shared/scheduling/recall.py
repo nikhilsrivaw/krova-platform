@@ -97,6 +97,14 @@ async def send_due_recalls(db: AsyncSession) -> int:
     return sent
 
 
+def _asks_for_reviews(business: Business) -> bool:
+    """False for a type whose template forbids asking customers for reviews (see send_review_requests)."""
+    try:
+        return verticals.get(business.vertical).get("review_requests", True) is not False
+    except verticals.UnknownVertical:
+        return True
+
+
 async def send_review_requests(db: AsyncSession) -> int:
     """
     Two trigger paths, matching what each vertical's data model actually
@@ -109,7 +117,10 @@ async def send_review_requests(db: AsyncSession) -> int:
 
     Gated per-business on Business.settings["google_review_url"] being
     set - opt-in, not a default every business suddenly texts customers
-    about.
+    about. And never for a type whose template sets "review_requests": false
+    (healthcare: the NMC's 06.10.2026 advertising guidelines forbid asking
+    patients for reviews or testimonials) - the visit is still stamped, so it
+    is not re-checked on every sweep.
     """
     now = datetime.now(timezone.utc)
     sent = 0
@@ -138,7 +149,7 @@ async def send_review_requests(db: AsyncSession) -> int:
         entry.review_requested_at = now
         business = await db.get(Business, entry.business_id)
         review_url = (business.settings or {}).get("google_review_url") if business else None
-        if business is None or not review_url or entry.customer_id is None:
+        if business is None or not review_url or not _asks_for_reviews(business) or entry.customer_id is None:
             continue
         customer = await db.get(Customer, entry.customer_id)
         if customer is None:
@@ -150,7 +161,7 @@ async def send_review_requests(db: AsyncSession) -> int:
         appointment.review_requested_at = now  # stamped regardless - see below
         business = await db.get(Business, appointment.business_id)
         review_url = (business.settings or {}).get("google_review_url") if business else None
-        if business is None or not review_url:
+        if business is None or not review_url or not _asks_for_reviews(business):
             continue
         customer = await db.get(Customer, appointment.customer_id)
         if customer is None:

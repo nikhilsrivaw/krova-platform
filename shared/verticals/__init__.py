@@ -76,6 +76,8 @@ def available() -> list[dict[str, str]]:
             "key": t["key"],
             "label": t["label"],
             "summary": t["summary"],
+            # A heading to show related types under (e.g. "Healthcare"); None for the main market types.
+            "group": t.get("group"),
             # What this type switches on, in the owner's words - so the screen
             # that asks "what kind of business are you?" can also say what that
             # answer gives them. Only the modules an owner can see and switch;

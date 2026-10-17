@@ -1,0 +1,144 @@
+{
+  "key": "health_lab",
+  "label": "Diagnostic lab or test centre",
+  "group": "Healthcare",
+  "summary": "A pathology lab, collection centre or scan centre where people ask the price of a test or package, whether fasting is needed, book a visit or a home collection slot in their area, and ask when the report will be ready.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "opd_queue",
+    "care_recall"
+  ],
+  "labels": {
+    "queue": {
+      "person": "patient",
+      "ticket": "token",
+      "serving": "Sample collection",
+      "shifts": {
+        "morning": "Morning",
+        "evening": "Evening",
+        "emergency": "Emergency"
+      }
+    },
+    "scheduling": {
+      "provider": "Home collection area or test room",
+      "provider_plural": "Home collection areas and test rooms",
+      "credential_label": "Areas or pincodes covered",
+      "fee_label": "Collection charge",
+      "booking_noun": "collection slot",
+      "booking_noun_plural": "collection slots"
+    }
+  },
+  "tone": "Calm, precise and reassuring. People messaging about their health or a family member's are often worried. Answer the question first, then offer the next step. Never sound rushed and never sound like an advertisement. Match the patient's language: English, Hindi or Hinglish. Plain words, short sentences.",
+  "policies": "Never give medical advice, never suggest a diagnosis, never interpret a report or a test value, and never estimate whether a symptom is serious. Those go to the doctor, always. Never name a specific medical condition, diagnosis, test result or medicine in any message, including reminders - describe it generically ('your follow-up visit', 'your report', 'your refill reminder'). Never recommend, sell or promote a medicine. Quote only fees, charges and packages written in the business details, factually; costs that depend on examination are given by the doctor or the desk. Never offer, invent or hint at a discount, a free test, a limited-period offer or a coupon. Never ask a patient for a review, rating or testimonial, and never share anything about another patient. Ask only for what a booking needs (name, phone, preferred time, and the reason in the patient's own words); never ask for an ID number, insurance card number or medical history in chat. Never confirm a slot that is not free in the calendar. Anything beyond scheduling, billing or logistics - symptoms, medicines, results, treatment choices - is handed to the doctor or the team, never sent automatically, whatever the business's autonomy setting. Give fasting and preparation instructions only as written in the business details for that test; if a test is not listed, say the lab will confirm. For a home collection, book only in the calendar for the customer's area or pincode; if the area is not covered, say so and offer a centre visit. Never say when a report will be ready beyond the times listed, and never discuss what a result means.",
+  "known_gaps": [
+    "Any clinical or diagnostic question, or what a report or test value means",
+    "Whether a specific treatment, test or medicine is right for a patient",
+    "Costs that depend on examination or on the case",
+    "Preparation for a test that is not listed in the business details",
+    "Whether a result is normal or what it means"
+  ],
+  "watch_for": [
+    {
+      "kind": "meeting",
+      "note": "An appointment booked, moved or cancelled, and any follow-up visit promised ('come back in three months') even before it is booked - a recall reminder is built from it."
+    },
+    {
+      "kind": "callback",
+      "note": "A promise that the doctor or the desk will call back, with an answer, an estimate or a time."
+    },
+    {
+      "kind": "document",
+      "note": "A report promised by a time or date, a re-test or second sample needed, or a doctor's prescription the customer will send for the tests."
+    },
+    {
+      "kind": "payment",
+      "note": "A balance due at collection, or an advance paid for a package."
+    }
+  ],
+  "common_questions": [
+    "What is the price of this test or package?",
+    "Do I need to fast, and for how long?",
+    "Can you collect the sample from home in my area?",
+    "Which slots are free tomorrow morning?",
+    "When will the report be ready?",
+    "Will I get the report on WhatsApp?",
+    "Is the lab NABL accredited?",
+    "Can I book for my parents too?"
+  ],
+  "escalate_immediately": [
+    "Any message describing severe pain, bleeding, breathlessness, unconsciousness, an accident or any emergency - tell them to call emergency services or come to the emergency now, and hand over",
+    "Any request to change, explain or interpret a medicine, a dose, a prescription or a report",
+    "Any complaint about treatment, a bill or a staff member"
+  ],
+  "escalate_keywords": [
+    "bleeding",
+    "khoon",
+    "chest pain",
+    "seene mein dard",
+    "saans nahi",
+    "saans lene mein",
+    "behosh",
+    "unconscious",
+    "emergency",
+    "accident",
+    "heart attack",
+    "stroke",
+    "fits aa",
+    "mirgi",
+    "daura pad",
+    "seizure",
+    "suicide",
+    "khudkushi",
+    "poison",
+    "zeher",
+    "prescription",
+    "dose badha",
+    "dose kam",
+    "side effect",
+    "allergy",
+    "allergic",
+    "complaint",
+    "refund",
+    "खून",
+    "सीने में दर्द",
+    "बेहोश",
+    "result normal",
+    "report normal",
+    "report theek",
+    "value high",
+    "value low"
+  ],
+  "review_requests": false,
+  "flow_templates": [],
+  "knowledge_card": {
+    "offers": {
+      "title": "Notices",
+      "question": "Anything patients should know right now: a holiday closure, a doctor on leave, changed timings. No discounts or offers - medical rules do not allow them. Set the last day.",
+      "placeholder": "Closed on ... . Dr ... on leave from ... to ... ."
+    },
+    "trust": {
+      "title": "Qualifications and facilities",
+      "question": "Registration, qualifications, accreditation (NABH, NABL), years running, and facilities (parking, wheelchair access, pharmacy). Facts only - no patient reviews or testimonials.",
+      "placeholder": "Dr ... , MBBS, MD (...), registration no. ... . Parking and lift available."
+    },
+    "changes": {
+      "title": "Cancel, reschedule and refund",
+      "question": "How to cancel or move an appointment, any fee for a missed visit, and when an advance is refunded.",
+      "placeholder": "Reschedule free up to ... before. Advance refunded within ... days if cancelled ... ."
+    },
+    "offerings": {
+      "title": "Top tests and packages",
+      "question": "Your most asked tests and health packages with price and report time (up to 10 lines). Put the full list in the Catalogue.",
+      "placeholder": "... - Rs ... , report in ... hours\n... package (... tests) - Rs ..."
+    },
+    "how_to_buy": {
+      "title": "Booking, home collection and preparation",
+      "question": "How to book a visit or home collection, areas covered and collection charge, and general preparation (fasting hours, what to bring)."
+    },
+    "timelines": {
+      "title": "Report times and delivery",
+      "question": "When reports are usually ready, and how they are sent (WhatsApp, email, pick-up)."
+    }
+  }
+}
