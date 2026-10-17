@@ -55,7 +55,7 @@ def test_no_full_list_line_without_a_link():
 
 def test_knowledge_dict_carries_topic_and_card():
     item = SimpleNamespace(title="Q", kind=KnowledgeKind.faq, content="A", topic=None, extra={"card": "faq"})
-    assert context.knowledge_dict(item) == {"title": "Q", "kind": "faq", "content": "A", "topic": None, "card": "faq"}
+    assert context.knowledge_dict(item) == {"title": "Q", "kind": "faq", "content": "A", "topic": None, "card": "faq", "rows": []}
     field = SimpleNamespace(title="Payment", kind=KnowledgeKind.policy, content="UPI", topic="payment", extra=None)
     assert context.knowledge_dict(field)["topic"] == "payment"
 

@@ -191,7 +191,7 @@ def test_empty_and_huge_files_are_refused_before_any_ai_call(monkeypatch):
 def test_the_tool_offers_exactly_the_card_fields():
     tool = kr._tool(FIELDS, 4)
     props = tool["input_schema"]["properties"]
-    assert set(props) == {f["key"] for f in FIELDS} | {"faqs"}
+    assert set(props) == {f["key"] for f in FIELDS} | {"faqs", "catalogue", "more_questions"}
     assert props["faqs"]["maxItems"] == 4
 
 

@@ -110,8 +110,8 @@ def fields_for(vertical: str) -> list[dict[str, Any]]:
 
 
 def is_other(item: Any) -> bool:
-    """A free note: not a card field, not the Team Card, not a top question."""
-    return not getattr(item, "topic", None) and (getattr(item, "extra", None) or {}).get("card") != "faq"
+    """A free note: not a card field, not the Team Card or Catalogue, not a top question or Question bank answer."""
+    return not getattr(item, "topic", None) and (getattr(item, "extra", None) or {}).get("card") not in ("faq", "bank")
 
 
 def check_other_room(active_others: list[tuple[Any, int]], new_tokens: int) -> str | None:

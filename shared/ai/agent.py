@@ -581,7 +581,7 @@ async def _buffered_voice(route: str, agent_context: ctx.AgentContext) -> _Buffe
     )
     logger.info("voice reply from %s in %.2fs", route, time.perf_counter() - start)
     client._log_usage("reply_voice", route, answer.usage, answer.cost_paise)
-    facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
+    facts = f"{agent_context.render_business()}\n{agent_context.render_live()}\n{agent_context.render_lookup()}"
     text = _escalate_floor(answer.text or "", agent_context)
     if _grounded(text, facts):
         return _Buffered(text, answer.cost_paise)

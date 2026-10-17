@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.billing import limits as plan_limits
-from shared.verticals import knowledge_card
+from shared.verticals import knowledge_card, knowledge_lookup
 from shared.ai import knowledge_reader
 from shared.ai.client import AIError
 from shared.db.models import (
@@ -333,11 +333,22 @@ class ReadFaqOut(BaseModel):
     answer: str
 
 
+class ReadRowOut(BaseModel):
+    name: str
+    price: str
+    details: str
+
+
 class ReadFileOut(BaseModel):
     fields: list[ReadFieldOut]
     faqs: list[ReadFaqOut]
     truncated: bool
     reads_left_today: int
+    # the longer, opened-when-needed knowledge the same file holds
+    catalogue: list[ReadRowOut] = []
+    catalogue_now: int = 0
+    bank: list[ReadFaqOut] = []
+    bank_room: int = 0
 
 
 def _take_file_read(business: Business) -> int:
@@ -380,9 +391,13 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
     rows = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
     by_topic = {r.topic: r for r in rows if r.topic}
     faq_room = knowledge_card.FAQ_LIMIT - sum(1 for r in rows if _is_faq(r))
+    bank_room = knowledge_lookup.BANK_LIMIT - sum(1 for r in rows if _is_bank(r))
+    catalogue_item = by_topic.get(knowledge_lookup.CATALOGUE_TOPIC)
+    catalogue_now = len((catalogue_item.extra or {}).get("catalogue") or []) if catalogue_item else 0
     try:
         reading = await knowledge_reader.read_into_card(
             raw=raw, filename=file.filename or "", content_type=file.content_type, vertical=vertical, faq_room=faq_room,
+            bank_room=bank_room,
         )
     except knowledge_reader.UnreadableFile as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -406,6 +421,10 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
         faqs=[ReadFaqOut(question=q, answer=a) for q, a in reading.faqs],
         truncated=reading.truncated,
         reads_left_today=left,
+        catalogue=[ReadRowOut(**r) for r in reading.catalogue],
+        catalogue_now=catalogue_now,
+        bank=[ReadFaqOut(question=q, answer=a) for q, a in reading.bank],
+        bank_room=bank_room,
     )
 
 
@@ -428,8 +447,13 @@ async def update_knowledge(
         raise HTTPException(status_code=404, detail="Not found")
     content = patch.content.strip() if patch.content is not None else item.content
     active = item.active if patch.active is None else patch.active
-    tokens = len(content) // CHARS_PER_TOKEN
-    if active and (not item.active or tokens > item.token_estimate):
+    lookup = _is_lookup(item)
+    if item.topic == knowledge_lookup.CATALOGUE_TOPIC and patch.content is not None:
+        raise HTTPException(status_code=422, detail="Edit the catalogue on its own tab.")
+    if _is_bank(item) and len(content) > knowledge_lookup.BANK_ANSWER_LIMIT:
+        raise HTTPException(status_code=422, detail=f"Keep an answer to {knowledge_lookup.BANK_ANSWER_LIMIT} characters.")
+    tokens = 0 if lookup else len(content) // CHARS_PER_TOKEN
+    if not lookup and active and (not item.active or tokens > item.token_estimate):
         if knowledge_card.is_other(item):
             await _check_other_room(db, current_user.business, tokens, exclude_id=item.id)
         await _check_room(db, current_user.business, tokens, exclude_id=item.id)
@@ -518,6 +542,15 @@ async def _business_vertical(db, business_id: uuid.UUID) -> str:
 
 def _is_faq(item) -> bool:
     return (item.extra or {}).get("card") == "faq"
+
+
+def _is_bank(item) -> bool:
+    return (item.extra or {}).get("card") == knowledge_lookup.BANK
+
+
+def _is_lookup(item) -> bool:
+    """Opened only when a message matches it (Catalogue, Question bank) - never read whole, so free of the plan budget."""
+    return item.topic == knowledge_lookup.CATALOGUE_TOPIC or _is_bank(item)
 
 
 @router.get("/card", response_model=CardOut)
@@ -669,6 +702,95 @@ async def add_faq(body: FaqIn, current_user: OwnerOrAdminDep, db: DbDep) -> FaqO
     item = KnowledgeItem(
         business_id=current_user.business, title=body.question.strip(), kind=KnowledgeKind.faq, source=KnowledgeSource.typed,
         content=answer, token_estimate=tokens, active=True, resolves_gap=body.resolves_gap, extra={"card": "faq"},
+    )
+    db.add(item)
+    if body.resolves_gap:
+        await _clear_gap(current_user.business, body.resolves_gap, db)
+    await db.flush()
+    return FaqOut(id=str(item.id), question=item.title, answer=item.content, active=True)
+
+
+# ── opened when needed: Catalogue and Question bank (shared/verticals/knowledge_lookup.py) ──────────────────────
+
+class CatalogueRow(BaseModel):
+    name: str = Field(min_length=1, max_length=knowledge_lookup.CATALOGUE_LIMITS["name"])
+    price: str = Field(default="", max_length=knowledge_lookup.CATALOGUE_LIMITS["price"])
+    details: str = Field(default="", max_length=knowledge_lookup.CATALOGUE_LIMITS["details"])
+
+
+class CatalogueIn(BaseModel):
+    rows: list[CatalogueRow] = Field(default_factory=list, max_length=knowledge_lookup.CATALOGUE_ROWS_LIMIT)
+
+
+class CatalogueOut(BaseModel):
+    rows: list[CatalogueRow]
+    limit: int = knowledge_lookup.CATALOGUE_ROWS_LIMIT
+
+
+@router.get("/catalogue", response_model=CatalogueOut)
+async def get_catalogue(current_user: OwnerOrAdminDep, db: DbDep) -> CatalogueOut:
+    item = await _topic_item(db, current_user.business, knowledge_lookup.CATALOGUE_TOPIC)
+    rows = knowledge_lookup.clean_rows((item.extra or {}).get("catalogue") or []) if item else []
+    return CatalogueOut(rows=[CatalogueRow(**r) for r in rows])
+
+
+@router.put("/catalogue", response_model=CatalogueOut)
+async def save_catalogue(body: CatalogueIn, current_user: OwnerOrAdminDep, db: DbDep) -> CatalogueOut:
+    """
+    Replace the whole catalogue. Up to CATALOGUE_ROWS_LIMIT rows; the AI is shown only the few a customer's message
+    names, so a long catalogue does not make every reply dearer. No rows removes it.
+    """
+    rows = knowledge_lookup.clean_rows([r.model_dump() for r in body.rows])
+    existing = await _topic_item(db, current_user.business, knowledge_lookup.CATALOGUE_TOPIC)
+    if not rows:
+        if existing is not None:
+            await db.delete(existing)
+        return CatalogueOut(rows=[])
+    text = "\n".join(knowledge_lookup.row_line(r) for r in rows)
+    if existing is None:
+        db.add(KnowledgeItem(
+            business_id=current_user.business, title="Catalogue", kind=KnowledgeKind.price_list,
+            source=KnowledgeSource.typed, content=text, token_estimate=0, active=True,
+            topic=knowledge_lookup.CATALOGUE_TOPIC, extra={"catalogue": rows},
+        ))
+    else:
+        existing.content, existing.token_estimate, existing.active = text, 0, True
+        existing.extra = {"catalogue": rows}
+    await db.flush()
+    return CatalogueOut(rows=[CatalogueRow(**r) for r in rows])
+
+
+class BankIn(BaseModel):
+    question: str = Field(min_length=1, max_length=knowledge_lookup.BANK_QUESTION_LIMIT)
+    answer: str = Field(min_length=1, max_length=knowledge_lookup.BANK_ANSWER_LIMIT)
+    resolves_gap: str | None = None
+
+
+class BankOut(BaseModel):
+    items: list[FaqOut]
+    limit: int = knowledge_lookup.BANK_LIMIT
+
+
+@router.get("/bank", response_model=BankOut)
+async def get_bank(current_user: OwnerOrAdminDep, db: DbDep) -> BankOut:
+    rows = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
+    bank = sorted((r for r in rows if _is_bank(r)), key=lambda r: r.created_at or datetime.min.replace(tzinfo=timezone.utc))
+    return BankOut(items=[FaqOut(id=str(r.id), question=r.title, answer=r.content, active=r.active) for r in bank])
+
+
+@router.post("/bank", response_model=FaqOut, status_code=status.HTTP_201_CREATED)
+async def add_to_bank(body: BankIn, current_user: OwnerOrAdminDep, db: DbDep) -> FaqOut:
+    """One more saved answer, shown to the AI only when a customer asks something like it."""
+    rows = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
+    if sum(1 for r in rows if _is_bank(r)) >= knowledge_lookup.BANK_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The question bank holds {knowledge_lookup.BANK_LIMIT} answers. Remove one you no longer need first.",
+        )
+    item = KnowledgeItem(
+        business_id=current_user.business, title=body.question.strip(), kind=KnowledgeKind.faq,
+        source=KnowledgeSource.typed, content=body.answer.strip(), token_estimate=0, active=True,
+        resolves_gap=body.resolves_gap, extra={"card": knowledge_lookup.BANK},
     )
     db.add(item)
     if body.resolves_gap:

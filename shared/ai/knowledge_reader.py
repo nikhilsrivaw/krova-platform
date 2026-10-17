@@ -18,7 +18,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from shared.ai import client
-from shared.verticals import knowledge_card
+from shared.verticals import knowledge_card, knowledge_lookup
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,6 +34,8 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 # to fill it, and it keeps one read cheap.
 MAX_TEXT_CHARS = 40_000
 MAX_PDF_PAGES = 30
+# Room for the card plus a full catalogue (300 rows is about 6,000 tokens). Only what is written is billed.
+MAX_OUTPUT_TOKENS = 9000
 
 SYSTEM = """You fill in a small business's knowledge card from a document the owner gave you (a price list, menu,
 brochure, rate card, FAQ sheet or a photo of one).
@@ -50,6 +52,10 @@ Rules:
 - "offers" only for an offer or notice the document states, with its end date if given.
 - Top questions: only question-and-answer pairs the document itself answers, at most the number asked for,
   each answer one or two short sentences.
+- Catalogue: EVERY item the document prices or lists (products, services, plans, models, menu dishes), one row each:
+  its name, its price exactly as written with its unit, and a few words of detail (size, variant, what is included).
+  This is the long list - "offerings" above keeps only the top ones.
+- More questions: further question-and-answer pairs the document answers that did not fit in the top questions.
 - Language: write in ENGLISH. Only if the document itself is written in Hindi or Hinglish, write in that. Never French,
   Spanish or any other language, whatever language you usually answer in."""
 
@@ -60,6 +66,9 @@ class CardReading:
     faqs: list[tuple[str, str]] = dc_field(default_factory=list)
     truncated: bool = False
     cost_paise: int = 0
+    # the opened-when-needed knowledge the file also holds (shared/verticals/knowledge_lookup.py)
+    catalogue: list[dict[str, str]] = dc_field(default_factory=list)
+    bank: list[tuple[str, str]] = dc_field(default_factory=list)
 
 
 class UnreadableFile(Exception):
@@ -79,7 +88,7 @@ def media_type_for(filename: str, content_type: str | None) -> str:
     raise UnreadableFile("Upload a PDF, a photo (JPG, PNG, WebP) or a text file (.txt, .md, .csv).")
 
 
-def _tool(fields: list[dict[str, Any]], faq_room: int) -> dict[str, Any]:
+def _tool(fields: list[dict[str, Any]], faq_room: int, bank_room: int = 0) -> dict[str, Any]:
     props: dict[str, Any] = {
         f["key"]: {
             "type": "string",
@@ -96,6 +105,34 @@ def _tool(fields: list[dict[str, Any]], faq_room: int) -> dict[str, Any]:
             "properties": {
                 "question": {"type": "string", "description": f"At most {knowledge_card.FAQ_QUESTION_LIMIT} characters."},
                 "answer": {"type": "string", "description": f"At most {knowledge_card.FAQ_ANSWER_LIMIT} characters."},
+            },
+            "required": ["question", "answer"],
+        },
+    }
+    limits = knowledge_lookup.CATALOGUE_LIMITS
+    props["catalogue"] = {
+        "type": "array",
+        "maxItems": knowledge_lookup.CATALOGUE_ROWS_LIMIT,
+        "description": "Every priced or listed item in the document, one row each. Empty if it lists none.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": f"At most {limits['name']} characters."},
+                "price": {"type": "string", "description": f"Exactly as written, with its unit. At most {limits['price']} characters."},
+                "details": {"type": "string", "description": f"Size, variant or what is included. At most {limits['details']} characters."},
+            },
+            "required": ["name", "price", "details"],
+        },
+    }
+    props["more_questions"] = {
+        "type": "array",
+        "maxItems": bank_room,
+        "description": f"Up to {bank_room} more questions the document answers, beyond the top questions.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": f"At most {knowledge_lookup.BANK_QUESTION_LIMIT} characters."},
+                "answer": {"type": "string", "description": f"At most {knowledge_lookup.BANK_ANSWER_LIMIT} characters."},
             },
             "required": ["question", "answer"],
         },
@@ -173,6 +210,21 @@ _FOREIGN_WORDS = {"est", "les", "des", "une", "pour", "avec", "dans", "sur", "vo
                   "entreprise", "appels", "sont", "los", "las", "para", "con", "una", "del", "empresa"}
 
 
+def clean_lookup(tool_input: dict[str, Any] | None, bank_room: int) -> tuple[list[dict[str, str]], list[tuple[str, str]]]:
+    """Catalogue rows within their limits (no nameless rows), and saved answers within theirs."""
+    raw = tool_input or {}
+    rows = knowledge_lookup.clean_rows([r for r in raw.get("catalogue") or [] if isinstance(r, dict)])
+    bank: list[tuple[str, str]] = []
+    for pair in raw.get("more_questions") or []:
+        if not isinstance(pair, dict):
+            continue
+        q = str(pair.get("question") or "").strip()[: knowledge_lookup.BANK_QUESTION_LIMIT]
+        a = str(pair.get("answer") or "").strip()[: knowledge_lookup.BANK_ANSWER_LIMIT]
+        if q and a:
+            bank.append((q, a))
+    return rows, bank[: max(0, bank_room)]
+
+
 def looks_foreign(values: dict[str, str], faqs: list[tuple[str, str]]) -> bool:
     text = " ".join([*values.values(), *(q + " " + a for q, a in faqs)]).lower()
     words = re.findall(r"[a-zà-ÿ]+", text)
@@ -182,7 +234,9 @@ def looks_foreign(values: dict[str, str], faqs: list[tuple[str, str]]) -> bool:
     return hits >= 4 and hits / len(words) > 0.04
 
 
-async def read_into_card(*, raw: bytes, filename: str, content_type: str | None, vertical: str, faq_room: int) -> CardReading:
+async def read_into_card(
+    *, raw: bytes, filename: str, content_type: str | None, vertical: str, faq_room: int, bank_room: int = 0,
+) -> CardReading:
     """One read of the file; returns suggestions for the card. Saves nothing."""
     if len(raw) > MAX_FILE_BYTES:
         raise UnreadableFile("That file is too large. Keep it under 5 MB.")
@@ -191,12 +245,12 @@ async def read_into_card(*, raw: bytes, filename: str, content_type: str | None,
     media_type = media_type_for(filename, content_type)
     block, truncated = _content(raw, media_type)
     fields = knowledge_card.fields_for(vertical)
-    tool = _tool(fields, max(0, faq_room))
+    tool = _tool(fields, max(0, faq_room), max(0, bank_room))
     ask = "Fill the card from this document. Write in English (or Hindi/Hinglish only if the document is in that)."
     completion = await client.complete(
         system=SYSTEM,
         messages=[{"role": "user", "content": [block, {"type": "text", "text": ask}]}],
-        speed="fast", task="knowledge_read_file", tool=tool, max_tokens=3000,
+        speed="fast", task="knowledge_read_file", tool=tool, max_tokens=MAX_OUTPUT_TOKENS,
     )
     cost = completion.cost_paise
     values, faqs = clean(fields, completion.tool_input, max(0, faq_room))
@@ -206,12 +260,13 @@ async def read_into_card(*, raw: bytes, filename: str, content_type: str | None,
         completion = await client.complete(
             system=SYSTEM,
             messages=[{"role": "user", "content": [block, {"type": "text", "text": ask + " Your last answer was in French - answer in English."}]}],
-            speed="fast", task="knowledge_read_file", tool=tool, max_tokens=3000,
+            speed="fast", task="knowledge_read_file", tool=tool, max_tokens=MAX_OUTPUT_TOKENS,
         )
         cost += completion.cost_paise
         values, faqs = clean(fields, completion.tool_input, max(0, faq_room))
         if looks_foreign(values, faqs):
             raise UnreadableFile("We could not read this file in English. Try again, or type it into the card.")
-    if not values and not faqs:
+    rows, bank = clean_lookup(completion.tool_input, bank_room)
+    if not values and not faqs and not rows and not bank:
         logger.info("knowledge file read found nothing usable file=%s", filename)
-    return CardReading(fields=values, faqs=faqs, truncated=truncated, cost_paise=cost)
+    return CardReading(fields=values, faqs=faqs, truncated=truncated, cost_paise=cost, catalogue=rows, bank=bank)

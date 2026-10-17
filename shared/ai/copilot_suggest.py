@@ -82,7 +82,7 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
     text = completion.text.strip()
     if not text or text.upper() == "NONE":
         return Suggestion(text=None, cost_paise=completion.cost_paise)
-    facts = f"{agent_context.render_business()}\n{agent_context.render_live()}"
+    facts = f"{agent_context.render_business()}\n{agent_context.render_live()}\n{agent_context.render_lookup()}"
     if unsafe_suggestion(text, facts):
         logger.info("copilot suggestion dropped by guard: %r", text[:160])
         return Suggestion(text=None, cost_paise=completion.cost_paise)
