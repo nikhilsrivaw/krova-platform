@@ -34,7 +34,8 @@ def test_every_template_is_well_formed(t):
         "Meta refuses a body that starts or ends with a variable"
     )
     assert t.category in ("UTILITY", "MARKETING")
-    assert t.capability in SWITCHABLE
+    # every template belongs to a feature an owner can switch, or to Automations (offered on its own page)
+    assert t.capability in SWITCHABLE or t.capability == "automations"
     assert t.purpose and (t.one_click or t.note), "a template KROVA cannot create must say why"
 
 
@@ -111,6 +112,7 @@ def test_every_template_has_the_variable_count_its_sender_passes(monkeypatch):
         await notify.send_onboarding_nudge(None, business=biz, customer=cust)
         await notify.send_expansion_nudge(None, business=biz, customer=cust)
         await notify.send_payment_failed_reminder(None, business=biz, customer=cust, invoice_url="https://x/pay")
+        await notify.send_post_call_followup(None, business=biz, customer=cust, message="See you on Monday")
 
     asyncio.run(run())
 
@@ -391,3 +393,15 @@ def test_the_examples_endpoint_lists_every_template_with_buttons_and_samples():
     assert cod.buttons == ["Confirm Order", "Cancel Order"]
     assert cod.examples == {"1": "Asha", "2": "1042", "3": "₹1,499"}
     assert by_name["appointment_reminder"].feature == "Appointments & staff calendar"
+
+
+def test_the_automation_follow_up_template_is_offered_and_well_formed():
+    t = rt.BY_NAME["post_call_followup"]
+    assert t.capability == "automations" and t.category == "UTILITY" and t.one_click
+    assert rt.for_capability("automations") == [t]
+
+
+def test_the_automations_page_can_see_and_create_its_template():
+    from services.api.routers import post_call_rules as r
+    paths = {(m, route.path) for route in r.router.routes for m in getattr(route, "methods", set())}
+    assert ("GET", "/post-call-rules/templates") in paths and ("POST", "/post-call-rules/templates") in paths

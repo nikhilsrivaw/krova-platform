@@ -85,6 +85,17 @@ CATALOGUE: tuple[RequiredTemplate, ...] = (
         ("Dr. Sharma", "Monday, 12 May at 10:00 AM"),
         "Sent shortly before an appointment.",
     ),
+    # ── automations ─────────────────────────────────────────────────────────
+    # Every "Send a WhatsApp follow-up" step goes through this one template (notify.POST_CALL_FOLLOWUP_TEMPLATE_NAME):
+    # it usually runs outside the 24-hour window, where only a template may start a conversation. {{1}} is the rule's
+    # own message. Not tied to a switchable feature - the Automations page offers it.
+    RequiredTemplate(
+        "post_call_followup", "automations", "UTILITY",
+        "Hello! {{1}} - Reply to this message if you have any questions.",
+        ("The message your automation sends",),
+        ("Your appointment on 25 Oct has been cancelled. Reply to choose a new time.",),
+        "Sent by every 'Send a WhatsApp follow-up' step in Automations.",
+    ),
     # ── walk-in queue ───────────────────────────────────────────────────────
     RequiredTemplate(
         "queue_checkin_confirmation", "opd_queue", "UTILITY",

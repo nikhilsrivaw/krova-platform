@@ -133,6 +133,7 @@ _add("POST", "/payments/queue/{entry_id}/link", "payment_link_sent", "Sent a pay
 _add("POST", "/payments/appointments/{appointment_id}/link", "payment_link_sent", "Sent a payment link for an appointment", WORK)
 _add("PUT", "/payments/gateway", "payment_gateway_connected", "Connected the payment gateway", SECURITY)
 _add("PUT", "/payments/auto", "payment_auto_link_changed", "Changed automatic payment links", CONFIG)
+_add("POST", "/post-call-rules/templates", "templates_requested", "Asked Meta to approve the automation template", CONFIG)
 _add("DELETE", "/payments/gateway", "payment_gateway_disconnected", "Disconnected the payment gateway", SECURITY)
 
 # Reaches many customers, or keeps acting on its own.

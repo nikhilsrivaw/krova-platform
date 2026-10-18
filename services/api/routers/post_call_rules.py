@@ -557,6 +557,50 @@ class RunHistoryOut(BaseModel):
     runs: list[RunLogOut]
 
 
+# ── the WhatsApp template a follow-up step needs ─────────────────────────────
+
+class AutomationTemplateOut(BaseModel):
+    name: str
+    # approved | pending | rejected | missing | other
+    state: str
+    reason: str | None
+    purpose: str
+
+
+@router.get("/templates", response_model=list[AutomationTemplateOut])
+async def automation_templates(current_user: CurrentUserDep, db: DbDep) -> list[AutomationTemplateOut]:
+    """
+    The templates Automations' own actions need (today: post_call_followup, behind every 'Send a WhatsApp
+    follow-up' step), and where each stands - so a rule is never saved that silently cannot send.
+    """
+    from shared.channels.whatsapp import required_templates
+
+    states = await required_templates.statuses(db, current_user.business)
+    return [
+        AutomationTemplateOut(name=t.name, state=states[t.name][0], reason=states[t.name][1], purpose=t.purpose)
+        for t in required_templates.for_capability("automations")
+    ]
+
+
+class AutomationTemplatesCreatedOut(BaseModel):
+    created: list[str]
+    already_there: list[str]
+    failed: list[dict]
+
+
+@router.post("/templates", response_model=AutomationTemplatesCreatedOut)
+async def create_automation_templates(current_user: OwnerOrAdminDep, db: DbDep) -> AutomationTemplatesCreatedOut:
+    """Submit the missing automation template(s) to Meta. Safe to press twice; approval can take Meta up to a day."""
+    from shared.channels.whatsapp import required_templates, template_service
+
+    try:
+        report = await required_templates.create_missing(db, current_user.business, "automations")
+    except template_service.WhatsAppNotReady as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    await db.commit()
+    return AutomationTemplatesCreatedOut(created=report.created, already_there=report.already_there, failed=report.failed)
+
+
 @router.get("/runs", response_model=RunHistoryOut)
 async def list_runs(
     current_user: CurrentUserDep,

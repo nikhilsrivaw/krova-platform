@@ -291,7 +291,8 @@ async def list_template_examples(current_user: CurrentUserDep) -> list[TemplateE
             examples={str(i): v for i, v in enumerate(t.examples, start=1)},
             variables=list(t.variables), buttons=list(t.buttons),
             purpose=t.purpose, note=t.note,
-            feature=SWITCHABLE[t.capability].label,
+            # automations' own template belongs to no switchable feature
+            feature=SWITCHABLE[t.capability].label if t.capability in SWITCHABLE else "Automations",
         )
         for t in required_templates.CATALOGUE
     ]
