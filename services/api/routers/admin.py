@@ -5,8 +5,8 @@ happening across every business so the operator can check things without opening
 Who may use it: only staff who sign in at POST /admin/login (the emails and password hashes in the
 server's ADMIN_PANEL_USERS). That is a separate sign-in from customer accounts; its token travels in the
 X-Admin-Token header and is rejected on every other route. Without it every route here is 401.
-The one thing it changes is a number request's status/notes (PATCH /admin/number-requests/{id}).
-Nothing else here writes.
+It changes two things: a number request's status/notes (PATCH /admin/number-requests/{id}), and a
+support ticket's status and the team's reply to it (PATCH /admin/support-tickets/{id}). Nothing else here writes.
 """
 
 import uuid
@@ -32,6 +32,8 @@ from shared.db.models import (
     NumberRequestStatus,
     Payment,
     Subscription,
+    SupportTicket,
+    SupportTicketStatus,
     UsageEvent,
     UsageEventType,
     User,
@@ -127,6 +129,7 @@ class Overview(BaseModel):
     wallets_low: int
     wallets_rent_short: int
     number_requests_waiting: int
+    support_tickets_open: int = 0
     number_requests_with_plivo: int
     payments_failed_7d: int
     payments_pending_old: int
@@ -165,6 +168,7 @@ async def overview(who: AdminDep, db: DbDep) -> Overview:
         wallets_low=await count(Wallet, Wallet.balance_paise < plans.LOW_BALANCE_PAISE),
         wallets_rent_short=await count(Wallet, Wallet.rent_short_since.is_not(None)),
         number_requests_waiting=await count(NumberRequest, NumberRequest.status == NumberRequestStatus.requested),
+        support_tickets_open=await count(SupportTicket, SupportTicket.status != SupportTicketStatus.resolved),
         number_requests_with_plivo=await count(
             NumberRequest, NumberRequest.status == NumberRequestStatus.submitted_to_plivo
         ),
@@ -463,3 +467,78 @@ async def update_number_request(request_id: uuid.UUID, body: NumberRequestUpdate
         justification=row.justification, bfsi_declaration=row.bfsi_declaration, status=row.status.value,
         admin_notes=row.admin_notes, provisioned_number=row.provisioned_number, created_at=row.created_at.isoformat(),
     )
+
+
+# ── support tickets (from the Help page) ─────────────────────────────────────
+
+class AdminTicket(BaseModel):
+    id: str
+    number: str
+    business_id: str
+    business_name: str | None
+    raised_by: str | None
+    raised_by_contact: str | None
+    subject: str
+    category: str
+    details: str
+    page: str | None
+    transcript: list[dict]
+    status: str
+    reply: str | None
+    replied_at: str | None
+    replied_by: str | None
+    created_at: str
+
+
+async def _ticket_rows(db, rows: list[SupportTicket]) -> list[AdminTicket]:
+    from services.api.routers.help import ticket_number
+
+    bids = list({t.business_id for t in rows})
+    uids = list({t.created_by_user_id for t in rows if t.created_by_user_id})
+    names = {b.id: b.name for b in (await db.execute(select(Business).where(Business.id.in_(bids)))).scalars().all()} if bids else {}
+    users = {u.id: u for u in (await db.execute(select(User).where(User.id.in_(uids)))).scalars().all()} if uids else {}
+    out = []
+    for t in rows:
+        u = users.get(t.created_by_user_id)
+        out.append(AdminTicket(
+            id=str(t.id), number=ticket_number(t), business_id=str(t.business_id), business_name=names.get(t.business_id),
+            raised_by=u.full_name if u else None,
+            raised_by_contact=" · ".join(x for x in [u.email, u.phone] if x) if u else None,
+            subject=t.subject, category=t.category.value, details=t.details, page=t.page,
+            transcript=list(t.transcript or []), status=t.status.value, reply=t.reply,
+            replied_at=_iso(t.replied_at), replied_by=t.replied_by, created_at=t.created_at.isoformat(),
+        ))
+    return out
+
+
+@router.get("/support-tickets", response_model=list[AdminTicket])
+async def support_tickets(who: AdminDep, db: DbDep, state: str | None = Query(default=None)) -> list[AdminTicket]:
+    q = select(SupportTicket).order_by(SupportTicket.created_at.desc()).limit(300)
+    if state == "open":
+        q = q.where(SupportTicket.status != SupportTicketStatus.resolved)
+    return await _ticket_rows(db, list((await db.execute(q)).scalars().all()))
+
+
+class TicketUpdate(BaseModel):
+    status: str | None = None
+    reply: str | None = None
+
+
+@router.patch("/support-tickets/{ticket_id}", response_model=AdminTicket)
+async def update_support_ticket(ticket_id: uuid.UUID, body: TicketUpdate, who: AdminDep, db: DbDep) -> AdminTicket:
+    """The business sees the reply and status on its Help page."""
+    ticket = await db.get(SupportTicket, ticket_id)
+    if ticket is None:
+        raise HTTPException(404, "No such ticket")
+    if body.status is not None:
+        try:
+            ticket.status = SupportTicketStatus(body.status)
+        except ValueError as exc:
+            raise HTTPException(422, f"status must be one of {[s.value for s in SupportTicketStatus]}") from exc
+    if body.reply is not None and body.reply.strip() != (ticket.reply or ""):
+        ticket.reply = body.reply.strip() or None
+        ticket.replied_at = _now() if ticket.reply else None
+        ticket.replied_by = who if ticket.reply else None
+    await db.commit()
+    await db.refresh(ticket)
+    return (await _ticket_rows(db, [ticket]))[0]

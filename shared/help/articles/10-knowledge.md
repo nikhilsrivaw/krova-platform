@@ -1,0 +1,24 @@
+# Teaching the AI (Knowledge & Gaps)
+
+The AI answers customers only from what you give it here. If it gets something wrong or says it doesn't know, the fix is almost always on this page.
+
+## Business card
+Knowledge & Gaps page → Business card. The key facts of your business (prices, hours, address, policies) and your top questions with short answers. The AI reads it on every message, so keep it short and correct. Changes are used from the next message.
+
+## Fill from a file
+Upload a price list, menu, brochure or FAQ (PDF, photo, text, CSV - up to 5 MB, 5 files a day). KROVA suggests what goes on your Business card; tick what is right, edit, and press Save. The file is not kept.
+
+## Team card
+Who customers can ask for, how to reach you, languages you reply in and when you reply. The AI never promises that a person is free right now.
+
+## Catalogue
+Every product, service, plan or dish with its price. The AI is shown only the items a customer names, so list everything - it doesn't make replies dearer. Paste a list (Name - Price - Details, one per line) or fill it from a file.
+
+## Question bank
+More answers beyond your top questions. The AI sees one only when a customer asks something like it.
+
+## Gaps queue
+Real questions customers asked that the AI couldn't answer. For each: add the answer to the Business card, add it as a top question or to the question bank, choose "Always hand this to me" (the AI will pass such questions to a person), or dismiss it.
+
+## Extra knowledge entries
+Short notes for things that fit nowhere on the Business card. Every entry that is on is read on every message, so there is a size limit (your plan sets it).

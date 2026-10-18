@@ -88,7 +88,7 @@ LOCKED = {(m, _P + path) for m, path in [
     # how much the AI does on its own, which features are on, and the owner's money assistant
     ("POST", "/approvals/autonomy"), ("PATCH", "/approvals/auto-send-rules"),
     ("PUT", "/payments/gateway"), ("DELETE", "/payments/gateway"), ("PUT", "/payments/auto"), ("POST", "/post-call-rules/templates"), ("PUT", "/post-call-rules/limits"),
-    ("POST", "/post-call-rules/ai-draft"),
+    ("POST", "/post-call-rules/ai-draft"), ("POST", "/help/ask"), ("POST", "/help/tickets"),
     ("PUT", "/capabilities/{key}"), ("POST", "/capabilities/{key}/templates"),
     ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
     # what the AI is taught to say
@@ -117,7 +117,7 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     ("GET", "/analytics/overview"), ("GET", "/analytics/team"), ("GET", "/analytics/agent"),
     ("GET", "/analytics/kept"), ("GET", "/analytics/channels"), ("GET", "/analytics/response-speed"),
     ("GET", "/analytics/receivables"), ("GET", "/analytics/trust-report"),
-    ("GET", "/ledger/export/tally"),
+    ("GET", "/ledger/export/tally"), ("GET", "/help/tickets"),
     ("GET", "/migration/whatsapp/readiness"),
     ("GET", "/voice-onboarding/compliance/state"), ("GET", "/voice-onboarding/compliance/requirements"),
     ("GET", "/voice-onboarding/compliance/status"), ("GET", "/voice-onboarding/numbers/owned"),

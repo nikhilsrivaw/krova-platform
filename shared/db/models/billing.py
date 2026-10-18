@@ -51,6 +51,8 @@ class UsageEventType(str, enum.Enum):
     # One reply of the Automations page's "describe it" builder - see shared/ai/rule_builder.py. Also what its
     # monthly allowance is counted from.
     ai_rule_builder = "ai_rule_builder"
+    # One KROVA Buddy answer on the Help page (shared/help) - also what its monthly allowance is counted from.
+    ai_help_assistant = "ai_help_assistant"
 
     # Voice-specific, one row per cost component per call, matching the
     # breakdown already computed in relay.py rather than collapsing them

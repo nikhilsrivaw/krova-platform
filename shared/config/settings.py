@@ -229,6 +229,9 @@ class Settings(BaseSettings):
     gmail_smtp_email: str = Field(default="", alias="GMAIL_SMTP_EMAIL")
     gmail_smtp_app_password: str = Field(default="", alias="GMAIL_SMTP_APP_PASSWORD")
     otp_voice_from_number: str = Field(default="", alias="OTP_VOICE_FROM_NUMBER")
+    # Where a Help-page ticket is emailed (through the same Gmail account as OTPs - a handful a day, to our own
+    # inbox). Blank = no email; tickets are in the admin panel either way.
+    support_email: str = Field(default="support@aqirox.com", alias="SUPPORT_EMAIL")
 
     # A Krova-owned, Postmark-verified sender address used ONLY for
     # internal-ops alerts to a business's own staff (e.g. the escalation

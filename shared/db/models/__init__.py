@@ -84,6 +84,7 @@ from shared.db.models.flow import FlowSendLog, FlowStatus, WhatsAppFlow
 from shared.db.models.job import Job, JobStatus
 from shared.db.models.knowledge import KnowledgeItem, KnowledgeKind, KnowledgeSource
 from shared.db.models.number_request import NumberRequest, NumberRequestStatus, NumberRequestType
+from shared.db.models.support import SupportTicket, SupportTicketCategory, SupportTicketStatus
 from shared.db.models.order import AbandonedCheckout, Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.db.models.otp import OtpCode
 from shared.db.models.product import Product, ProductVariant
@@ -185,6 +186,9 @@ __all__ = [
     "NumberRequest",
     "NumberRequestStatus",
     "NumberRequestType",
+    "SupportTicket",
+    "SupportTicketCategory",
+    "SupportTicketStatus",
     "MessageDraft",
     "MessageTemplate",
     "Order",

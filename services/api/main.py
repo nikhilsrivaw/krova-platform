@@ -64,6 +64,7 @@ from services.api.routers import (
     public_api,
     queue,
     post_call_rules,
+    help as help_router,
     scheduling,
     signals,
     team,
@@ -186,6 +187,7 @@ app.include_router(migration.router, prefix=API_PREFIX)
 app.include_router(voice_provisioning.router, prefix=API_PREFIX)
 app.include_router(team_calls.router, prefix=API_PREFIX)
 app.include_router(post_call_rules.router, prefix=API_PREFIX)
+app.include_router(help_router.router, prefix=API_PREFIX)
 app.include_router(scheduling.router, prefix=API_PREFIX)
 app.include_router(orders.router, prefix=API_PREFIX)
 app.include_router(products.router, prefix=API_PREFIX)
