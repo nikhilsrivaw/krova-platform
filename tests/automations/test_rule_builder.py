@@ -91,12 +91,15 @@ class FakeDb:
         return SimpleNamespace(name="Sharma Store", vertical="retail", settings={})
 
 
-def _run(monkeypatch, answers, used=0):
+def _run(monkeypatch, answers, used=0, turns=None):
     calls = []
 
     async def fake_answer(**kwargs):
         calls.append(kwargs)
-        return answers.pop(0)
+        item = answers.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     async def fake_used(db, business_id):
         return used
@@ -109,7 +112,7 @@ def _run(monkeypatch, answers, used=0):
     monkeypatch.setattr(post_call_rules, "_template_names", fake_templates)
     monkeypatch.setattr(post_call_rules, "capabilities_for", lambda b: [])
     db = FakeDb()
-    body = post_call_rules.DraftIn(turns=[{"role": "owner", "text": "naye lead ko turant WhatsApp bhejo"}])
+    body = post_call_rules.DraftIn(turns=turns or [{"role": "owner", "text": "naye lead ko turant WhatsApp bhejo"}])
     user = SimpleNamespace(business=uuid.uuid4())
     out = asyncio.run(post_call_rules.ai_draft(body, user, db))
     return out, db, calls
@@ -149,14 +152,52 @@ def test_twice_invalid_is_never_shown_as_a_rule(monkeypatch):
     assert out.kind == "ask" and out.rule is None
 
 
-def test_model_down_is_a_clear_message_and_still_commits(monkeypatch):
-    async def boom(**kwargs):
-        raise RuntimeError("401")
-
-    monkeypatch.setattr(post_call_rules.rule_builder, "answer", boom)
+def test_model_down_is_a_clear_message(monkeypatch):
     with pytest.raises(HTTPException) as err:
-        _run(monkeypatch, [])
+        _run(monkeypatch, [RuntimeError("401")])
     assert err.value.status_code == 502 and "could not be reached" in err.value.detail
+
+
+def test_the_retry_sees_the_refused_draft(monkeypatch):
+    bad = {**GOOD, "steps": [{"action_type": "add_tag", "action_config": {}, "conditions": [], "delay_seconds": None}]}
+    _out, _db, calls = _run(monkeypatch, [
+        rule_builder.BuilderAnswer(kind="rule", text="x", rule=bad),
+        rule_builder.BuilderAnswer(kind="rule", text="ok", rule=GOOD),
+    ])
+    assert calls[0]["refused"] is None and calls[1]["refused"] == bad
+
+
+def test_a_daily_rule_that_would_message_every_day_gets_another_try(monkeypatch):
+    daily = {**GOOD, "trigger_type": "commitment.overdue"}
+    fixed = {**daily, "steps": [{**GOOD["steps"][0], "conditions": [
+        {"field": "days_overdue", "operator": "equals", "value": 3}]}]}
+    out, _db, calls = _run(monkeypatch, [
+        rule_builder.BuilderAnswer(kind="rule", text="x", rule=daily),
+        rule_builder.BuilderAnswer(kind="rule", text="ok", rule=fixed),
+    ])
+    assert "every day" in calls[1]["fix"] and out.rule.steps[0].conditions[0].value == 3
+
+
+def test_a_long_ai_reply_is_cut_to_what_the_next_turn_accepts(monkeypatch):
+    out, _db, _ = _run(monkeypatch, [rule_builder.BuilderAnswer(kind="ask", text="x" * 1500)])
+    assert len(out.text) == 1000
+    post_call_rules.DraftTurnIn(role="ai", text=out.text)
+
+
+def test_an_ai_turn_carries_its_rule_to_the_model(monkeypatch):
+    turns = [
+        {"role": "owner", "text": "lead ko WhatsApp bhejo"},
+        {"role": "ai", "text": "Ban gaya", "rule": GOOD},
+        {"role": "owner", "text": "1 din baad call bhi karo"},
+    ]
+    _out, _db, calls = _run(monkeypatch, [rule_builder.BuilderAnswer(kind="ask", text="?")], turns=turns)
+    assert calls[0]["turns"][1].rule == GOOD and calls[0]["turns"][0].rule is None
+
+
+def test_the_drafted_rule_is_in_the_conversation_the_model_reads():
+    turn = rule_builder.Turn(role="ai", text="Ban gaya", rule={"trigger_type": "lead.received"})
+    assert '"lead.received"' in rule_builder._as_message(turn)
+    assert rule_builder._as_message(rule_builder.Turn(role="owner", text="hi")) == "hi"
 
 
 def test_a_question_passes_through(monkeypatch):
@@ -172,3 +213,40 @@ def test_the_monthly_allowance_is_enforced_before_any_ai_call(monkeypatch):
 
 def test_time_fields_are_in_the_engine_the_prompt_names():
     assert set(post_call_actions.TIME_FIELDS) == {"hour_of_day", "weekday"}
+
+
+# ── cleaning values the model wrote loosely ─────────────────────────────────
+
+def test_values_are_given_their_real_type():
+    raw = _raw(steps=[{
+        "action_type": "whatsapp_followup", "action_config": {"message": "x"}, "delay_seconds": "86400",
+        "conditions": [
+            {"field": "days_overdue", "operator": "equals", "value": "3"},
+            {"field": "weekday", "operator": "equals", "value": "Sunday"},
+            {"field": "description", "operator": "contains", "value": "3"},
+        ],
+    }], reentry_days="7")
+    rule = rule_builder._clean(raw, ["commitment.overdue"], [])
+    values = [c["value"] for c in rule["steps"][0]["conditions"]]
+    assert values == [3, "sunday", "3"]
+    assert rule["steps"][0]["delay_seconds"] == 86400 and rule["reentry_days"] == 7
+    assert rule_builder._typed("fully_paid", "true") is True and rule_builder._typed("is_cod", "no") is False
+    assert rule_builder._typed("amount_paise", "50000.0") == 50000
+
+
+def test_daily_problem_only_where_it_applies():
+    step = {"action_type": "whatsapp_followup", "conditions": []}
+    assert rule_builder.problem({"trigger_type": "customer.inactive", "steps": [step]})
+    assert rule_builder.problem({"trigger_type": "customer.inactive", "reentry_days": 30, "steps": [step]}) is None
+    assert rule_builder.problem({"trigger_type": "lead.received", "steps": [step]}) is None
+    team = {"action_type": "notify_team", "conditions": []}
+    assert rule_builder.problem({"trigger_type": "commitment.overdue", "steps": [team]}) is None
+    ok = {"action_type": "place_call", "conditions": [{"field": "days_overdue", "operator": "equals", "value": 7}]}
+    assert rule_builder.problem({"trigger_type": "commitment.overdue", "steps": [ok]}) is None
+
+
+def test_number_fields_match_the_engine():
+    every = {f for fields in post_call_actions.CONDITION_FIELDS.values() for f in fields} | set(post_call_actions.TIME_FIELDS)
+    assert rule_builder.NUMBER_FIELDS <= every and rule_builder.BOOLEAN_FIELDS <= every
+    for trigger, fields in rule_builder.DAY_FIELDS.items():
+        assert set(fields) <= set(post_call_actions.CONDITION_FIELDS[trigger])

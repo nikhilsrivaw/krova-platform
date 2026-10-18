@@ -858,6 +858,8 @@ AI_DRAFT_MONTHLY = 150
 class DraftTurnIn(BaseModel):
     role: Literal["owner", "ai"]
     text: str = Field(min_length=1, max_length=1000)
+    # The rule an AI turn drafted, sent back so the owner can ask for a change to it.
+    rule: dict | None = None
 
 
 class DraftIn(BaseModel):
@@ -922,14 +924,17 @@ async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> D
     triggers = rule_builder.allowed_triggers(capabilities_for(business) if business else [])
     templates = await _template_names(db, business_id)
     line = f"{business.name} ({business.vertical})" if business else "A business"
-    turns = [rule_builder.Turn(role=t.role, text=t.text) for t in body.turns]
+    turns = [
+        rule_builder.Turn(role=t.role, text=t.text, rule=t.rule if t.role == "ai" else None) for t in body.turns
+    ]
 
     answer = None
     fix: str | None = None
+    refused: dict | None = None
     for _ in range(2):
         try:
             answer = await rule_builder.answer(
-                turns=turns, triggers=triggers, templates=templates, business_line=line, fix=fix,
+                turns=turns, triggers=triggers, templates=templates, business_line=line, fix=fix, refused=refused,
             )
         except Exception:  # noqa: BLE001 - the model being down is a message to the owner, not a 500
             logger.warning("rule builder: no answer from the model", exc_info=True)
@@ -943,15 +948,21 @@ async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> D
             quantity=1, unit="reply", krova_cost_paise=answer.cost_paise, db=db,
         )
         used += 1
+        # The page sends this back as the next turn's text, which is capped at 1000.
+        answer.text = answer.text[:1000]
         if answer.kind != "rule":
             break
         try:
             rule = PostCallRuleIn(**answer.rule)
             _validate(rule)
+            bad = rule_builder.problem(answer.rule)
+            if bad:
+                raise ValueError(bad)
             await db.commit()
             return DraftOut(kind="rule", text=answer.text, rule=rule, used=used, limit=AI_DRAFT_MONTHLY)
         except (HTTPException, ValueError) as exc:
             fix = str(exc.detail if isinstance(exc, HTTPException) else exc)[:500]
+            refused = answer.rule
             logger.info("rule builder draft refused: %s", fix)
             answer = None
     await db.commit()
