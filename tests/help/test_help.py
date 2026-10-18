@@ -162,3 +162,32 @@ def test_a_mail_failure_never_loses_the_ticket(monkeypatch):
         transcript=[],
     )
     asyncio.run(help_router._email_team(ticket, None, None))
+
+
+def test_a_plain_answer_has_no_ticket():
+    text, offer, ticket = buddy._split(" 1. **Billing page** par jao\n2. Add money ")
+    assert text == "1. Billing page par jao\n2. Add money" and not offer and ticket is None
+
+
+def test_the_ticket_line_is_cut_off_and_read():
+    reply = 'Ye dikkat lag rahi hai.\n[[TICKET]] {"subject": "Payment failed", "category": "billing", "details": "UPI failed twice", "page": "/billing"}'
+    text, offer, ticket = buddy._split(reply)
+    assert text == "Ye dikkat lag rahi hai." and offer
+    assert ticket == {"subject": "Payment failed", "category": "billing", "details": "UPI failed twice", "page": "/billing"}
+
+
+def test_a_broken_ticket_line_still_offers_a_ticket():
+    text, offer, ticket = buddy._split("Not sure.\n[[TICKET]] {subject: oops")
+    assert text == "Not sure." and offer and ticket is None
+
+
+def test_the_answer_is_asked_for_as_text_not_a_tool(monkeypatch):
+    seen = {}
+
+    async def fake_complete(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(text="Billing page → Wallet", cost_paise=30)
+
+    monkeypatch.setattr(buddy.client, "complete", fake_complete)
+    out = asyncio.run(buddy.answer(turns=[buddy.Turn("owner", "wallet?")], page="/billing", business_line="x"))
+    assert "tool" not in seen and out.answer == "Billing page → Wallet" and out.cost_paise == 30
