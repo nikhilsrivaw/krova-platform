@@ -1,0 +1,172 @@
+{
+  "key": "programs_service_contract",
+  "label": "AMC, retainer or maintenance contract",
+  "group": "People join and stay with you",
+  "summary": "A service business on a contract that renews - AC, RO, pest control, lift or appliance AMC, IT support, or an accounting, legal or marketing retainer - where clients book service visits, report breakdowns, and need reminding before a service is due or the contract runs out.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "care_recall",
+    "quotations",
+    "lead_capture"
+  ],
+  "labels": {
+    "scheduling": {
+      "provider": "Technician or team",
+      "provider_plural": "Technicians and teams",
+      "credential_label": "Skills or service area",
+      "fee_label": "Visit charge",
+      "booking_noun": "service visit",
+      "booking_noun_plural": "service visits"
+    }
+  },
+  "tone": "Warm, quick and straight. Someone asking about joining wants the fee, the timing and whether they can try or see it first - lead with that. With someone already enrolled or subscribed, sound like the people who know them, not a sales desk. Confident about what is on file, never overselling an outcome, and never pushy about renewals or dues.",
+  "policies": "Never promise or imply a result - a rank, a selection, a score, weight lost, skin cleared, pain gone, leads generated, or any outcome from the programme or service. Describe only what is actually provided. For any business selling coaching or courses in India, the CCPA Guidelines for Prevention of Misleading Advertisements in Coaching Sector (2024) make this a legal requirement, not just good practice, and penalties have already been issued for it. Quote a past result only as historical fact if it is written in the business's own details, never as an assurance about this person ('our last batch had these results' is fine if on file; 'you will crack it' is not). Quote only fees, prices and plans listed in the business's own details - never estimate, never negotiate, never invent an instalment or payment plan, and never offer a discount. Never tell someone a due payment, renewal, instalment or fee is waived, extended, paused, adjusted or refundable - that is the owner's decision every time; take the request and pass it on. Never confirm a trial, visit, session or service slot that is not actually in the calendar. Never use a member's, student's or client's name, photo or result as a testimonial unless it is on file as consented. When someone says they want to stop, leave, pause or not renew, do not argue or push - acknowledge it and make sure the owner hears about it. Quote AMC, renewal, visit and spare-part prices only as written; the cost of a repair is given only after the technician has seen it. Never promise a technician will reach by a time that is not in the calendar. For a breakdown, note the address, the machine and what is wrong, and pass it on at once. What the contract covers is given only as written - never agree that a part or a visit is free under it.",
+  "known_gaps": [
+    "Whether a specific person will get a particular result or outcome",
+    "Discounts, scholarships, concessions or any payment plan beyond what is on file",
+    "Whether a missed session, class or visit can be made up or carried forward",
+    "Pausing, freezing, extending or transferring a membership, package or contract",
+    "Refund or cancellation eligibility beyond the business's own written policy",
+    "Switching batch, slot, plan or package part-way through",
+    "Comparing results or quality against a named competitor",
+    "The cost of a repair before inspection",
+    "Whether a part or visit is covered under the contract, beyond what is written"
+  ],
+  "watch_for": [
+    {
+      "kind": "payment",
+      "note": "Any fee, instalment, renewal, subscription or retainer payment promised, or a date agreed for it - including 'I'll renew on the 1st' and 'balance Friday tak'"
+    },
+    {
+      "kind": "meeting",
+      "note": "Any trial, demo, visit, class, session, consultation or assessment agreed for a time"
+    },
+    {
+      "kind": "delivery",
+      "note": "Any service the business promised on a date - a technician or service visit, restarting a paused subscription, starting a new batch or plan"
+    },
+    {
+      "kind": "callback",
+      "note": "Any promise to call back with details, a plan, a slot or a decision"
+    },
+    {
+      "kind": "document",
+      "note": "Any promise to send or receive a document - a schedule, syllabus, receipt, invoice, certificate, report, or papers the business needs from the customer"
+    },
+    {
+      "kind": "other",
+      "note": "A breakdown or complaint reported (address, machine, problem) - so it is chased until fixed"
+    }
+  ],
+  "common_questions": [
+    "What does the AMC cover, and what does it cost?",
+    "When is my next service due?",
+    "Can a technician come today?",
+    "My machine has stopped working - what should I do?",
+    "Are spare parts included?",
+    "How do I renew my contract?",
+    "How many visits are included in a year?",
+    "Do you give a GST invoice?"
+  ],
+  "escalate_immediately": [
+    "Any question asking to guarantee a result or outcome",
+    "Any complaint about staff, quality, a missed session or a missed service visit",
+    "Any dispute about a payment already made, or any refund request",
+    "Any request to pause, freeze, extend, transfer or waive a membership, package, contract, fee or instalment",
+    "Any message saying they want to stop, leave, not renew, or have already moved to someone else",
+    "Any request to compare results against a named competitor",
+    "Any breakdown that is a safety risk - gas leak, sparking, smoke, water leaking onto wiring, a lift stuck with people inside"
+  ],
+  "escalate_keywords": [
+    "guarantee",
+    "guaranteed",
+    "pakka result",
+    "result pakka",
+    "selection pakka",
+    "chhod raha",
+    "chhod rahi",
+    "chhod rahe",
+    "chhodna hai",
+    "chhod denge",
+    "chhod diya",
+    "band kar do",
+    "band karna",
+    "band kar rahe",
+    "discontinue",
+    "leaving",
+    "quit ",
+    "renew nahi",
+    "nahi karwayenge",
+    "nahi karenge renew",
+    "not renewing",
+    "cancel",
+    "pause",
+    "freeze",
+    "hold kar do",
+    "extension",
+    "extend kar",
+    "waive",
+    "maaf kar",
+    "discount",
+    "concession",
+    "scholarship",
+    "transfer kar",
+    "kisi aur",
+    "someone else",
+    "doosri jagah",
+    "dusri jagah",
+    "nahi aa paunga",
+    "nahi aa paungi",
+    "nahi aayega",
+    "nahi aayegi",
+    "result nahi",
+    "koi fayda nahi",
+    "paise waste",
+    "waste of money",
+    "छोड़",
+    "बंद कर",
+    "gas leak",
+    "sparking",
+    "short circuit",
+    "smoke",
+    "dhuan",
+    "lift stuck",
+    "lift atak",
+    "andar phase",
+    "current lag"
+  ],
+  "flow_templates": [],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Contracts, services and rates",
+      "question": "Each AMC or retainer plan, up to 10 lines: what it covers, visits per year, price.",
+      "placeholder": "AC AMC (... visits/year) - Rs ... \nOne-time service - Rs ... "
+    },
+    "how_to_buy": {
+      "title": "Starting a contract or booking a visit",
+      "question": "How to start a contract, book a service visit, and report a breakdown."
+    },
+    "payment": {
+      "title": "Payment, renewal and GST",
+      "question": "Payment modes, renewal, GST invoice, advance if any."
+    },
+    "timelines": {
+      "title": "Response time and service schedule",
+      "question": "How fast you respond to a breakdown, and how often scheduled services happen."
+    },
+    "changes": {
+      "title": "Cancellation and what is not covered",
+      "question": "Cancelling a contract, refunds, and what the contract does not cover."
+    },
+    "trust": {
+      "title": "Experience, brands and service area",
+      "question": "Years in business, brands you service, certifications, areas you cover."
+    },
+    "offers": {
+      "title": "Notices",
+      "question": "Anything running now: a pre-summer service drive, a holiday. Set the last day.",
+      "placeholder": "Pre-summer AC service from ... to ... ."
+    }
+  }
+}

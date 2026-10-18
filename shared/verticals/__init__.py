@@ -86,7 +86,11 @@ def available() -> list[dict[str, str]]:
                 SWITCHABLE[cap].label for cap in t.get("capabilities", []) if cap in SWITCHABLE
             ],
         }
-        for t in sorted(_load_all().values(), key=lambda t: t["key"] != FALLBACK)
+        # the fallback first, then each group together, a group's catch-all ("group_order") last
+        for t in sorted(
+            _load_all().values(),
+            key=lambda t: (t["key"] != FALLBACK, t.get("group") or "", t.get("group_order", 0), t["key"]),
+        )
         if t.get("selectable", True)
     ]
 

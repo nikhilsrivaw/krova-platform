@@ -23,7 +23,7 @@ def test_each_is_offered_at_signup_under_healthcare(key):
 
 
 def test_the_main_market_types_have_no_group():
-    assert all(v["group"] is None for v in verticals.available() if not v["key"].startswith("health_"))
+    assert all(v["group"] is None for v in verticals.available() if not v["key"].startswith(("health_", "programs")))
 
 
 def test_what_each_sub_type_switches_on():

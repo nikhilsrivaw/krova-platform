@@ -1,6 +1,8 @@
 {
   "key": "programs",
-  "label": "People join and stay with you for weeks, months or longer",
+  "label": "Something else that runs over time",
+  "group": "People join and stay with you",
+  "group_order": 99,
   "summary": "A business whose customers join something that runs over time rather than buying once - a course or coaching programme, a membership that renews (a gym, studio, academy, library, PG, coworking space or meal subscription), a package of sessions (skin, physio, training, therapy), or a retainer or maintenance contract (accounting, marketing, AC or IT servicing). People pay upfront, in instalments or on a recurring cycle, and then either renew, complete, or quietly drop off.",
   "capabilities": ["conversation_intelligence", "scheduling", "lead_capture"],
   "labels": {
@@ -52,7 +54,7 @@
   "escalate_keywords": [
     "guarantee", "guaranteed", "pakka result", "result pakka", "selection pakka",
     "chhod raha", "chhod rahi", "chhod rahe", "chhodna hai", "chhod denge", "chhod diya",
-    "band kar do", "band karna", "band kar rahe", "discontinue", "leaving", "quit",
+    "band kar do", "band karna", "band kar rahe", "discontinue", "leaving", "quit ",
     "renew nahi", "nahi karwayenge", "nahi karenge renew", "not renewing", "cancel",
     "pause", "freeze", "hold kar do", "extension", "extend kar", "waive", "maaf kar",
     "discount", "concession", "scholarship", "transfer kar", "kisi aur", "someone else",

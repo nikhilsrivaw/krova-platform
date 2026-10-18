@@ -1,0 +1,175 @@
+{
+  "key": "programs_stay",
+  "label": "PG, hostel, library or coworking",
+  "group": "People join and stay with you",
+  "summary": "A PG, hostel, self-study library or coworking space where people take a bed, room, seat or desk for a month or longer, pay rent with a security deposit, ask about rules and food, raise maintenance problems, and give notice when they leave.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "lead_capture"
+  ],
+  "labels": {
+    "scheduling": {
+      "provider": "Visit slot or property",
+      "provider_plural": "Visit slots and properties",
+      "credential_label": "Address or rooms",
+      "fee_label": "Monthly rent",
+      "booking_noun": "visit",
+      "booking_noun_plural": "visits"
+    }
+  },
+  "tone": "Warm, quick and straight. Someone asking about joining wants the fee, the timing and whether they can try or see it first - lead with that. With someone already enrolled or subscribed, sound like the people who know them, not a sales desk. Confident about what is on file, never overselling an outcome, and never pushy about renewals or dues.",
+  "policies": "Never promise or imply a result - a rank, a selection, a score, weight lost, skin cleared, pain gone, leads generated, or any outcome from the programme or service. Describe only what is actually provided. For any business selling coaching or courses in India, the CCPA Guidelines for Prevention of Misleading Advertisements in Coaching Sector (2024) make this a legal requirement, not just good practice, and penalties have already been issued for it. Quote a past result only as historical fact if it is written in the business's own details, never as an assurance about this person ('our last batch had these results' is fine if on file; 'you will crack it' is not). Quote only fees, prices and plans listed in the business's own details - never estimate, never negotiate, never invent an instalment or payment plan, and never offer a discount. Never tell someone a due payment, renewal, instalment or fee is waived, extended, paused, adjusted or refundable - that is the owner's decision every time; take the request and pass it on. Never confirm a trial, visit, session or service slot that is not actually in the calendar. Never use a member's, student's or client's name, photo or result as a testimonial unless it is on file as consented. When someone says they want to stop, leave, pause or not renew, do not argue or push - acknowledge it and make sure the owner hears about it. Quote rent, deposit, notice period, food and house rules only as written. Never promise that a bed, room, seat or desk is free beyond what is on file - say the team will confirm. Deposit refunds and deductions are the owner's decision; take the request. For a maintenance problem (water, power, Wi-Fi, cleaning, AC), note the room or seat and the problem and pass it on with the time it was reported. Never share another resident's or member's details, or say who stays where.",
+  "known_gaps": [
+    "Whether a specific person will get a particular result or outcome",
+    "Discounts, scholarships, concessions or any payment plan beyond what is on file",
+    "Whether a missed session, class or visit can be made up or carried forward",
+    "Pausing, freezing, extending or transferring a membership, package or contract",
+    "Refund or cancellation eligibility beyond the business's own written policy",
+    "Switching batch, slot, plan or package part-way through",
+    "Comparing results or quality against a named competitor",
+    "Whether a specific bed, room, seat or desk is free right now",
+    "Deposit refund amount or deductions"
+  ],
+  "watch_for": [
+    {
+      "kind": "payment",
+      "note": "Any fee, instalment, renewal, subscription or retainer payment promised, or a date agreed for it - including 'I'll renew on the 1st' and 'balance Friday tak'"
+    },
+    {
+      "kind": "meeting",
+      "note": "Any trial, demo, visit, class, session, consultation or assessment agreed for a time"
+    },
+    {
+      "kind": "delivery",
+      "note": "Any service the business promised on a date - a technician or service visit, restarting a paused subscription, starting a new batch or plan"
+    },
+    {
+      "kind": "callback",
+      "note": "Any promise to call back with details, a plan, a slot or a decision"
+    },
+    {
+      "kind": "document",
+      "note": "Any promise to send or receive a document - a schedule, syllabus, receipt, invoice, certificate, report, or papers the business needs from the customer"
+    },
+    {
+      "kind": "other",
+      "note": "A maintenance problem reported (room or seat, what is wrong) - so it is not forgotten until fixed"
+    },
+    {
+      "kind": "delivery",
+      "note": "A move-in or move-out date, or a notice given"
+    }
+  ],
+  "common_questions": [
+    "What is the rent, and how much is the deposit?",
+    "Is a bed, room or seat available?",
+    "Can I visit first?",
+    "Is food included, and what are the meal timings?",
+    "What are the rules - timings, visitors, guests?",
+    "What is the notice period?",
+    "When will I get my deposit back?",
+    "Wi-Fi, AC, laundry and power backup?"
+  ],
+  "escalate_immediately": [
+    "Any question asking to guarantee a result or outcome",
+    "Any complaint about staff, quality, a missed session or a missed service visit",
+    "Any dispute about a payment already made, or any refund request",
+    "Any request to pause, freeze, extend, transfer or waive a membership, package, contract, fee or instalment",
+    "Any message saying they want to stop, leave, not renew, or have already moved to someone else",
+    "Any request to compare results against a named competitor",
+    "Any safety issue - fire, gas smell, electric sparking, a fight or harassment"
+  ],
+  "escalate_keywords": [
+    "guarantee",
+    "guaranteed",
+    "pakka result",
+    "result pakka",
+    "selection pakka",
+    "chhod raha",
+    "chhod rahi",
+    "chhod rahe",
+    "chhodna hai",
+    "chhod denge",
+    "chhod diya",
+    "band kar do",
+    "band karna",
+    "band kar rahe",
+    "discontinue",
+    "leaving",
+    "quit ",
+    "renew nahi",
+    "nahi karwayenge",
+    "nahi karenge renew",
+    "not renewing",
+    "cancel",
+    "pause",
+    "freeze",
+    "hold kar do",
+    "extension",
+    "extend kar",
+    "waive",
+    "maaf kar",
+    "discount",
+    "concession",
+    "scholarship",
+    "transfer kar",
+    "kisi aur",
+    "someone else",
+    "doosri jagah",
+    "dusri jagah",
+    "nahi aa paunga",
+    "nahi aa paungi",
+    "nahi aayega",
+    "nahi aayegi",
+    "result nahi",
+    "koi fayda nahi",
+    "paise waste",
+    "waste of money",
+    "छोड़",
+    "बंद कर",
+    "fire",
+    "aag lag",
+    "gas leak",
+    "gas ki smell",
+    "sparking",
+    "short circuit",
+    "harass",
+    "ladai",
+    "chori",
+    "theft"
+  ],
+  "flow_templates": [],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Rooms, seats and rent",
+      "question": "Each room or seat type, up to 10 lines: sharing, rent per month, what is included.",
+      "placeholder": "Double sharing - Rs ... per month (with food)\nReserved desk - Rs ... per month"
+    },
+    "how_to_buy": {
+      "title": "Booking, visit and documents",
+      "question": "How to book, visiting first, ID and documents needed, police verification if any."
+    },
+    "payment": {
+      "title": "Rent, deposit and due date",
+      "question": "Rent due date, payment modes, security deposit, late fee."
+    },
+    "timelines": {
+      "title": "Timings, food and rules",
+      "question": "Gate or open hours, meal timings, visitors and guest rules, quiet hours."
+    },
+    "changes": {
+      "title": "Notice period and deposit refund",
+      "question": "Notice period to leave, and your written rule for returning the deposit."
+    },
+    "trust": {
+      "title": "Facilities and safety",
+      "question": "Wi-Fi, AC, laundry, power backup, CCTV, warden or manager on site."
+    },
+    "offers": {
+      "title": "Notices",
+      "question": "Anything for residents now: water or power cut, maintenance work. Set the last day.",
+      "placeholder": "Water supply off on ... from ... to ... ."
+    }
+  }
+}

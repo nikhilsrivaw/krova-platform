@@ -1,0 +1,167 @@
+{
+  "key": "programs_coaching",
+  "label": "Coaching, tuition or training institute",
+  "group": "People join and stay with you",
+  "summary": "A coaching or tuition institute, or a training course - exam preparation, school tuition, skills, computer, language or spoken English - where students and parents ask about batches, fees and a demo class, pay in instalments, and need reminding about classes, fees and tests.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "lead_capture"
+  ],
+  "labels": {
+    "scheduling": {
+      "provider": "Faculty or counsellor",
+      "provider_plural": "Faculty and counsellors",
+      "credential_label": "Subjects and experience",
+      "fee_label": "Course fee",
+      "booking_noun": "demo class",
+      "booking_noun_plural": "demo classes"
+    }
+  },
+  "tone": "Warm, quick and straight. Someone asking about joining wants the fee, the timing and whether they can try or see it first - lead with that. With someone already enrolled or subscribed, sound like the people who know them, not a sales desk. Confident about what is on file, never overselling an outcome, and never pushy about renewals or dues. Often the person writing is a parent paying for a child: answer the parent plainly about fees, batches and attendance, and never discuss the child's marks or behaviour beyond what the institute has written down.",
+  "policies": "Never promise or imply a result - a rank, a selection, a score, weight lost, skin cleared, pain gone, leads generated, or any outcome from the programme or service. Describe only what is actually provided. For any business selling coaching or courses in India, the CCPA Guidelines for Prevention of Misleading Advertisements in Coaching Sector (2024) make this a legal requirement, not just good practice, and penalties have already been issued for it. Quote a past result only as historical fact if it is written in the business's own details, never as an assurance about this person ('our last batch had these results' is fine if on file; 'you will crack it' is not). Quote only fees, prices and plans listed in the business's own details - never estimate, never negotiate, never invent an instalment or payment plan, and never offer a discount. Never tell someone a due payment, renewal, instalment or fee is waived, extended, paused, adjusted or refundable - that is the owner's decision every time; take the request and pass it on. Never confirm a trial, visit, session or service slot that is not actually in the calendar. Never use a member's, student's or client's name, photo or result as a testimonial unless it is on file as consented. When someone says they want to stop, leave, pause or not renew, do not argue or push - acknowledge it and make sure the owner hears about it. Never claim, promise or imply a rank, a selection, a score or a percentage, and never use a toppers' list as an assurance - the Ministry of Education's 2024 coaching guidelines and the CCPA coaching advertisement guidelines both forbid it. Batch timings, course length, fees and the refund rule are given only as written; if a student wants to leave mid-course, take the request to the institute (its written refund rule applies) and never promise a refund or an amount. Never confirm a seat in a batch that is not shown as available.",
+  "known_gaps": [
+    "Whether a specific person will get a particular result or outcome",
+    "Discounts, scholarships, concessions or any payment plan beyond what is on file",
+    "Whether a missed session, class or visit can be made up or carried forward",
+    "Pausing, freezing, extending or transferring a membership, package or contract",
+    "Refund or cancellation eligibility beyond the business's own written policy",
+    "Switching batch, slot, plan or package part-way through",
+    "Comparing results or quality against a named competitor",
+    "A student's marks, rank, attendance or performance that is not on file",
+    "Whether a seat is still free in a batch"
+  ],
+  "watch_for": [
+    {
+      "kind": "payment",
+      "note": "Any fee, instalment, renewal, subscription or retainer payment promised, or a date agreed for it - including 'I'll renew on the 1st' and 'balance Friday tak'"
+    },
+    {
+      "kind": "meeting",
+      "note": "Any trial, demo, visit, class, session, consultation or assessment agreed for a time"
+    },
+    {
+      "kind": "delivery",
+      "note": "Any service the business promised on a date - a technician or service visit, restarting a paused subscription, starting a new batch or plan"
+    },
+    {
+      "kind": "callback",
+      "note": "Any promise to call back with details, a plan, a slot or a decision"
+    },
+    {
+      "kind": "document",
+      "note": "Any promise to send or receive a document - a schedule, syllabus, receipt, invoice, certificate, report, or papers the business needs from the customer"
+    },
+    {
+      "kind": "other",
+      "note": "A test, exam date, batch start or class change the institute announced to a student or parent"
+    }
+  ],
+  "common_questions": [
+    "What is the fee, and can it be paid in instalments?",
+    "When does the next batch start, and what are the timings?",
+    "Can I attend a demo class?",
+    "Who teaches, and what is their experience?",
+    "Are study material and tests included?",
+    "What were last year's results?",
+    "What happens if my child misses classes?",
+    "What is the refund policy if we leave?"
+  ],
+  "escalate_immediately": [
+    "Any question asking to guarantee a result or outcome",
+    "Any complaint about staff, quality, a missed session or a missed service visit",
+    "Any dispute about a payment already made, or any refund request",
+    "Any request to pause, freeze, extend, transfer or waive a membership, package, contract, fee or instalment",
+    "Any message saying they want to stop, leave, not renew, or have already moved to someone else",
+    "Any request to compare results against a named competitor",
+    "Any question about a specific student's marks, rank or behaviour",
+    "Any request to leave mid-course or for a fee refund"
+  ],
+  "escalate_keywords": [
+    "guarantee",
+    "guaranteed",
+    "pakka result",
+    "result pakka",
+    "selection pakka",
+    "chhod raha",
+    "chhod rahi",
+    "chhod rahe",
+    "chhodna hai",
+    "chhod denge",
+    "chhod diya",
+    "band kar do",
+    "band karna",
+    "band kar rahe",
+    "discontinue",
+    "leaving",
+    "quit ",
+    "renew nahi",
+    "nahi karwayenge",
+    "nahi karenge renew",
+    "not renewing",
+    "cancel",
+    "pause",
+    "freeze",
+    "hold kar do",
+    "extension",
+    "extend kar",
+    "waive",
+    "maaf kar",
+    "discount",
+    "concession",
+    "scholarship",
+    "transfer kar",
+    "kisi aur",
+    "someone else",
+    "doosri jagah",
+    "dusri jagah",
+    "nahi aa paunga",
+    "nahi aa paungi",
+    "nahi aayega",
+    "nahi aayegi",
+    "result nahi",
+    "koi fayda nahi",
+    "paise waste",
+    "waste of money",
+    "छोड़",
+    "बंद कर",
+    "rank pakka",
+    "selection guarantee",
+    "100% result",
+    "refund chahiye",
+    "fees wapas"
+  ],
+  "flow_templates": [],
+  "knowledge_card": {
+    "offerings": {
+      "title": "Courses, batches and fees",
+      "question": "Each course or batch, up to 10 lines: who it is for, duration, timings and fee.",
+      "placeholder": "... (class ...) - ... months, Mon-Fri ... to ..., fee Rs ... \n... crash course - Rs ..."
+    },
+    "how_to_buy": {
+      "title": "Admission and demo class",
+      "question": "How to take admission, the demo class, documents needed, and the minimum age if any."
+    },
+    "payment": {
+      "title": "Fees, instalments and receipts",
+      "question": "Payment modes, instalment plan, and that a receipt is given for every payment."
+    },
+    "timelines": {
+      "title": "Batch start, timings and tests",
+      "question": "When batches start, class timings, test schedule."
+    },
+    "changes": {
+      "title": "Missed classes, leaving and refund",
+      "question": "What happens on missed classes, how to leave a course, and your written refund rule."
+    },
+    "trust": {
+      "title": "Faculty, results and facilities",
+      "question": "Faculty qualifications and experience, past results stated only as historical fact, facilities."
+    },
+    "offers": {
+      "title": "Notices",
+      "question": "Anything running now: a new batch, a holiday, a test date. Set the last day.",
+      "placeholder": "New batch from ... . Institute closed on ... ."
+    }
+  }
+}
