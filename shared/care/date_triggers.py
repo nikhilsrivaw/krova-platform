@@ -226,6 +226,7 @@ async def _fire_commitments(
         # business writes the condition in the same words the Ledger UI
         # already shows it, not an integer only we understand.
         base = {
+            "commitment_id": str(commitment.id),
             "kind": commitment.kind.value,
             "direction": commitment.direction.value,
             "amount_paise": commitment.amount_paise,

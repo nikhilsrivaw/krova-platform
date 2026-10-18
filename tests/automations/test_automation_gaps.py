@@ -106,3 +106,55 @@ def test_a_yearly_date_moves_to_the_next_one():
 
 def test_29_february_falls_on_28th():
     assert date_triggers.occurrence(date(2000, 2, 29), date(2026, 1, 10), repeats_yearly=True) == date(2026, 2, 28)
+
+
+# ── how often a rule may run for one customer ───────────────────────────────
+
+def test_reentry_rules():
+    from datetime import timedelta, timezone
+
+    now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+    assert pca.reentry_allowed(None, now, now)
+    assert pca.reentry_allowed(0, None, now)
+    assert not pca.reentry_allowed(0, now - timedelta(days=400), now)
+    assert not pca.reentry_allowed(7, now - timedelta(days=6), now)
+    assert pca.reentry_allowed(7, now - timedelta(days=7), now)
+
+
+def test_reentry_is_bounded_on_the_api():
+    step = {"action_type": "notify_team", "action_config": {"to": "owner", "message": "x"}}
+    assert post_call_rules.PostCallRuleIn(trigger_type="message.received", reentry_days=0, steps=[step]).reentry_days == 0
+    with pytest.raises(Exception):
+        post_call_rules.PostCallRuleIn(trigger_type="message.received", reentry_days=-1, steps=[step])
+
+
+# ── time of day / weekday on every trigger ──────────────────────────────────
+
+def test_time_fields_are_on_every_trigger():
+    for trigger in post_call_rules._VALID_TRIGGERS:
+        assert {"hour_of_day", "weekday"} <= set(pca.fields_for(trigger))
+    step = post_call_rules.StepIn(
+        action_type="notify_team", action_config={"to": "owner", "message": "x"},
+        conditions=[{"field": "hour_of_day", "operator": "greater_than_or_equal", "value": 20}],
+    )
+    post_call_rules._validate_step("message.received", step, 0)
+
+
+def test_time_context_is_business_time():
+    from datetime import timezone
+
+    business = SimpleNamespace(timezone="Asia/Kolkata")
+    # 15:00 UTC on a Monday = 20:30 IST
+    assert pca.time_context(business, datetime(2026, 10, 19, 15, tzinfo=timezone.utc)) == {
+        "hour_of_day": 20, "weekday": "monday",
+    }
+
+
+# ── payment link on a due / overdue promise ─────────────────────────────────
+
+def test_payment_link_allowed_on_due_and_overdue_but_not_anywhere():
+    step = post_call_rules.StepIn(action_type="send_payment_link", action_config={})
+    post_call_rules._validate_step("commitment.overdue", step, 0)
+    post_call_rules._validate_step("commitment.due_soon", step, 0)
+    with pytest.raises(Exception):
+        post_call_rules._validate_step("message.received", step, 0)

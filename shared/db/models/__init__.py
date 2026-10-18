@@ -45,6 +45,7 @@ from shared.db.models.channel import (
 )
 from shared.db.models.integrations import (
     ApiKey,
+    AutomationRuleCustomer,
     AutomationRunLog,
     AutomationStep,
     AutomationStepRun,
@@ -112,6 +113,7 @@ __all__ = [
     "AbandonedCheckout",
     "ApiKey",
     "Appointment",
+    "AutomationRuleCustomer",
     "AutomationRunLog",
     "AutomationStep",
     "AutomationStepRun",

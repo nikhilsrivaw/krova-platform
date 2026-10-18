@@ -465,6 +465,10 @@ class PostCallActionRule(UUIDMixin, TimestampMixin, Base):
     # create_escalation_task: {"reason": "<text shown on the Escalation row>"}.
     action_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # How often this rule may start for one customer: None = every time its trigger fires (the original
+    # behaviour), 0 = only ever once, N = at most once every N days. Kept in AutomationRuleCustomer, not
+    # read off the run log, because the log is pruned and "once ever" must outlive it.
+    reentry_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("idx_post_call_rules_lookup", "business_id", "trigger_type", "is_active"),
@@ -653,3 +657,24 @@ class AutomationRunLog(UUIDMixin, TimestampMixin, Base):
         Index("idx_automation_run_logs_rule", "rule_id", "created_at"),
         Index("idx_automation_run_logs_business", "business_id", "created_at"),
     )
+
+
+class AutomationRuleCustomer(UUIDMixin, Base):
+    """
+    When a rule last started for a customer - what PostCallActionRule.reentry_days is checked against. Written only
+    when the rule actually did something (a step ran or began waiting), so a daily trigger whose condition fails
+    on most days does not use up "once per customer" on a day nothing happened.
+    """
+
+    __tablename__ = "automation_rule_customers"
+
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("post_call_action_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    last_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    times: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (UniqueConstraint("rule_id", "customer_id", name="uq_automation_rule_customer"),)

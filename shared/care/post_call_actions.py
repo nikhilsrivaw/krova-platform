@@ -38,6 +38,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.db.models import (
+    AutomationRuleCustomer,
     AutomationRunLog,
     AutomationStep,
     AutomationStepRun,
@@ -162,6 +163,22 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
     # never reach apply_rules at all (see shared/care/signal_dispatch.py).
     # A condition field here would gate a step that can never run.
 }
+
+# Usable on every trigger: when it is happening, in the business's own time - so "only after 8 pm" or "only on
+# Sunday" (an away message, a weekend rule) is a condition, not a feature. weekday is the lowercase English name.
+TIME_FIELDS = ("hour_of_day", "weekday")
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def time_context(business: Business, now: datetime) -> dict:
+    local = now.astimezone(_tz(business))
+    return {"hour_of_day": local.hour, "weekday": _WEEKDAYS[local.weekday()]}
+
+
+def fields_for(trigger_type: str) -> tuple[str, ...]:
+    """Every condition field a rule on this trigger may use."""
+    return tuple(CONDITION_FIELDS.get(trigger_type, ())) + TIME_FIELDS
+
 
 # Deliberately this short list, not an expression language - a condition is
 # {"field": ..., "operator": ..., "value": ...}, one comparison, no AND/OR
@@ -594,7 +611,8 @@ async def apply_rules(
     if business is None:
         return 0
 
-    context = context or {}
+    now = datetime.now(timezone.utc)
+    context = {**(context or {}), **time_context(business, now)}
 
     steps_by_rule: dict[uuid.UUID, list[dict]] = {}
     steps_result = await db.execute(
@@ -610,21 +628,61 @@ async def apply_rules(
         steps = steps_by_rule.get(rule.id, [])
         if not steps:
             continue
+        marker = None
+        if rule.reentry_days is not None:
+            marker = (await db.execute(
+                select(AutomationRuleCustomer).where(
+                    AutomationRuleCustomer.rule_id == rule.id, AutomationRuleCustomer.customer_id == customer_id,
+                )
+            )).scalar_one_or_none()
+            if marker is not None and not reentry_allowed(rule.reentry_days, marker.last_started_at, now):
+                if log_skips:
+                    _log_run(
+                        db, rule_id=rule.id, business_id=business_id, customer_id=customer_id,
+                        trigger_type=trigger_type, position=steps[0].get("position", 0),
+                        action_type=steps[0]["action_type"], status="skipped",
+                        detail=_reentry_detail(rule.reentry_days, marker.last_started_at), context=context,
+                    )
+                continue
+        acted: list[bool] = []
         ran += await _run_chain(
             db, business=business, customer=customer, business_id=business_id, customer_id=customer_id,
             call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
             rule_id=rule.id, steps=steps, start_index=0, log_ref=str(rule.id),
-            log_skips=log_skips,
+            log_skips=log_skips, acted=acted,
         )
+        if rule.reentry_days is not None and acted:
+            if marker is None:
+                db.add(AutomationRuleCustomer(rule_id=rule.id, customer_id=customer_id, last_started_at=now, times=1))
+            else:
+                marker.last_started_at, marker.times = now, (marker.times or 0) + 1
 
     return ran
+
+
+def reentry_allowed(reentry_days: int | None, last_started_at: datetime | None, now: datetime) -> bool:
+    """May the rule start again for this customer? None = always; 0 = only the first time; N = N days on. Pure."""
+    if reentry_days is None or last_started_at is None:
+        return True
+    if reentry_days == 0:
+        return False
+    if last_started_at.tzinfo is None:
+        last_started_at = last_started_at.replace(tzinfo=timezone.utc)
+    return now - last_started_at >= timedelta(days=reentry_days)
+
+
+def _reentry_detail(reentry_days: int, last: datetime) -> str:
+    when = last.strftime("%d %b").lstrip("0")
+    if reentry_days == 0:
+        return f"already ran for this customer on {when} (set to run once per customer)"
+    return f"already ran for this customer on {when} (at most once every {reentry_days} days)"
 
 
 async def _run_chain(
     db: AsyncSession, *, business: Business, customer: Customer, business_id: uuid.UUID, customer_id: uuid.UUID,
     call_id: uuid.UUID | None, channel: str | None, trigger_type: str, context: dict,
     rule_id: uuid.UUID, steps: list[dict], start_index: int, log_ref: str,
-    log_skips: bool = True,
+    log_skips: bool = True, acted: list[bool] | None = None,
 ) -> int:
     """
     Runs a rule's steps starting at steps[start_index], in position order,
@@ -674,6 +732,8 @@ async def _run_chain(
                 trigger_type=trigger_type, position=position, action_type=step["action_type"],
                 status="queued", detail=_describe_delay(step["delay_seconds"]), context=context,
             )
+            if acted is not None:
+                acted.append(True)
             return ran
 
         stopped = await _stopped(db, step, customer_id, context)
@@ -698,6 +758,8 @@ async def _run_chain(
                 trigger_type=trigger_type, position=position, action_type=step["action_type"],
                 status="queued", detail=_held_detail(business, gate[1]), context=context,
             )
+            if acted is not None:
+                acted.append(True)
             return ran
         if gate and gate[0] == "skip":
             _log_run(
@@ -732,6 +794,8 @@ async def _run_chain(
 
         if did:
             ran += 1
+            if acted is not None:
+                acted.append(True)
         _log_run(
             db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
             trigger_type=trigger_type, position=position, action_type=step["action_type"],
@@ -839,7 +903,7 @@ async def run_due_steps(db: AsyncSession) -> int:
         # it runs unconditionally here rather than being re-checked.
         first = steps[0]
         first_position = first.get("position", 0)
-        context = run.context or {}
+        context = {**(run.context or {}), **time_context(business, now)}
 
         stopped = await _stopped(db, first, run.customer_id, context)
         if stopped:
@@ -1080,6 +1144,26 @@ async def _send_payment_link(db: AsyncSession, business: Business, config: dict,
     """
     from shared.payments import links as payment_links
 
+    amount = config.get("amount_paise")
+    if context.get("commitment_id") and not (context.get("queue_entry_id") or context.get("appointment_id")):
+        # A due / overdue promise: a link for what is still owed on it (or the step's amount, as a part).
+        from shared.db.models import Commitment
+
+        commitment = await db.get(Commitment, uuid.UUID(str(context["commitment_id"])))
+        if commitment is None or commitment.business_id != business.id:
+            return False
+        try:
+            _link, sent, reason = await payment_links.send_link(
+                db, business=business, commitment=commitment, user_id=None,
+                template_name=config.get("template_name") or None,
+                template_language=config.get("template_language") or "en",
+                amount_paise=int(amount) if amount else None,
+            )
+        except (payment_links.LinkError, ValueError) as exc:
+            raise NoRecipient(f"payment link not sent: {exc}") from exc
+        if not sent:
+            raise NoRecipient(f"payment link made but not sent: {reason}")
+        return True
     if context.get("queue_entry_id"):
         kind, ref = "token", context["queue_entry_id"]
     elif context.get("appointment_id"):
@@ -1087,7 +1171,6 @@ async def _send_payment_link(db: AsyncSession, business: Business, config: dict,
     else:
         logger.info("automation_step=%s send_payment_link on a trigger with no booking, skipping", log_ref)
         return False
-    amount = config.get("amount_paise")
     try:
         link, sent, reason = await payment_links.send_fee_link(
             db, business=business, kind=kind, ref_id=uuid.UUID(str(ref)),

@@ -133,6 +133,12 @@ _VALID_ACTIONS = {
     "send_payment_link",
 }
 
+# What a payment link step can charge for: the booking it fired on, or the promise that is due / overdue.
+PAYMENT_LINK_TRIGGERS = {
+    WebhookEventType.appointment_booked.value, WebhookEventType.queue_token_issued.value,
+    WebhookEventType.commitment_due_soon.value, WebhookEventType.commitment_overdue.value,
+}
+
 # A generous ceiling, not a real product limit discovered anywhere - just
 # enough to reject an obvious typo (a business meaning minutes and typing
 # seconds by mistake) without guessing at a "real" maximum useful delay.
@@ -194,6 +200,8 @@ class PostCallRuleOut(BaseModel):
     trigger_type: str
     is_active: bool
     channel: str | None = None
+    # None = every time; 0 = once per customer; N = at most once every N days per customer.
+    reentry_days: int | None = None
     steps: list[StepOut]
 
 
@@ -204,6 +212,7 @@ def _to_out(rule: PostCallActionRule, steps: list[AutomationStep]) -> PostCallRu
         trigger_type=rule.trigger_type,
         is_active=rule.is_active,
         channel=rule.channel,
+        reentry_days=rule.reentry_days,
         steps=[
             _step_out(s)
             for s in steps
@@ -268,6 +277,8 @@ class PostCallRuleIn(BaseModel):
     is_active: bool = True
     # None (omitted) = any channel, matching the model's own default.
     channel: str | None = None
+    # None = every time; 0 = once per customer; N = at most once every N days per customer.
+    reentry_days: int | None = Field(default=None, ge=0, le=365)
     steps: list[StepIn] = Field(min_length=1)
 
 
@@ -299,7 +310,7 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix} may have at most {MAX_CONDITIONS_PER_STEP} conditions",
         )
-    allowed_fields = CONDITION_FIELDS.get(trigger_type, ())
+    allowed_fields = post_call_actions.fields_for(trigger_type)
     for c_index, condition in enumerate(conditions):
         if condition.field not in allowed_fields:
             raise HTTPException(
@@ -324,12 +335,13 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_type must be one of {sorted(_VALID_ACTIONS)}",
         )
-    if step.action_type == "send_payment_link" and trigger_type not in (
-        WebhookEventType.appointment_booked.value, WebhookEventType.queue_token_issued.value,
-    ):
+    if step.action_type == "send_payment_link" and trigger_type not in PAYMENT_LINK_TRIGGERS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"{prefix}: a payment link needs a booking - use it on appointment booked or token issued",
+            detail=(
+                f"{prefix}: a payment link needs something to charge for - use it on appointment booked, token "
+                "issued, or a payment due / overdue"
+            ),
         )
     send_to = (step.action_config or {}).get("send_to")
     if send_to not in (None, "customer", "payer"):
@@ -453,6 +465,7 @@ async def create_rule(body: PostCallRuleIn, current_user: OwnerOrAdminDep, db: D
         action_config=first.action_config,
         is_active=body.is_active,
         channel=body.channel,
+        reentry_days=body.reentry_days,
     )
     db.add(rule)
     await db.flush()
@@ -491,6 +504,9 @@ async def update_rule(
     rule.action_config = first.action_config
     rule.is_active = body.is_active
     rule.channel = body.channel
+    # Only when sent - an older client echoing a rule back (pause / resume) must not clear it.
+    if "reentry_days" in body.model_fields_set:
+        rule.reentry_days = body.reentry_days
 
     existing = (
         await db.execute(
@@ -775,7 +791,7 @@ async def test_rule(body: RuleTestIn, current_user: CurrentUserDep) -> RuleTestO
         PostCallRuleIn(trigger_type=body.trigger_type, channel=body.channel, steps=body.steps)
     )
 
-    available = list(CONDITION_FIELDS.get(body.trigger_type, ()))
+    available = list(post_call_actions.fields_for(body.trigger_type))
     missing = sorted(
         {
             condition.field
