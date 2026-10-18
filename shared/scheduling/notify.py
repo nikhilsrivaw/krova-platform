@@ -656,6 +656,43 @@ async def send_deadline_call(db: AsyncSession, *, business: Business, customer: 
     return await outbound.place_adhoc_call(business.id, customer.id, reason, db)
 
 
+async def send_followup_template(
+    db: AsyncSession, *, business: Business, customer: Customer, template_name: str, message: str,
+) -> bool:
+    """
+    A "Send a WhatsApp follow-up" step that names one of the business's own approved templates instead of
+    post_call_followup - so an offer goes out as a MARKETING template and a reminder as UTILITY, matching what Meta
+    expects of each. The template may have no blank (sent as written) or one (filled with the step's message); more
+    than one blank cannot be filled from a single message, so it is not sent.
+    """
+    from shared.channels.whatsapp.templates import variables_in
+
+    template = (
+        await db.execute(
+            select(MessageTemplate).where(
+                MessageTemplate.business_id == business.id,
+                MessageTemplate.name == template_name,
+                MessageTemplate.status == TemplateStatus.approved,
+            ).order_by(MessageTemplate.language).limit(1)
+        )
+    ).scalars().first()
+    if template is None:
+        logger.info("follow-up template %s not approved for business=%s", template_name, business.id)
+        return False
+    body = template.body_text or ""
+    blanks = variables_in(body)
+    if len(blanks) > 1:
+        logger.info("follow-up template %s has %d blanks, skipping", template_name, len(blanks))
+        return False
+    if blanks and not message:
+        return False
+    plain = body.replace("{{" + blanks[0] + "}}", message) if blanks else body
+    return await _send(
+        db, business=business, customer=customer, template_name=template_name,
+        body_params=[message] if blanks else [], plain_text=plain or message or template_name,
+    )
+
+
 async def send_post_call_followup(db: AsyncSession, *, business: Business, customer: Customer, message: str) -> bool:
     """
     Fired by shared/care/post_call_actions.py for a "whatsapp_followup"

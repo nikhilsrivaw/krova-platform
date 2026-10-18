@@ -526,6 +526,9 @@ async def record_commitment_payment(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     if closed:
         commitment.confirmed_by_user_id = current_user.id
+    from shared.payments.links import fire_payment_received
+
+    await fire_payment_received(db, commitment, body.amount_paise)
     customer = await db.get(Customer, commitment.customer_id)
     return _to_out(commitment, customer.display_name if customer else None,
                    datetime.now(timezone.utc))

@@ -327,6 +327,15 @@ class WebhookEventType(str, enum.Enum):
     # The renewal case for memberships, retainers and maintenance
     # contracts, where the date usually never appears in a chat.
     customer_date_approaching = "customer.date_approaching"
+    # Outcomes - what happened after a booking, an order or a bill. Each fires where staff (or a sync) already
+    # records it: the booking marked came / did not come, a token done / skipped, an order's status moving, money
+    # arriving. Automation-only (post_call_actions.fire_safely). See docs/new/automation-needs-research.md (G1).
+    appointment_visited = "appointment.visited"
+    appointment_no_show = "appointment.no_show"
+    queue_token_done = "queue_token.done"
+    queue_token_skipped = "queue_token.skipped"
+    order_status_changed = "order.status_changed"
+    payment_received = "payment.received"
     # Business-level Insight kinds (escalation_alerts.py, health_monitor.py) -
     # neither ever has a customer_id, so post_call_actions.apply_rules can
     # never meaningfully act on them (every action type needs a customer).

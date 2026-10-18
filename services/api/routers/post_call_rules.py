@@ -47,9 +47,11 @@ from shared.care.post_call_actions import (
     normalize_conditions,
     resolve_tokens,
 )
+from shared.care import post_call_actions
 from shared.db.models import (
     AutomationRunLog,
     AutomationStep,
+    Business,
     Channel,
     PostCallActionRule,
     WebhookEventType,
@@ -110,6 +112,13 @@ _VALID_TRIGGERS = {
     # A customer has waited too long for a reply / a caller pressed a phone-menu key.
     WebhookEventType.reply_overdue.value,
     WebhookEventType.keypad_pressed.value,
+    # Outcomes: came / did not come, token done / skipped, an order moved, money received.
+    WebhookEventType.appointment_visited.value,
+    WebhookEventType.appointment_no_show.value,
+    WebhookEventType.queue_token_done.value,
+    WebhookEventType.queue_token_skipped.value,
+    WebhookEventType.order_status_changed.value,
+    WebhookEventType.payment_received.value,
     # escalation_rate_detected / account_health_detected deliberately
     # excluded - business-level signals with no customer_id, so a rule on
     # either could never actually fire (see shared/care/signal_dispatch.py).
@@ -333,7 +342,15 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}: {step.action_type} can't be sent to a payer - only {sorted(PAYER_ACTIONS)}",
         )
-    if step.action_type == "whatsapp_followup" and not (step.action_config or {}).get("message"):
+    stop = post_call_actions.stop_kinds(step.action_config)
+    if any(k not in post_call_actions.STOP_KINDS for k in stop):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix}.action_config.stop_if may only list {', '.join(post_call_actions.STOP_KINDS)}",
+        )
+    # A step using one of the business's own templates may have no blank to fill, so no message.
+    if (step.action_type == "whatsapp_followup" and not (step.action_config or {}).get("message")
+            and not (step.action_config or {}).get("template_name")):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_config.message is required for whatsapp_followup",
@@ -599,6 +616,32 @@ async def create_automation_templates(current_user: OwnerOrAdminDep, db: DbDep) 
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await db.commit()
     return AutomationTemplatesCreatedOut(created=report.created, already_there=report.already_there, failed=report.failed)
+
+
+# ── quiet hours and the daily cap ────────────────────────────────────────────
+
+class SendingLimits(BaseModel):
+    quiet_hours: bool
+    # Hours of the day, business time: quiet from quiet_start until quiet_end (21 -> 9 crosses midnight).
+    quiet_start: int = Field(ge=0, le=23)
+    quiet_end: int = Field(ge=0, le=23)
+    # Automated messages one customer may get in a day; 0 = no cap.
+    daily_limit: int = Field(ge=0, le=20)
+
+
+@router.get("/limits", response_model=SendingLimits)
+async def get_sending_limits(current_user: CurrentUserDep, db: DbDep) -> SendingLimits:
+    """When automations may message customers, and how often - see post_call_actions.sending_limits."""
+    business = await db.get(Business, current_user.business)
+    return SendingLimits(**post_call_actions.sending_limits(business))
+
+
+@router.put("/limits", response_model=SendingLimits)
+async def set_sending_limits(body: SendingLimits, current_user: OwnerOrAdminDep, db: DbDep) -> SendingLimits:
+    business = await db.get(Business, current_user.business)
+    business.settings = {**(business.settings or {}), "automation_limits": body.model_dump()}
+    await db.commit()
+    return body
 
 
 @router.get("/runs", response_model=RunHistoryOut)

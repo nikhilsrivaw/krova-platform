@@ -24,7 +24,7 @@ import enum
 import uuid
 from datetime import date as date_type, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -141,6 +141,9 @@ class CustomerDate(UUIDMixin, TimestampMixin, Base):
     label: Mapped[str] = mapped_column(String(60), nullable=False)
     date: Mapped[date_type] = mapped_column(Date, nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Comes round every year (a birthday, an anniversary, a yearly AMC): the sweep works from this year's - or next
+    # year's - occurrence of the day and month instead of the stored date itself.
+    repeats_yearly: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     __table_args__ = (
         Index("idx_customer_dates_business_date", "business_id", "date"),

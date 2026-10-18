@@ -87,7 +87,7 @@ LOCKED = {(m, _P + path) for m, path in [
     # spends money (a TTS or AI call per tap) or links a channel to the business
     # how much the AI does on its own, which features are on, and the owner's money assistant
     ("POST", "/approvals/autonomy"), ("PATCH", "/approvals/auto-send-rules"),
-    ("PUT", "/payments/gateway"), ("DELETE", "/payments/gateway"), ("PUT", "/payments/auto"), ("POST", "/post-call-rules/templates"),
+    ("PUT", "/payments/gateway"), ("DELETE", "/payments/gateway"), ("PUT", "/payments/auto"), ("POST", "/post-call-rules/templates"), ("PUT", "/post-call-rules/limits"),
     ("PUT", "/capabilities/{key}"), ("POST", "/capabilities/{key}/templates"),
     ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
     # what the AI is taught to say

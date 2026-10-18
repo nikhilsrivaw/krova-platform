@@ -894,6 +894,7 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
             )
             order = existing.scalars().first()
             was_already_paid = order is not None and order.status.value == "paid"
+            previous_status = getattr(order.status, "value", order.status) if order is not None else None
 
             # Resolve identity only when there is no customer on this order
             # yet - never on every webhook. Shopify's later webhooks
@@ -958,6 +959,17 @@ async def _process_shopify_order(raw_body: bytes, business_id: uuid.UUID) -> Non
             order.raw_payload = parsed.raw
 
             just_became_paid = parsed.status == "paid" and not was_already_paid
+            new_status = getattr(parsed.status, "value", parsed.status)
+            if customer_id is not None and new_status != previous_status:
+                from shared.care import post_call_actions
+
+                await post_call_actions.fire_safely(
+                    db, business_id=business_id, trigger_type="order.status_changed", customer_id=customer_id,
+                    context={
+                        "status": new_status, "previous_status": previous_status,
+                        "order_number": order.order_number, "total_paise": order.total_paise, "is_cod": order.is_cod,
+                    },
+                )
             fire_conversion_for = (customer_id, order.total_paise) if just_became_paid else None
 
             await db.commit()

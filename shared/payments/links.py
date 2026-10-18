@@ -447,7 +447,23 @@ async def refresh_link(db: AsyncSession, link: PaymentLink, gateway_row: Payment
         link.last_checked_at = now
         return 0
     commitment = await db.get(Commitment, link.commitment_id)
-    return apply_status(link, commitment, status=info.status, amount_paid_paise=info.amount_paid_paise, now=now)
+    new = apply_status(link, commitment, status=info.status, amount_paid_paise=info.amount_paid_paise, now=now)
+    if new and commitment is not None:
+        await fire_payment_received(db, commitment, new)
+    return new
+
+
+async def fire_payment_received(db: AsyncSession, commitment: Commitment, amount_paise: int) -> None:
+    """payment.received for money that just landed on a commitment - a link paid here, a receipt on the Ledger."""
+    from shared.care import post_call_actions
+
+    await post_call_actions.fire_safely(
+        db, business_id=commitment.business_id, trigger_type="payment.received", customer_id=commitment.customer_id,
+        context={
+            "amount_paise": amount_paise, "amount_outstanding_paise": commitment.outstanding_paise,
+            "fully_paid": commitment.status == CommitmentStatus.met, "description": commitment.description,
+        },
+    )
 
 
 async def sync_open_links(db: AsyncSession, now: datetime | None = None) -> int:

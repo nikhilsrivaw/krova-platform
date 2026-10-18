@@ -43,6 +43,8 @@ from shared.db.models import (
     AutomationStepRun,
     Business,
     Customer,
+    Direction,
+    Message,
     PostCallActionRule,
 )
 from shared.utils.logging import get_logger
@@ -144,6 +146,17 @@ CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
         "days_since_customer_message", "days_since_any_message",
         "days_since_last_visit", "has_upcoming_visit", "stage",
     ),
+    # What happened after a booking, an order or a bill - the outcome events (fire_safely callers).
+    # visit_number is how many visits this customer has now had, this one included, so "their first
+    # visit" is `visit_number equals 1`; no_show_count the same for missed bookings.
+    "appointment.visited": ("starts_at", "intake_channel", "provider", "visit_number"),
+    "appointment.no_show": ("starts_at", "intake_channel", "provider", "no_show_count"),
+    "queue_token.done": ("shift", "queue_number", "visit_number"),
+    "queue_token.skipped": ("shift", "queue_number"),
+    # status / previous_status are OrderStatus values (paid, fulfilled, delivered, cancelled, ...).
+    "order.status_changed": ("status", "previous_status", "order_number", "total_paise", "is_cod"),
+    # Money arrived against something the customer owed - a payment link paid or a receipt recorded.
+    "payment.received": ("amount_paise", "amount_outstanding_paise", "fully_paid", "description"),
     # escalation_rate.detected / account_health.detected deliberately
     # absent - business-level Insight kinds with no customer_id, so they
     # never reach apply_rules at all (see shared/care/signal_dispatch.py).
@@ -261,6 +274,169 @@ def _snapshot_step(step: AutomationStep) -> dict:
         "condition": step.condition,
         "delay_seconds": step.delay_seconds,
     }
+
+
+async def fire_safely(
+    db: AsyncSession, *, business_id: uuid.UUID, trigger_type: str, customer_id: uuid.UUID | None,
+    channel: str | None = None, context: dict | None = None,
+) -> None:
+    """apply_rules for an outcome event (a visit marked, an order moved, money received): whatever the rules do,
+    the thing that already happened stands, so a failure is logged and never raised."""
+    try:
+        await apply_rules(
+            db, business_id=business_id, trigger_type=trigger_type, customer_id=customer_id,
+            channel=channel, context=context or {},
+        )
+    except Exception:
+        logger.exception("automations failed trigger=%s business=%s customer=%s", trigger_type, business_id, customer_id)
+
+
+# ── "stop if they replied / booked / paid" ────────────────────────────────
+# A step's action_config["stop_if"] holds a comma list of these. When the chain reaches that step after a wait, and
+# the customer has done any of them since the rule started, that step and every step after it are dropped - the
+# way a lead cadence stops once the person answers (Follow Up Boss, HubSpot sequences). A step with no wait before
+# it has nothing to check against, so it always runs. See docs/new/automation-needs-research.md (G2).
+STOP_KINDS = ("replied", "booked", "paid")
+
+
+def stop_kinds(config: dict | None) -> list[str]:
+    raw = (config or {}).get("stop_if") or ""
+    return [k.strip() for k in str(raw).split(",") if k.strip()]
+
+
+async def progress_since(db: AsyncSession, customer_id: uuid.UUID, since: datetime, kinds: list[str]) -> str | None:
+    """Which of `kinds` the customer has done since `since`, as a sentence for the log; None if none."""
+    from shared.db.models import (
+        Appointment, AppointmentStatus, Commitment, CommitmentDirection, CommitmentKind, CommitmentStatus,
+        PaymentLink, QueueEntry, QueueStatus,
+    )
+
+    if "replied" in kinds:
+        hit = (await db.execute(
+            select(Message.id).where(
+                Message.customer_id == customer_id, Message.direction == Direction.inbound, Message.occurred_at > since,
+            ).limit(1)
+        )).first()
+        if hit:
+            return "the customer replied"
+    if "booked" in kinds:
+        hit = (await db.execute(
+            select(Appointment.id).where(
+                Appointment.customer_id == customer_id, Appointment.created_at > since,
+                Appointment.status != AppointmentStatus.cancelled,
+            ).limit(1)
+        )).first() or (await db.execute(
+            select(QueueEntry.id).where(
+                QueueEntry.customer_id == customer_id, QueueEntry.created_at > since,
+                QueueEntry.status != QueueStatus.cancelled,
+            ).limit(1)
+        )).first()
+        if hit:
+            return "the customer booked"
+    if "paid" in kinds:
+        hit = (await db.execute(
+            select(PaymentLink.id).join(Commitment, Commitment.id == PaymentLink.commitment_id).where(
+                Commitment.customer_id == customer_id, PaymentLink.paid_at > since,
+            ).limit(1)
+        )).first() or (await db.execute(
+            select(Commitment.id).where(
+                Commitment.customer_id == customer_id, Commitment.kind == CommitmentKind.payment,
+                Commitment.direction == CommitmentDirection.they_owe, Commitment.status == CommitmentStatus.met,
+                Commitment.resolved_at > since,
+            ).limit(1)
+        )).first()
+        if hit:
+            return "the customer paid"
+    return None
+
+
+async def _stopped(db: AsyncSession, step: dict, customer_id: uuid.UUID, context: dict) -> str | None:
+    kinds = stop_kinds(step.get("action_config"))
+    started = context.get("_started_at")
+    if not kinds or not started:
+        return None
+    try:
+        since = datetime.fromisoformat(started)
+    except ValueError:
+        return None
+    return await progress_since(db, customer_id, since, kinds)
+
+
+# ── quiet hours and a daily cap per customer ──────────────────────────────
+# Business.settings["automation_limits"]. Applies only to steps that reach the customer (not INTERNAL_ACTIONS), and
+# never while the customer is in a live conversation (wrote in the last hour) - a reply to someone who just messaged
+# at 10pm is service, not a nudge. A step that lands in quiet hours waits for them to end; one over the day's cap is
+# skipped and logged. See docs/new/automation-needs-research.md (G3).
+DEFAULT_LIMITS = {"quiet_hours": True, "quiet_start": 21, "quiet_end": 9, "daily_limit": 2}
+_ACTIVE_WINDOW = timedelta(hours=1)
+
+
+def sending_limits(business: Business) -> dict:
+    saved = ((business.settings or {}).get("automation_limits") or {})
+    return {**DEFAULT_LIMITS, **{k: v for k, v in saved.items() if k in DEFAULT_LIMITS}}
+
+
+def _tz(business: Business):
+    from zoneinfo import ZoneInfo
+
+    try:
+        return ZoneInfo(business.timezone or "Asia/Kolkata")
+    except Exception:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def quiet_until(limits: dict, local_now: datetime) -> datetime | None:
+    """When the quiet hours covering `local_now` end (local time), or None if it is not quiet. Pure."""
+    if not limits.get("quiet_hours"):
+        return None
+    start, end = int(limits["quiet_start"]) % 24, int(limits["quiet_end"]) % 24
+    if start == end:
+        return None
+    h = local_now.hour
+    quiet = (h >= start or h < end) if start > end else (start <= h < end)
+    if not quiet:
+        return None
+    until = local_now.replace(hour=end, minute=0, second=0, microsecond=0)
+    if until <= local_now:
+        until += timedelta(days=1)
+    return until
+
+
+async def _send_gate(
+    db: AsyncSession, business: Business, customer_id: uuid.UUID, action_type: str, now: datetime,
+) -> tuple[str, object] | None:
+    """None = send now; ("hold", utc_datetime) = wait for quiet hours to end; ("skip", reason) = over today's cap."""
+    if action_type in INTERNAL_ACTIONS:
+        return None
+    active = (await db.execute(
+        select(Message.id).where(
+            Message.customer_id == customer_id, Message.direction == Direction.inbound,
+            Message.occurred_at > now - _ACTIVE_WINDOW,
+        ).limit(1)
+    )).first()
+    if active:
+        return None
+    limits = sending_limits(business)
+    local_now = now.astimezone(_tz(business))
+    until = quiet_until(limits, local_now)
+    if until is not None:
+        return ("hold", until.astimezone(timezone.utc))
+    cap = int(limits.get("daily_limit") or 0)
+    if cap > 0:
+        day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        sent = len((await db.execute(
+            select(AutomationRunLog.id).where(
+                AutomationRunLog.customer_id == customer_id, AutomationRunLog.status == "ran",
+                AutomationRunLog.action_type.not_in(INTERNAL_ACTIONS), AutomationRunLog.created_at >= day_start,
+            )
+        )).all())
+        if sent >= cap:
+            return ("skip", f"already sent {sent} automated message{'s' if sent != 1 else ''} to this customer today (limit {cap})")
+    return None
+
+
+def _held_detail(business: Business, until_utc: datetime) -> str:
+    return "held for quiet hours until " + until_utc.astimezone(_tz(business)).strftime("%I:%M %p").lstrip("0")
 
 
 async def ensure_default_lead_automation(db: AsyncSession, business_id: uuid.UUID) -> None:
@@ -485,6 +661,8 @@ async def _run_chain(
             # whose delay just got queued, and run_due_steps runs it first
             # (unconditionally - its condition already passed, right above)
             # before resuming the chain at i+1 with its own fresh checks.
+            # _started_at rides along so a later "stop if they replied" knows since when.
+            context = {**context, "_started_at": context.get("_started_at") or datetime.now(timezone.utc).isoformat()}
             db.add(AutomationStepRun(
                 rule_id=rule_id, business_id=business_id, customer_id=customer_id,
                 call_id=call_id, channel=channel, trigger_type=trigger_type, context=context,
@@ -497,6 +675,37 @@ async def _run_chain(
                 status="queued", detail=_describe_delay(step["delay_seconds"]), context=context,
             )
             return ran
+
+        stopped = await _stopped(db, step, customer_id, context)
+        if stopped:
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="skipped", detail=f"stopped here: {stopped}", context=context,
+            )
+            return ran
+
+        gate = await _send_gate(db, business, customer_id, step["action_type"], datetime.now(timezone.utc))
+        if gate and gate[0] == "hold":
+            db.add(AutomationStepRun(
+                rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                call_id=call_id, channel=channel, trigger_type=trigger_type,
+                context={**context, "_started_at": context.get("_started_at") or datetime.now(timezone.utc).isoformat()},
+                remaining_steps=steps[i:], due_at=gate[1],
+            ))
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="queued", detail=_held_detail(business, gate[1]), context=context,
+            )
+            return ran
+        if gate and gate[0] == "skip":
+            _log_run(
+                db, rule_id=rule_id, business_id=business_id, customer_id=customer_id,
+                trigger_type=trigger_type, position=position, action_type=step["action_type"],
+                status="skipped", detail=str(gate[1]), context=context,
+            )
+            continue
 
         try:
             did = await _run_step_action(
@@ -630,6 +839,43 @@ async def run_due_steps(db: AsyncSession) -> int:
         # it runs unconditionally here rather than being re-checked.
         first = steps[0]
         first_position = first.get("position", 0)
+        context = run.context or {}
+
+        stopped = await _stopped(db, first, run.customer_id, context)
+        if stopped:
+            _log_run(
+                db, rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                trigger_type=run.trigger_type, position=first_position, action_type=first["action_type"],
+                status="skipped", detail=f"stopped here: {stopped}", context=context,
+            )
+            continue
+
+        gate = await _send_gate(db, business, run.customer_id, first["action_type"], now)
+        if gate and gate[0] == "hold":
+            db.add(AutomationStepRun(
+                rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type, context=context,
+                remaining_steps=steps, due_at=gate[1],
+            ))
+            _log_run(
+                db, rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                trigger_type=run.trigger_type, position=first_position, action_type=first["action_type"],
+                status="queued", detail=_held_detail(business, gate[1]), context=context,
+            )
+            continue
+        if gate and gate[0] == "skip":
+            _log_run(
+                db, rule_id=run.rule_id, business_id=run.business_id, customer_id=run.customer_id,
+                trigger_type=run.trigger_type, position=first_position, action_type=first["action_type"],
+                status="skipped", detail=str(gate[1]), context=context,
+            )
+            ran += await _run_chain(
+                db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
+                call_id=run.call_id, channel=run.channel, trigger_type=run.trigger_type, context=context,
+                rule_id=run.rule_id, steps=steps, start_index=1, log_ref=f"{run.rule_id}[resume]",
+            )
+            continue
+
         try:
             did = await _run_step_action(
                 db, business=business, customer=customer, business_id=run.business_id, customer_id=run.customer_id,
@@ -738,6 +984,14 @@ async def _run_step_action(
         from shared.scheduling import notify
 
         message = (action_config or {}).get("message") or ""
+        template_name = (action_config or {}).get("template_name") or ""
+        if template_name and template_name != notify.POST_CALL_FOLLOWUP_TEMPLATE_NAME:
+            # The business picked one of its own approved templates (a marketing one for an offer, say) - see
+            # notify.send_followup_template for the "at most one blank" rule.
+            return await notify.send_followup_template(
+                db, business=business, customer=customer, template_name=template_name,
+                message=_resolve_tokens(message, context).strip(),
+            )
         if not message:
             logger.warning("automation_step=%s has no message configured, skipping", log_ref)
             return False

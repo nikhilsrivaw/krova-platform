@@ -344,6 +344,7 @@ class CustomerDateIn(BaseModel):
     label: str = Field(min_length=1, max_length=60)
     date: date_type
     note: str | None = Field(default=None, max_length=500)
+    repeats_yearly: bool = False
 
 
 class CustomerDateOut(BaseModel):
@@ -351,10 +352,13 @@ class CustomerDateOut(BaseModel):
     label: str
     date: str
     note: str | None = None
+    repeats_yearly: bool = False
 
 
 def _date_out(d: CustomerDate) -> CustomerDateOut:
-    return CustomerDateOut(id=str(d.id), label=d.label, date=d.date.isoformat(), note=d.note)
+    return CustomerDateOut(
+        id=str(d.id), label=d.label, date=d.date.isoformat(), note=d.note, repeats_yearly=bool(d.repeats_yearly),
+    )
 
 
 @router.get("/customers/{customer_id}/dates", response_model=list[CustomerDateOut])
@@ -377,7 +381,7 @@ async def add_customer_date(
     row = CustomerDate(
         business_id=current_user.business, customer_id=customer_id,
         label=body.label.strip(), date=body.date,
-        note=(body.note or "").strip() or None,
+        note=(body.note or "").strip() or None, repeats_yearly=body.repeats_yearly,
     )
     db.add(row)
     await db.flush()

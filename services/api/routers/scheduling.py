@@ -552,13 +552,40 @@ async def set_appointment_status(
     """Mark a booking as visited / no-show (or back to confirmed). This is what recall and no-show history read."""
     await _require_scheduling(current_user.business, db)
     appointment = await _owned_appointment(appointment_id, current_user.business, db)
+    before = appointment.status
     try:
         appointment.status = next_status(appointment.status, body.status, appointment.starts_at, datetime.now(timezone.utc))
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     doctor = await db.get(Doctor, appointment.doctor_id)
+    if appointment.status != before and appointment.status in (AppointmentStatus.visited, AppointmentStatus.no_show):
+        await db.flush()
+        await _fire_outcome(db, appointment, doctor.name if doctor else "")
     await db.commit()
     return _appointment_out(appointment, doctor.name if doctor else "")
+
+
+async def _fire_outcome(db, appointment: Appointment, provider: str) -> None:
+    """appointment.visited / appointment.no_show, with how many of each this customer now has."""
+    from sqlalchemy import func
+
+    from shared.care import post_call_actions
+
+    count = (await db.execute(
+        select(func.count(Appointment.id)).where(
+            Appointment.business_id == appointment.business_id, Appointment.customer_id == appointment.customer_id,
+            Appointment.status == appointment.status,
+        )
+    )).scalar_one()
+    visited = appointment.status == AppointmentStatus.visited
+    channel = appointment.intake_channel.value if hasattr(appointment.intake_channel, "value") else None
+    context = {"starts_at": appointment.starts_at.isoformat(), "intake_channel": channel, "provider": provider}
+    context["visit_number" if visited else "no_show_count"] = count
+    await post_call_actions.fire_safely(
+        db, business_id=appointment.business_id,
+        trigger_type="appointment.visited" if visited else "appointment.no_show",
+        customer_id=appointment.customer_id, channel=channel, context=context,
+    )
 
 
 class AppointmentRescheduleIn(BaseModel):

@@ -203,6 +203,7 @@ async def update_order(order_id: uuid.UUID, body: OrderPatch, current_user: Curr
     order = await db.get(Order, order_id)
     if order is None or order.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Order not found")
+    previous = order.status
     if body.status is not None:
         order.status = body.status
     if body.tracking_number is not None:
@@ -210,6 +211,16 @@ async def update_order(order_id: uuid.UUID, body: OrderPatch, current_user: Curr
     if body.carrier is not None:
         order.carrier = body.carrier
     await db.flush()
+    if body.status is not None and body.status != previous and order.customer_id:
+        from shared.care import post_call_actions
+
+        await post_call_actions.fire_safely(
+            db, business_id=order.business_id, trigger_type="order.status_changed", customer_id=order.customer_id,
+            context={
+                "status": getattr(order.status, "value", order.status), "previous_status": getattr(previous, "value", previous),
+                "order_number": order.order_number, "total_paise": order.total_paise, "is_cod": order.is_cod,
+            },
+        )
     return _order_out(order)
 
 

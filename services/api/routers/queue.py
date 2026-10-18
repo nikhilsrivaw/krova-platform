@@ -389,6 +389,7 @@ async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue entry not found")
 
     now = datetime.now(timezone.utc)
+    before = entry.status
     entry.status = body.status
     if body.status == QueueStatus.in_consultation and entry.called_at is None:
         entry.called_at = now
@@ -410,6 +411,25 @@ async def update_queue_entry(entry_id: uuid.UUID, body: QueuePatch, current_user
     # same way.
     if body.status == QueueStatus.in_consultation:
         await _notify_if_turn_near(entry, db)
+
+    if body.status != before and body.status in (QueueStatus.done, QueueStatus.skipped) and entry.customer_id:
+        from sqlalchemy import func
+
+        from shared.care import post_call_actions
+
+        context = {"shift": entry.shift, "queue_number": entry.queue_number}
+        if body.status == QueueStatus.done:
+            context["visit_number"] = (await db.execute(
+                select(func.count(QueueEntry.id)).where(
+                    QueueEntry.business_id == entry.business_id, QueueEntry.customer_id == entry.customer_id,
+                    QueueEntry.status == QueueStatus.done,
+                )
+            )).scalar_one()
+        await post_call_actions.fire_safely(
+            db, business_id=entry.business_id,
+            trigger_type="queue_token.done" if body.status == QueueStatus.done else "queue_token.skipped",
+            customer_id=entry.customer_id, context=context,
+        )
 
     return _out(entry)
 

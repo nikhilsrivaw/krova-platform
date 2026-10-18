@@ -72,7 +72,7 @@ A business with no time-based rules gets a sweep that walks no rows at all
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.care import post_call_actions
@@ -501,6 +501,24 @@ def date_context(*, today, target, label: str, note: str | None) -> dict:
     }
 
 
+def occurrence(stored, today, *, repeats_yearly: bool):
+    """
+    The date a customer date stands for today. A one-off date is itself. A yearly one is its day and month in the
+    year that puts it nearest ahead, still counting up to _DATE_AFTER_DAYS just past (so "the day after the
+    birthday" works); 29 Feb falls on 28 Feb in other years. Pure, for tests.
+    """
+    if not repeats_yearly:
+        return stored
+    for year in (today.year - 1, today.year, today.year + 1):
+        try:
+            candidate = stored.replace(year=year)
+        except ValueError:
+            candidate = stored.replace(year=year, day=28)
+        if candidate >= today - timedelta(days=_DATE_AFTER_DAYS):
+            return candidate
+    return stored.replace(year=today.year + 1, day=min(stored.day, 28))
+
+
 async def _fire_customer_dates(db: AsyncSession, *, now: datetime, businesses: set[uuid.UUID]) -> int:
     """
     Fire customer.date_approaching once a day for every date a subscribed
@@ -517,8 +535,11 @@ async def _fire_customer_dates(db: AsyncSession, *, now: datetime, businesses: s
             .join(Customer, Customer.id == CustomerDate.customer_id)
             .where(
                 CustomerDate.business_id.in_(businesses),
-                CustomerDate.date >= today - timedelta(days=_DATE_AFTER_DAYS),
-                CustomerDate.date <= today + timedelta(days=_DATE_AHEAD_DAYS),
+                or_(
+                    CustomerDate.repeats_yearly.is_(True),
+                    (CustomerDate.date >= today - timedelta(days=_DATE_AFTER_DAYS))
+                    & (CustomerDate.date <= today + timedelta(days=_DATE_AHEAD_DAYS)),
+                ),
             )
         )
     ).all()
@@ -527,6 +548,9 @@ async def _fire_customer_dates(db: AsyncSession, *, now: datetime, businesses: s
     for key_date, is_private in rows:
         if is_private:
             continue
+        target = occurrence(key_date.date, today, repeats_yearly=bool(key_date.repeats_yearly))
+        if not (today - timedelta(days=_DATE_AFTER_DAYS) <= target <= today + timedelta(days=_DATE_AHEAD_DAYS)):
+            continue
         try:
             ran += await post_call_actions.apply_rules(
                 db,
@@ -534,7 +558,7 @@ async def _fire_customer_dates(db: AsyncSession, *, now: datetime, businesses: s
                 trigger_type=WebhookEventType.customer_date_approaching.value,
                 customer_id=key_date.customer_id,
                 channel=None,
-                context=date_context(today=today, target=key_date.date, label=key_date.label, note=key_date.note),
+                context=date_context(today=today, target=target, label=key_date.label, note=key_date.note),
                 log_skips=False,
             )
         except Exception:
