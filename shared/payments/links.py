@@ -153,8 +153,28 @@ async def _last_inbound(db: AsyncSession, customer_id: uuid.UUID) -> datetime | 
     ).scalars().first()
 
 
-def message_text(description: str, amount_paise: int, url: str) -> str:
+def message_text(description: str, amount_paise: int, url: str, balance_paise: int = 0) -> str:
+    if balance_paise > 0:
+        # an advance: say plainly what is paid now and what is left for the counter
+        return (
+            f"{description} - advance: {rupees(amount_paise)} "
+            f"(baaki {rupees(balance_paise)} clinic par / the rest at the counter)\n"
+            f"Pay here / yahan pay karein: {url}"
+        )
     return f"{description}: {rupees(amount_paise)}\nPay here / yahan pay karein: {url}"
+
+
+def payment_mode(business: Business) -> str:
+    """
+    How this business takes money with a booking, as the owner chose it in Settings:
+    "counter" - only the token or booking; the fee is paid at the counter (the default),
+    "advance" - an advance online by link, the rest at the counter,
+    "full"    - the whole fee online by link.
+    """
+    s = auto_settings(business)
+    if not (s["tokens"] or s["appointments"]):
+        return "counter"
+    return "advance" if s["advance_paise"] else "full"
 
 
 async def send_link(
@@ -172,9 +192,11 @@ async def send_link(
     amount = commitment.outstanding_paise
     if not amount:
         raise LinkError("There is no amount left to collect on this.")
+    owed = amount
     if amount_paise:
         # an advance: part of what is owed; the rest stays on the ledger as the balance
         amount = min(amount_paise, amount)
+    balance = owed - amount
     gateway_row = await connection_for(db, business.id)
     if gateway_row is None or gateway_row.status != ConnectionStatus.active:
         raise LinkError("Connect your payment gateway in Settings first.")
@@ -205,8 +227,9 @@ async def send_link(
 
     try:
         info = await _client(gateway_row).create_link(
-            amount_paise=amount, description=commitment.description, customer_name=customer.display_name,
-            customer_phone=phone,
+            amount_paise=amount,
+            description=f"Advance - {commitment.description}" if balance else commitment.description,
+            customer_name=customer.display_name, customer_phone=phone,
         )
     except GatewayError as exc:
         raise LinkError(str(exc)) from exc
@@ -230,7 +253,7 @@ async def send_link(
             for i, value in enumerate(params, start=1):
                 text = text.replace(f"{{{{{i}}}}}", value)
         else:
-            text = message_text(commitment.description, amount, info.short_url)
+            text = message_text(commitment.description, amount, info.short_url, balance)
             result = await client.send_text(phone, text)
     except WhatsAppError as exc:
         logger.warning("payment link %s made but not sent: %s", link.id, exc)

@@ -138,3 +138,17 @@ def test_the_reply_worker_checks_the_qr_before_the_ai():
     from services.workers import respond
     src = inspect.getsource(respond.draft_for_message)
     assert src.index("qr_token.handle") < src.index("agent_context.build")
+
+
+def test_counter_mode_tells_the_patient_the_fee_to_pay_at_the_counter(monkeypatch):
+    from shared.payments import links as payment_links
+    monkeypatch.setattr(payment_links, "auto_settings", lambda b: {"tokens": False, "appointments": False, "default_fee_paise": 50000, "advance_paise": None})
+    handled, calls, _ = _run(monkeypatch)
+    assert handled and "Rs 500 counter par" in calls["replies"][0]
+
+
+def test_online_modes_do_not_add_the_counter_line(monkeypatch):
+    from shared.payments import links as payment_links
+    monkeypatch.setattr(payment_links, "auto_settings", lambda b: {"tokens": True, "appointments": False, "default_fee_paise": 50000, "advance_paise": None})
+    handled, calls, _ = _run(monkeypatch)
+    assert handled and "counter par" not in calls["replies"][0]

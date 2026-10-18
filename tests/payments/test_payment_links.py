@@ -492,3 +492,21 @@ def test_send_link_never_asks_more_than_is_owed_for_an_advance():
     import inspect
     src = inspect.getsource(links.send_link)
     assert "amount = min(amount_paise, amount)" in src
+
+
+# ── how the business takes money with a booking ──────────────────────────────
+
+@pytest.mark.parametrize("auto,mode", [
+    (None, "counter"),
+    ({"tokens": False, "appointments": False, "advance_paise": 10000}, "counter"),
+    ({"tokens": True, "advance_paise": 10000}, "advance"),
+    ({"appointments": True}, "full"),
+])
+def test_the_payment_mode_follows_the_owners_choice(auto, mode):
+    assert links.payment_mode(_biz(auto)) == mode
+
+
+def test_an_advance_link_says_what_is_left_for_the_counter():
+    text = links.message_text("Fee for token 14 (18 Oct)", 10000, "https://rzp.io/i/x", balance_paise=40000)
+    assert "advance: Rs 100" in text and "baaki Rs 400" in text and "https://rzp.io/i/x" in text
+    assert "advance" not in links.message_text("Fee for token 14", 50000, "u")

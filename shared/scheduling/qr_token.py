@@ -180,14 +180,19 @@ async def handle(message: Message, business: Business, customer: Customer, db: A
             await _reply(db, business, customer, CLOSED_TEXT)
             return True
 
+    from shared.payments import links as payment_links
+
     words = vertical_labels.queue_labels(business)
-    await _reply(db, business, customer, token_text(
+    text = token_text(
         business_name=business.name, ticket=words.get("ticket", "token"),
         shift_label=(words.get("shifts") or {}).get(shift.value, shift.value),
         number=entry.queue_number, ahead=await _ahead(db, entry),
-    ))
-
-    from shared.payments import links as payment_links
+    )
+    fee = payment_links.auto_settings(business)["default_fee_paise"]
+    if payment_links.payment_mode(business) == "counter" and fee:
+        # the business takes the fee at the counter: say how much, so nobody is surprised there
+        text += f"\nFees {payment_links.rupees(fee)} counter par dein / Please pay {payment_links.rupees(fee)} at the counter."
+    await _reply(db, business, customer, text)
 
     await payment_links.auto_link_after_booking(db, business=business, kind="tokens", ref_id=entry.id)
     logger.info("qr token business=%s customer=%s number=%s", business.id, customer.id, entry.queue_number)
