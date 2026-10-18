@@ -89,6 +89,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/approvals/autonomy"), ("PATCH", "/approvals/auto-send-rules"),
     ("PUT", "/payments/gateway"), ("DELETE", "/payments/gateway"), ("PUT", "/payments/auto"), ("POST", "/post-call-rules/templates"), ("PUT", "/post-call-rules/limits"),
     ("POST", "/post-call-rules/ai-draft"), ("POST", "/help/ask"), ("POST", "/help/tickets"),
+    ("POST", "/templates/draft"),
     ("PUT", "/capabilities/{key}"), ("POST", "/capabilities/{key}/templates"),
     ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
     # what the AI is taught to say

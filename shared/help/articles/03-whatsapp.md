@@ -9,6 +9,7 @@ WhatsApp page → Connect WhatsApp Number. This opens Meta's own Embedded Signup
 A template is a message Meta approves in advance, so you can send it any time - even outside the 24-hour window. Campaigns and many automations need one.
 - Create: WhatsApp page → New Template. Choose a category: Utility (about something the customer already did or has coming - an order, a booking) or Marketing (an offer, a reason to come back; costs more per message). Labelling a promotional message as Utility is against Meta's policy and can hurt your quality rating.
 - Variables are written {{1}}, {{2}}... Give realistic example values - Meta's reviewer reads them.
+- Can't write one? In New Template, use "Describe it, KROVA writes it": say who gets it and what it should tell them (English or Hinglish), press "Write it for me", and KROVA fills the whole form - name, category, message, examples, buttons. Read it, change anything, then Submit to Meta. Each business gets a fixed number of these a month.
 - Status: Pending means Meta is still reviewing (usually under 24 hours). Only Approved templates can be sent. If a template doesn't show its real status, press Sync Meta Templates.
 - Start from an example: KROVA's own features (reminders, queue, orders) send templates under fixed names. Keep the name and the numbering if you change the wording, so the feature finds it.
 - Carousel templates: WhatsApp page → New Carousel. Up to 10 swipeable cards; the AI can draft the text, the pictures are your own.

@@ -206,6 +206,7 @@ for _m, _p, _a, _s in [
     ("POST", "/templates/carousel/draft", "carousel_template_drafted", "Drafted carousel template text"),
     ("POST", "/post-call-rules/ai-draft", "automation_drafted", "Asked KROVA to draft an automation"),
     ("POST", "/help/ask", "help_asked", "Asked KROVA Buddy a question"),
+    ("POST", "/templates/draft", "template_drafted", "Asked KROVA to write a WhatsApp template"),
     ("POST", "/help/tickets", "support_ticket_raised", "Raised a support ticket with KROVA"),
     ("POST", "/templates/carousel/image", "carousel_template_image", "Uploaded a carousel template image"),
     ("PATCH", "/voice-onboarding/agent-settings", "voice_agent_changed", "Changed the voice agent's settings"),
@@ -267,7 +268,7 @@ LOGGED_GETS = {key for key, (_a, _s, kind) in LABELS.items() if key[0] == "GET"}
 NOT_ACTIVITY = {
     ("POST", API + "/campaigns/preview"), ("POST", API + "/call-campaigns/preview"),
     ("POST", API + "/post-call-rules/test"), ("POST", API + "/templates/sync"),
-    ("POST", API + "/post-call-rules/ai-draft"), ("POST", API + "/help/ask"),
+    ("POST", API + "/post-call-rules/ai-draft"), ("POST", API + "/help/ask"), ("POST", API + "/templates/draft"),
     ("POST", API + "/templates/carousel/draft"), ("POST", API + "/commands/understand"),
     ("POST", API + "/owner/ask"), ("POST", API + "/voice-onboarding/preview-voice"),
     # Heartbeat of an open thread, every few seconds - not a decision anyone made.

@@ -20,7 +20,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
-from shared.ai import carousel_draft
+from shared.ai import carousel_draft, template_draft
+from shared.billing import usage
 from shared.auth.encryption import decrypt
 from shared.channels.whatsapp import media_upload
 from shared.channels.whatsapp import required_templates, template_service
@@ -257,6 +258,90 @@ async def draft_carousel_cards(
         )
     return CarouselDraftOut(
         cards=[CarouselDraftCardOut(body=c.body, button_label=c.button_label) for c in result.cards]
+    )
+
+
+# Whole templates KROVA writes for a business each calendar month (UTC). One costs well under a rupee or two.
+TEMPLATE_DRAFTS_MONTHLY = 60
+
+
+class TemplateDraftIn(BaseModel):
+    brief: str = Field(min_length=5, max_length=1500)
+
+
+class TemplateDraftOut(BaseModel):
+    name: str
+    category: Literal["UTILITY", "MARKETING"]
+    language: str
+    body: str
+    header_text: str | None
+    footer: str | None
+    examples: dict[str, str]
+    buttons: list[ButtonIn]
+    # For the owner, in their language: why this category, what each {{n}} is.
+    note: str
+    used: int
+    limit: int
+
+
+@router.post("/draft", response_model=TemplateDraftOut)
+async def draft_template(body: TemplateDraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> TemplateDraftOut:
+    """
+    A whole template written from what the owner says it is for. Nothing goes to Meta - it fills the Create
+    Template form, and Submit runs the same checks as a template typed by hand.
+    """
+    from sqlalchemy import func
+
+    from shared.db.models import UsageEvent, UsageEventType
+
+    business_id = current_user.business
+    start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    used = int((await db.execute(
+        select(func.count()).select_from(UsageEvent).where(
+            UsageEvent.business_id == business_id,
+            UsageEvent.event_type == UsageEventType.ai_template_draft,
+            UsageEvent.occurred_at >= start,
+        )
+    )).scalar_one())
+    if used >= TEMPLATE_DRAFTS_MONTHLY:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"This month's {TEMPLATE_DRAFTS_MONTHLY} AI-written templates are used up - write this one by "
+                   "hand, or start from an example.",
+        )
+    business = await db.get(Business, business_id)
+    dna = await db.get(BusinessDNA, business_id)
+    parts = [f"{business.name} ({business.vertical})" if business else "A business"]
+    if dna and dna.summary:
+        parts.append(dna.summary[:600])
+    taken = set((await db.execute(
+        select(MessageTemplate.name).where(MessageTemplate.business_id == business_id)
+    )).scalars().all())
+
+    try:
+        result, cost = await template_draft.write(brief=body.brief, business_line="\n".join(parts), taken=taken)
+    except Exception:  # noqa: BLE001 - the model being down is a message, not a 500
+        logger.warning("template draft: no answer from the model", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="KROVA could not write the template just now - try again in a minute, or start from an example.",
+        ) from None
+    usage.record(
+        business_id=business_id, event_type=UsageEventType.ai_template_draft, channel="whatsapp",
+        quantity=1, unit="template", krova_cost_paise=cost, db=db,
+    )
+    await db.commit()
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="KROVA could not write a template Meta would accept from that. Say a little more about what it "
+                   "is for - who gets it and what it should tell them.",
+        )
+    return TemplateDraftOut(
+        name=result.name, category=result.category, language=result.language, body=result.body,
+        header_text=result.header, footer=result.footer, examples=result.examples,
+        buttons=[ButtonIn(**b) for b in result.buttons], note=result.note, used=used + 1,
+        limit=TEMPLATE_DRAFTS_MONTHLY,
     )
 
 

@@ -53,6 +53,9 @@ class UsageEventType(str, enum.Enum):
     ai_rule_builder = "ai_rule_builder"
     # One KROVA Buddy answer on the Help page (shared/help) - also what its monthly allowance is counted from.
     ai_help_assistant = "ai_help_assistant"
+    # One whole WhatsApp template written from the owner's description (shared/ai/template_draft.py); also what its
+    # monthly allowance is counted from.
+    ai_template_draft = "ai_template_draft"
 
     # Voice-specific, one row per cost component per call, matching the
     # breakdown already computed in relay.py rather than collapsing them
