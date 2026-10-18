@@ -171,7 +171,8 @@ ANSWER_TOOL = {
                                         "properties": {
                                             "field": {"type": "string"},
                                             "operator": {"type": "string"},
-                                            "value": {},
+                                            # An empty schema ({}) is refused by some OpenAI-style providers.
+                                            "value": {"type": ["string", "number", "boolean"]},
                                         },
                                         "required": ["field", "operator", "value"],
                                     },

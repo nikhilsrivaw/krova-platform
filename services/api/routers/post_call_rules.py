@@ -932,8 +932,12 @@ async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> D
                 turns=turns, triggers=triggers, templates=templates, business_line=line, fix=fix,
             )
         except Exception:  # noqa: BLE001 - the model being down is a message to the owner, not a 500
-            logger.warning("rule builder failed", exc_info=True)
-            break
+            logger.warning("rule builder: no answer from the model", exc_info=True)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="KROVA's AI could not be reached just now - try again in a minute, or build the rule by hand.",
+            ) from None
         usage.record(
             business_id=business_id, event_type=UsageEventType.ai_rule_builder, channel="app",
             quantity=1, unit="reply", krova_cost_paise=answer.cost_paise, db=db,
@@ -948,12 +952,16 @@ async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> D
             return DraftOut(kind="rule", text=answer.text, rule=rule, used=used, limit=AI_DRAFT_MONTHLY)
         except (HTTPException, ValueError) as exc:
             fix = str(exc.detail if isinstance(exc, HTTPException) else exc)[:500]
+            logger.info("rule builder draft refused: %s", fix)
             answer = None
     await db.commit()
 
     if answer is None:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not draft this rule right now - try saying it another way, or build it by hand.",
+        # Two drafts that would not save: never shown as a rule - ask the owner for more instead.
+        return DraftOut(
+            kind="ask",
+            text="I could not turn that into a rule that works. Could you say it a little differently - what "
+                 "should start it, and what should happen?",
+            used=used, limit=AI_DRAFT_MONTHLY,
         )
     return DraftOut(kind="ask", text=answer.text, options=answer.options, used=used, limit=AI_DRAFT_MONTHLY)

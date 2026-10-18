@@ -142,12 +142,21 @@ def test_an_invalid_rule_gets_one_more_try_with_the_error(monkeypatch):
 
 def test_twice_invalid_is_never_shown_as_a_rule(monkeypatch):
     bad = {**GOOD, "steps": [{"action_type": "add_tag", "action_config": {}, "conditions": [], "delay_seconds": None}]}
+    out, _db, _ = _run(monkeypatch, [
+        rule_builder.BuilderAnswer(kind="rule", text="x", rule=bad),
+        rule_builder.BuilderAnswer(kind="rule", text="x", rule=bad),
+    ])
+    assert out.kind == "ask" and out.rule is None
+
+
+def test_model_down_is_a_clear_message_and_still_commits(monkeypatch):
+    async def boom(**kwargs):
+        raise RuntimeError("401")
+
+    monkeypatch.setattr(post_call_rules.rule_builder, "answer", boom)
     with pytest.raises(HTTPException) as err:
-        _run(monkeypatch, [
-            rule_builder.BuilderAnswer(kind="rule", text="x", rule=bad),
-            rule_builder.BuilderAnswer(kind="rule", text="x", rule=bad),
-        ])
-    assert err.value.status_code == 502
+        _run(monkeypatch, [])
+    assert err.value.status_code == 502 and "could not be reached" in err.value.detail
 
 
 def test_a_question_passes_through(monkeypatch):
