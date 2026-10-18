@@ -24,7 +24,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt
@@ -634,18 +634,32 @@ async def request_payment(
 
 @router.get("/customers", response_model=list[dict])
 async def list_customers(
-    current_user: CurrentUserDep, db: DbDep, limit: int = Query(default=50, le=200)
+    current_user: CurrentUserDep, db: DbDep, limit: int = Query(default=50, le=200),
+    q: str | None = Query(default=None, max_length=100),
+    customer_id: uuid.UUID | None = Query(default=None),
 ) -> list[dict]:
     """
     Everyone this business talks to, most recent first - with the compressed
     profile the nightly worker already computed, so the list carries a real
     health score and summary rather than the client inventing a placeholder.
+
+    `q` searches every customer by name or phone / handle (not only the most recent page), and `customer_id`
+    returns just that one - what the phone app's search and customer screen use.
     """
+    query = select(Customer).where(Customer.business_id == current_user.business)
+    if customer_id is not None:
+        query = query.where(Customer.id == customer_id)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        digits = "".join(ch for ch in q if ch.isdigit())
+        matching_ids = select(CustomerIdentity.customer_id).where(
+            or_(CustomerIdentity.value.ilike(like), *(
+                [CustomerIdentity.value.like(f"%{digits}%")] if len(digits) >= 4 else []
+            ))
+        )
+        query = query.where(or_(Customer.display_name.ilike(like), Customer.id.in_(matching_ids)))
     result = await db.execute(
-        select(Customer)
-        .where(Customer.business_id == current_user.business)
-        .order_by(Customer.last_contact_at.desc().nullslast())
-        .limit(limit)
+        query.order_by(Customer.last_contact_at.desc().nullslast()).limit(limit)
     )
     customers = list(result.scalars().all())
     if not customers:
