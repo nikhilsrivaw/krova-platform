@@ -191,3 +191,11 @@ def test_the_answer_is_asked_for_as_text_not_a_tool(monkeypatch):
     monkeypatch.setattr(buddy.client, "complete", fake_complete)
     out = asyncio.run(buddy.answer(turns=[buddy.Turn("owner", "wallet?")], page="/billing", business_line="x"))
     assert "tool" not in seen and out.answer == "Billing page → Wallet" and out.cost_paise == 30
+
+
+def test_thinking_is_never_shown_or_parsed():
+    from shared.ai.providers import strip_thinking
+
+    assert strip_thinking("<think>user wants {json}</think>\n Billing page → Wallet") == "Billing page → Wallet"
+    assert strip_thinking("<THINK>never closed") == ""
+    assert strip_thinking("plain") == "plain"

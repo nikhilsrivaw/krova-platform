@@ -25,6 +25,7 @@ the answer translated back, so callers never know which model answered.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -189,6 +190,15 @@ PROVIDERS: dict[str, Provider] = {
 }
 
 
+# Some reasoning models (MiniMax, DeepSeek) can put their thinking in the answer text as <think>...</think>. A task
+# that reads the text (KROVA Buddy, the template writer) must never show it to an owner or parse JSON out of it.
+_THINK = re.compile(r"<think>.*?(</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def strip_thinking(text: str) -> str:
+    return _THINK.sub("", text).strip()
+
+
 class ProviderRefused(Exception):
     """The route names a provider that is unknown, unapproved, or can't do this request."""
 
@@ -316,7 +326,7 @@ async def call(ref: str, request: dict[str, Any], *, timeout: float = 120.0) -> 
     rupees = ((prompt - cached) * rate_in + cached * rate_cached + completion * rate_out) / 1_000_000
     return ProviderAnswer(
         tool_input=tool_input,
-        text=message.get("content") or "",
+        text=strip_thinking(message.get("content") or ""),
         usage=SimpleNamespace(input_tokens=prompt - cached, output_tokens=completion,
                               cache_read_input_tokens=cached, cache_creation_input_tokens=0),
         cost_paise=round(rupees * 100),
