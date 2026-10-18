@@ -6,7 +6,8 @@
     "conversation_intelligence",
     "order_sync",
     "photo_product_match",
-    "tpa_claim_tracking"
+    "tpa_claim_tracking",
+    "lead_capture"
   ],
   "labels": {
     "claims": {

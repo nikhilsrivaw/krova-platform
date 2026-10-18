@@ -123,3 +123,11 @@ def test_the_sweep_stamps_a_clinic_visit_but_sends_nothing(monkeypatch):
     assert asyncio.run(recall.send_review_requests(Db())) == 1
     assert sent_to == ["local_service"]
     assert all(v.review_requested_at is not None for v in visits)
+
+
+def test_leads_and_forms_are_off_by_default_for_healthcare_and_on_for_the_rest():
+    from shared.verticals.capability_info import SWITCHABLE
+    assert "lead_capture" in SWITCHABLE
+    for key in verticals.keys():
+        has = "lead_capture" in verticals.get(key).get("capabilities", [])
+        assert has == (not key.startswith("health_")), key

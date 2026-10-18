@@ -5,7 +5,8 @@
   "capabilities": [
     "conversation_intelligence",
     "scheduling",
-    "property_listings"
+    "property_listings",
+    "lead_capture"
   ],
   "labels": {
     "scheduling": {

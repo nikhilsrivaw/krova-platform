@@ -2,7 +2,7 @@
   "key": "local_service",
   "label": "People book you, come in, and pay on the spot",
   "summary": "A local business people book or walk into - a salon, spa, restaurant, repair shop, studio or workshop. Bookings and enquiries come on WhatsApp, the service happens in person, and payment is taken at the time.",
-  "capabilities": ["conversation_intelligence", "scheduling", "opd_queue"],
+  "capabilities": ["conversation_intelligence", "scheduling", "opd_queue", "lead_capture"],
   "labels": {
     "scheduling": {
       "provider": "Staff member",

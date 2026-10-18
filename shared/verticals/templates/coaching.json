@@ -4,7 +4,8 @@
   "summary": "An exam-prep or skills coaching institute where students and parents ask about batches and fees, book a demo class, and need reminding about fee instalments.",
   "capabilities": [
     "conversation_intelligence",
-    "scheduling"
+    "scheduling",
+    "lead_capture"
   ],
   "labels": {
     "scheduling": {

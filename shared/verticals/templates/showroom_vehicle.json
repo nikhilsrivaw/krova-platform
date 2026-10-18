@@ -6,7 +6,8 @@
     "conversation_intelligence",
     "scheduling",
     "quotations",
-    "care_recall"
+    "care_recall",
+    "lead_capture"
   ],
   "labels": {
     "scheduling": {

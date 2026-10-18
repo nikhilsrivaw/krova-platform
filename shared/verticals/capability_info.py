@@ -104,6 +104,13 @@ _CAPABILITIES = (
         "Send usage events from your product through the public API for the nudges; connect GitHub / Stripe if you use them.",
     ),
     CapabilityInfo(
+        "lead_capture",
+        "Leads & forms",
+        "New enquiries from Justdial, IndiaMART, ads and your own web forms land in one list to follow up.",
+        ("Leads page: every enquiry with its source and stage", "Forms page: build a form, share its link or QR"),
+        "Connect a lead source, or build and share a form.",
+    ),
+    CapabilityInfo(
         "care_recall",
         "Recall reminders",
         "Customers on a repeat schedule get a reminder before their next visit is due.",
