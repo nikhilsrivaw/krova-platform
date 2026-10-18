@@ -128,6 +128,7 @@ _add("POST", "/knowledge", "knowledge_changed", "Added to the knowledge base", W
 _add("POST", "/knowledge/read-file", "knowledge_changed", "Read a file to fill the knowledge card", WORK)
 _add("DELETE", "/knowledge/{item_id}", "knowledge_changed", "Removed from the knowledge base", WORK)
 _add("POST", "/payments/links", "payment_link_sent", "Sent a payment link", WORK)
+_add("POST", "/scheduling/availability-exceptions/{exception_id}/cancel-bookings", "appointments_cancelled", "Cancelled the bookings on a day off", WORK)
 _add("POST", "/payments/queue/{entry_id}/link", "payment_link_sent", "Sent a payment link for a token", WORK)
 _add("POST", "/payments/appointments/{appointment_id}/link", "payment_link_sent", "Sent a payment link for an appointment", WORK)
 _add("PUT", "/payments/gateway", "payment_gateway_connected", "Connected the payment gateway", SECURITY)

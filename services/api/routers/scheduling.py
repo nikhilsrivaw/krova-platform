@@ -240,6 +240,12 @@ class AvailabilityExceptionIn(BaseModel):
     reason: str | None = Field(default=None, max_length=255)
 
 
+class AffectedBooking(BaseModel):
+    id: str
+    customer_name: str | None
+    starts_at: datetime
+
+
 class AvailabilityExceptionOut(BaseModel):
     id: str
     date: date
@@ -247,6 +253,8 @@ class AvailabilityExceptionOut(BaseModel):
     start_time: time | None
     end_time: time | None
     reason: str | None
+    # bookings already made for the time this takes away - shown so staff can tell or cancel them
+    affected: list[AffectedBooking] = []
 
 
 def _exception_out(e: AvailabilityException) -> AvailabilityExceptionOut:
@@ -289,7 +297,72 @@ async def create_exception(
     )
     db.add(exception)
     await db.flush()
-    return _exception_out(exception)
+    out = _exception_out(exception)
+    business = await db.get(Business, current_user.business)
+    out.affected = [
+        AffectedBooking(id=str(a.id), customer_name=name, starts_at=a.starts_at)
+        for a, name in await _bookings_hit_by(db, exception, business.timezone if business else "Asia/Kolkata")
+    ]
+    return out
+
+
+_LIVE_BOOKING = (AppointmentStatus.confirmed, AppointmentStatus.requested, AppointmentStatus.awaiting_deposit)
+
+
+async def _bookings_hit_by(db, exception: AvailabilityException, tz_name: str) -> list:
+    """Live bookings with this doctor during the time a day off (or changed hours) takes away, with the customer's name."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(tz_name or "Asia/Kolkata")
+    day_start = datetime.combine(exception.date, time.min, tzinfo=tz)
+    day_end = datetime.combine(exception.date, time.max, tzinfo=tz)
+    rows = (
+        await db.execute(
+            select(Appointment, Customer.display_name)
+            .join(Customer, Customer.id == Appointment.customer_id)
+            .where(
+                Appointment.doctor_id == exception.doctor_id, Appointment.status.in_(_LIVE_BOOKING),
+                Appointment.starts_at >= day_start, Appointment.starts_at <= day_end,
+            )
+            .order_by(Appointment.starts_at)
+        )
+    ).all()
+    hit = []
+    for appointment, name in rows:
+        local = appointment.starts_at.astimezone(tz).time()
+        if exception.is_unavailable and (exception.start_time is None or exception.end_time is None):
+            hit.append((appointment, name))  # the whole day is off
+        elif exception.is_unavailable and exception.start_time <= local < exception.end_time:
+            hit.append((appointment, name))  # inside the hours taken off
+        elif not exception.is_unavailable and exception.start_time and exception.end_time and not (
+            exception.start_time <= local < exception.end_time
+        ):
+            hit.append((appointment, name))  # outside the only hours left that day
+    return hit
+
+
+class CancelAffectedOut(BaseModel):
+    cancelled: int
+
+
+@router.post("/availability-exceptions/{exception_id}/cancel-bookings", response_model=CancelAffectedOut)
+async def cancel_bookings_hit_by(exception_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> CancelAffectedOut:
+    """
+    Cancel the bookings a day off takes away. Each goes through the normal cancel, so its slot frees, the calendar
+    updates and the business's own "appointment cancelled" automations run (that is where a message to the patient
+    belongs - the business writes it).
+    """
+    business = await _require_scheduling(current_user.business, db)
+    exception = await db.get(AvailabilityException, exception_id)
+    if exception is None or exception.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Availability exception not found")
+    reason = f"Not available on {exception.date.strftime('%d %b')}" + (f" - {exception.reason}" if exception.reason else "")
+    count = 0
+    for appointment, _ in await _bookings_hit_by(db, exception, business.timezone):
+        await scheduling_booking.cancel(db, appointment=appointment, reason=reason)
+        count += 1
+    await db.flush()
+    return CancelAffectedOut(cancelled=count)
 
 
 @router.delete("/availability-exceptions/{exception_id}", status_code=status.HTTP_204_NO_CONTENT)

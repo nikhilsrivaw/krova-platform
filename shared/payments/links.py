@@ -159,7 +159,7 @@ def message_text(description: str, amount_paise: int, url: str) -> str:
 
 async def send_link(
     db: AsyncSession, *, business: Business, commitment: Commitment, user_id: uuid.UUID | None,
-    template_name: str | None = None, template_language: str = "en",
+    template_name: str | None = None, template_language: str = "en", amount_paise: int | None = None,
 ) -> tuple[PaymentLink, bool, str | None]:
     """
     Create a link for what is still owed and send it. Returns (link, sent, reason_not_sent): when WhatsApp refuses,
@@ -172,6 +172,9 @@ async def send_link(
     amount = commitment.outstanding_paise
     if not amount:
         raise LinkError("There is no amount left to collect on this.")
+    if amount_paise:
+        # an advance: part of what is owed; the rest stays on the ledger as the balance
+        amount = min(amount_paise, amount)
     gateway_row = await connection_for(db, business.id)
     if gateway_row is None or gateway_row.status != ConnectionStatus.active:
         raise LinkError("Connect your payment gateway in Settings first.")
@@ -252,10 +255,13 @@ def auto_settings(business: Business) -> dict:
     """
     raw = ((business.settings or {}).get("payments") or {}).get("auto_link") or {}
     fee = raw.get("default_fee_paise")
+    advance = raw.get("advance_paise")
     return {
         "tokens": raw.get("tokens") is True,
         "appointments": raw.get("appointments") is True,
         "default_fee_paise": fee if isinstance(fee, int) and fee >= 100 else None,
+        # Collect only this much online, the rest at the counter (as Apollo does for clinic visits). None = the full fee.
+        "advance_paise": advance if isinstance(advance, int) and advance >= 100 else None,
     }
 
 
@@ -303,6 +309,7 @@ async def _open_link_for(db: AsyncSession, commitment_id: uuid.UUID, now: dateti
 async def send_fee_link(
     db: AsyncSession, *, business: Business, kind: str, ref_id: uuid.UUID, amount_paise: int | None = None,
     user_id: uuid.UUID | None = None, template_name: str | None = None, template_language: str = "en",
+    advance: bool = False,
 ) -> tuple[PaymentLink | None, bool, str | None]:
     """
     The fee link for one token (kind "token") or appointment (kind "appointment"). The amount is the one given, else
@@ -348,9 +355,12 @@ async def send_fee_link(
     existing = await _open_link_for(db, commitment.id, now)
     if existing is not None:
         return existing, False, "A link for this was already sent. Copy it to share it again."
+    # Sent by itself (the switch, a rule, the QR): only the advance, if the business set one. Staff sending by hand
+    # collect what is still owed.
+    part = auto_settings(business)["advance_paise"] if advance else None
     return await send_link(
         db, business=business, commitment=commitment, user_id=user_id,
-        template_name=template_name, template_language=template_language,
+        template_name=template_name, template_language=template_language, amount_paise=part,
     )
 
 
@@ -367,7 +377,7 @@ async def auto_link_after_booking(db: AsyncSession, *, business: Business, kind:
         if gateway_row is None or gateway_row.status != ConnectionStatus.active:
             return None
         link, sent, reason = await send_fee_link(
-            db, business=business, kind="token" if kind == "tokens" else "appointment", ref_id=ref_id,
+            db, business=business, kind="token" if kind == "tokens" else "appointment", ref_id=ref_id, advance=True,
         )
         if not sent:
             logger.info("auto payment link not sent business=%s: %s", business.id, reason)

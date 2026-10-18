@@ -839,6 +839,7 @@ async def _send_payment_link(db: AsyncSession, business: Business, config: dict,
             db, business=business, kind=kind, ref_id=uuid.UUID(str(ref)),
             amount_paise=int(amount) if amount else None,
             template_name=config.get("template_name") or None, template_language=config.get("template_language") or "en",
+            advance=True,
         )
     except (payment_links.LinkError, ValueError) as exc:
         logger.info("automation_step=%s payment link not sent: %s", log_ref, exc)

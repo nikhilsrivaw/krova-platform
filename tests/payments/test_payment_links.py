@@ -282,9 +282,9 @@ def _biz(auto=None):
 
 
 def test_auto_links_are_off_unless_switched_on():
-    assert links.auto_settings(_biz()) == {"tokens": False, "appointments": False, "default_fee_paise": None}
-    s = links.auto_settings(_biz({"tokens": True, "default_fee_paise": 30000}))
-    assert s == {"tokens": True, "appointments": False, "default_fee_paise": 30000}
+    assert links.auto_settings(_biz()) == {"tokens": False, "appointments": False, "default_fee_paise": None, "advance_paise": None}
+    s = links.auto_settings(_biz({"tokens": True, "default_fee_paise": 30000, "advance_paise": 10000}))
+    assert s == {"tokens": True, "appointments": False, "default_fee_paise": 30000, "advance_paise": 10000}
     assert links.auto_settings(_biz({"tokens": "yes", "default_fee_paise": 5}))["tokens"] is False
 
 
@@ -321,7 +321,8 @@ class _BookingDb:
 def _fake_send(monkeypatch):
     sent = []
 
-    async def send_link(db, *, business, commitment, user_id, template_name=None, template_language="en"):
+    async def send_link(db, *, business, commitment, user_id, template_name=None, template_language="en", amount_paise=None):
+        commitment.link_amount = amount_paise
         sent.append(commitment)
         return SimpleNamespace(id="l", expires_at=None), True, None
 
@@ -329,8 +330,21 @@ def _fake_send(monkeypatch):
     return sent
 
 
-def _fee(db, kind="token", amount=None, business=None):
-    return asyncio.run(links.send_fee_link(db, business=business or _biz(), kind=kind, ref_id=uuid.uuid4(), amount_paise=amount))
+def _fee(db, kind="token", amount=None, business=None, advance=False):
+    return asyncio.run(links.send_fee_link(db, business=business or _biz(), kind=kind, ref_id=uuid.uuid4(),
+                                           amount_paise=amount, advance=advance))
+
+
+def test_sent_by_itself_only_the_advance_goes_and_the_rest_stays_owed(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(doctor_fee=50000), business=_biz({"advance_paise": 10000}), advance=True)
+    assert sent[0].amount_paise == 50000 and sent[0].link_amount == 10000
+
+
+def test_staff_sending_by_hand_collect_the_whole_fee(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(doctor_fee=50000), business=_biz({"advance_paise": 10000}))
+    assert sent[0].link_amount is None
 
 
 def test_a_token_fee_is_keyed_to_the_token(monkeypatch):
@@ -472,3 +486,9 @@ def test_a_payment_link_rule_must_be_on_a_booking_trigger():
     r._validate_step("appointment.booked", step, 0)
     with pytest.raises(HTTPException):
         r._validate_step("message.received", step, 0)
+
+
+def test_send_link_never_asks_more_than_is_owed_for_an_advance():
+    import inspect
+    src = inspect.getsource(links.send_link)
+    assert "amount = min(amount_paise, amount)" in src

@@ -457,6 +457,19 @@ def standing_gaps(dna) -> list[str]:
     return []
 
 
+async def _department_names(db: AsyncSession, business_id: uuid.UUID) -> dict:
+    from shared.db.models import Department
+
+    rows = (await db.execute(select(Department.id, Department.name).where(Department.business_id == business_id))).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def _doctor_label(doctor, department_names: dict) -> str:
+    """The name the AI books with, plus the department and qualification a patient may ask by ("bones", "skin")."""
+    extra = [x for x in (department_names.get(doctor.department_id), doctor.qualifications) if x]
+    return f"{doctor.name} ({', '.join(extra)})" if extra else doctor.name
+
+
 def knowledge_dict(k: KnowledgeItem) -> dict:
     return {
         "title": k.title,
@@ -686,6 +699,7 @@ async def build(
                 .limit(MAX_DOCTORS_IN_CONTEXT)
             )
         ).scalars().all()
+        department_names = await _department_names(db, business_id)
         doctor_lines = []
         for doctor in doctors:
             slots = await scheduling_availability.next_open_slots(
@@ -696,7 +710,7 @@ async def build(
             # LLM can write a natural-sounding reply from an ISO timestamp
             # just fine - the customer never sees this string directly.
             times = ", ".join(s.starts_at.isoformat() for s in slots)
-            doctor_lines.append(f"- {doctor.name}: {times or 'nothing free in the next two weeks'}")
+            doctor_lines.append(f"- {_doctor_label(doctor, department_names)}: {times or 'nothing free in the next two weeks'}")
         availability_text = "\n".join(doctor_lines)
 
     upcoming_bookings_text: str | None = None
@@ -942,13 +956,14 @@ async def build_anonymous(
                 .limit(MAX_DOCTORS_IN_CONTEXT)
             )
         ).scalars().all()
+        department_names = await _department_names(db, business_id)
         doctor_lines = []
         for doctor in doctors:
             slots = await scheduling_availability.next_open_slots(
                 db, business=business, doctor=doctor, count=3
             )
             times = ", ".join(s.starts_at.isoformat() for s in slots)
-            doctor_lines.append(f"- {doctor.name}: {times or 'nothing free in the next two weeks'}")
+            doctor_lines.append(f"- {_doctor_label(doctor, department_names)}: {times or 'nothing free in the next two weeks'}")
         availability_text = "\n".join(doctor_lines)
 
     open_shifts_text: str | None = None

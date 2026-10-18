@@ -124,6 +124,8 @@ class AutoLinkIn(BaseModel):
     appointments: bool = False
     # used when the doctor has no consultation fee set (a token the AI books has no doctor)
     default_fee_paise: int | None = Field(default=None, ge=100, le=50_000_000)
+    # collect only this much online; the rest is paid at the counter and shows as the balance. None = the full fee.
+    advance_paise: int | None = Field(default=None, ge=100, le=50_000_000)
 
 
 @router.get("/auto", response_model=AutoLinkIn)
