@@ -117,8 +117,12 @@ async def issue_token(
     doctor_id: uuid.UUID | None,
     intake_channel: IntakeChannel,
     source_message_ids: list[uuid.UUID] | None = None,
+    notify_customer: bool = True,
 ) -> QueueEntry:
     """
+    notify_customer=False when the caller tells the customer itself (the reception QR's reply), so they get one
+    message, not two.
+
     Raises ShiftNotOpen/OpdQueueNotEnabled rather than returning None -
     unlike the agent's own try_book_token_from_agent wrapper (which does
     return None for every legitimate failure, matching
@@ -177,7 +181,7 @@ async def issue_token(
         entry.id, business_id, shift.value, entry.queue_number, intake_channel.value,
     )
 
-    if customer_id is not None:
+    if customer_id is not None and notify_customer:
         customer = await db.get(Customer, customer_id)
         if customer is not None:
             try:

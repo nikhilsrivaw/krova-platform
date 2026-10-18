@@ -232,6 +232,15 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     if business is None or not business.is_active:
         return None
 
+    # The reception QR's own message gets its token here, without the AI - see shared/scheduling/qr_token.py. Like the
+    # COD button above, it is the patient's explicit request answered from a fixed rule, not a drafted reply, so it does
+    # not wait on the autonomy setting; a paused plan still stops it.
+    from shared.billing.guards import plan_blocked
+    from shared.scheduling import qr_token
+
+    if not await plan_blocked(db, message.business_id) and await qr_token.handle(message, business, customer, db):
+        return None
+
     autonomy = (business.autonomy or "observe").lower()
     if autonomy == "observe":
         # Watching only. The business has not asked for drafts yet.

@@ -84,19 +84,25 @@ class QueueSettingsIn(BaseModel):
     enabled: bool | None = None
     labels: QueueLabelsIn | None = None
     turn_near_threshold: int | None = Field(default=None, ge=1, le=50)
+    # The message the reception QR types for the patient; that exact message gets a token without the AI.
+    qr_phrase: str | None = Field(default=None, min_length=3, max_length=80)
 
 
 class QueueSettingsOut(BaseModel):
     enabled: bool
     labels: dict
     turn_near_threshold: int
+    qr_phrase: str
 
 
 def _settings_out(business: Business) -> QueueSettingsOut:
+    from shared.scheduling import qr_token
+
     return QueueSettingsOut(
         enabled=verticals.has_capability(business, "opd_queue"),
         labels=labels.queue_labels(business),
         turn_near_threshold=_turn_near_threshold(business),
+        qr_phrase=qr_token.phrase_for(business),
     )
 
 
@@ -145,6 +151,8 @@ async def update_queue_settings(
         queue_cfg["labels"] = body.labels.model_dump(exclude_none=True)
     if body.turn_near_threshold is not None:
         queue_cfg["turn_near_threshold"] = body.turn_near_threshold
+    if body.qr_phrase is not None:
+        queue_cfg["qr_phrase"] = body.qr_phrase.strip()
     if queue_cfg:
         settings["queue"] = queue_cfg
 
