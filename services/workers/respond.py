@@ -331,9 +331,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
             if channel == "whatsapp":
                 # The fee link straight after the confirmation, when the business switched it on.
                 await payment_links.auto_link_after_booking(
-                    db, business=business, customer_id=customer.id, kind="appointments",
-                    description=f"Fee for the appointment on {appointment.starts_at.strftime('%d %b, %I:%M %p')}",
-                    doctor_fee_paise=doctor.consultation_fee_paise if doctor else None, appointment_id=appointment.id,
+                    db, business=business, kind="appointments", ref_id=appointment.id,
                 )
 
     if proposal.cancel_appointment_at:
@@ -373,8 +371,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         elif channel == "whatsapp":
             # The fee link straight after the token, when the business switched it on.
             await payment_links.auto_link_after_booking(
-                db, business=business, customer_id=customer.id, kind="tokens",
-                description=f"Fee for token {queue_entry.queue_number} ({queue_entry.queue_date.strftime('%d %b')})",
+                db, business=business, kind="tokens", ref_id=queue_entry.id,
             )
 
     draft = MessageDraft(

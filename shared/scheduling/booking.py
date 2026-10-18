@@ -154,6 +154,7 @@ async def book(
                 context={
                     "starts_at": appointment.starts_at.isoformat(),
                     "intake_channel": intake_channel.value,
+                    "appointment_id": str(appointment.id),
                 },
             )
         except Exception:

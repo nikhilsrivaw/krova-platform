@@ -807,6 +807,9 @@ async def _run_step_action(
     if action_type == "send_email":
         return await _send_email(business_id, customer_id, action_config or {}, db)
 
+    if action_type == "send_payment_link":
+        return await _send_payment_link(db, business, action_config or {}, context, log_ref)
+
     logger.warning("automation_step=%s has unrecognised action_type=%s", log_ref, action_type)
     return False
 
@@ -815,6 +818,36 @@ async def _run_step_action(
 # the payer. add_tag and create_escalation_task are about the customer
 # themselves, and an Instagram comment reply belongs to whoever commented.
 # Steps that stay inside the business: they cost nothing and must not go quiet when a plan is paused.
+async def _send_payment_link(db: AsyncSession, business: Business, config: dict, context: dict, log_ref: str) -> bool:
+    """
+    The fee link for the token or appointment this rule fired on (queue.token_issued / appointment.booked), from the
+    business's own gateway. Amount: the step's own, else the doctor's fee, else the default fee. Once per booking,
+    whichever rule, switch or person sends it first. Outside WhatsApp's 24 hours it needs the step's template.
+    """
+    from shared.payments import links as payment_links
+
+    if context.get("queue_entry_id"):
+        kind, ref = "token", context["queue_entry_id"]
+    elif context.get("appointment_id"):
+        kind, ref = "appointment", context["appointment_id"]
+    else:
+        logger.info("automation_step=%s send_payment_link on a trigger with no booking, skipping", log_ref)
+        return False
+    amount = config.get("amount_paise")
+    try:
+        link, sent, reason = await payment_links.send_fee_link(
+            db, business=business, kind=kind, ref_id=uuid.UUID(str(ref)),
+            amount_paise=int(amount) if amount else None,
+            template_name=config.get("template_name") or None, template_language=config.get("template_language") or "en",
+        )
+    except (payment_links.LinkError, ValueError) as exc:
+        logger.info("automation_step=%s payment link not sent: %s", log_ref, exc)
+        return False
+    if not sent:
+        logger.info("automation_step=%s payment link not sent: %s", log_ref, reason)
+    return sent
+
+
 INTERNAL_ACTIONS = frozenset({"create_escalation_task", "add_tag", "set_stage", "notify_team", "assign_to_agent"})
 
 # Who a notify_team step can alert.

@@ -238,6 +238,7 @@ async def resolve_deposit_paid(db: AsyncSession, *, commitment: Commitment) -> A
                     "starts_at": appointment.starts_at.isoformat(),
                     "intake_channel": appointment.intake_channel.value,
                     "deposit_paid": True,
+                    "appointment_id": str(appointment.id),
                 },
             )
         except Exception:

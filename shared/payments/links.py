@@ -259,33 +259,122 @@ def auto_settings(business: Business) -> dict:
     }
 
 
-async def auto_link_after_booking(
-    db: AsyncSession, *, business: Business, customer_id: uuid.UUID, kind: str, description: str,
-    doctor_fee_paise: int | None = None, appointment_id: uuid.UUID | None = None,
-) -> PaymentLink | None:
+# One fee per token or appointment: the Commitment is keyed by (source_system, external_ref), so the AI's own send,
+# the Settings switch, an automation rule and the receptionist's button can all fire and still make one fee and one link.
+TOKEN_FEE = "queue_token_fee"
+APPOINTMENT_FEE = "appointment_fee"
+
+
+async def _fee_commitment_for(
+    db: AsyncSession, *, business_id: uuid.UUID, customer_id: uuid.UUID, amount_paise: int, description: str,
+    source_system: str, external_ref: str, appointment_id: uuid.UUID | None = None,
+) -> Commitment:
+    existing = (
+        await db.execute(
+            select(Commitment).where(
+                Commitment.business_id == business_id, Commitment.source_system == source_system,
+                Commitment.external_ref == external_ref,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    commitment = fee_commitment(
+        business_id=business_id, customer_id=customer_id, amount_paise=amount_paise, description=description,
+        appointment_id=appointment_id,
+    )
+    commitment.source_system, commitment.external_ref = source_system, external_ref
+    db.add(commitment)
+    await db.flush()
+    return commitment
+
+
+async def _open_link_for(db: AsyncSession, commitment_id: uuid.UUID, now: datetime) -> PaymentLink | None:
+    rows = (
+        await db.execute(
+            select(PaymentLink)
+            .where(PaymentLink.commitment_id == commitment_id, PaymentLink.status.in_(OPEN_STATUSES))
+            .order_by(PaymentLink.created_at.desc())
+        )
+    ).scalars().all()
+    return next((r for r in rows if r.expires_at is None or r.expires_at > now), None)
+
+
+async def send_fee_link(
+    db: AsyncSession, *, business: Business, kind: str, ref_id: uuid.UUID, amount_paise: int | None = None,
+    user_id: uuid.UUID | None = None, template_name: str | None = None, template_language: str = "en",
+) -> tuple[PaymentLink | None, bool, str | None]:
     """
-    When the AI has just booked a token or an appointment on WhatsApp, send the fee link straight after - if the
-    business switched it on and its gateway is connected. The fee is the doctor's consultation fee, else the business's
-    default fee. Never raises: a booking that worked must not fail because a link could not be sent.
+    The fee link for one token (kind "token") or appointment (kind "appointment"). The amount is the one given, else
+    the doctor's consultation fee, else the business's default fee. A fee already paid sends nothing; a link already
+    out and still open is returned, not sent again. Raises LinkError for something staff should see.
+    """
+    from shared.db.models import Appointment, Doctor, QueueEntry
+
+    now = datetime.now(timezone.utc)
+    if kind == "token":
+        entry = await db.get(QueueEntry, ref_id)
+        if entry is None or entry.business_id != business.id:
+            raise LinkError("Token not found.")
+        if entry.customer_id is None:
+            raise LinkError("This token has no customer with a phone number.")
+        customer_id, doctor_id, appointment_id = entry.customer_id, entry.doctor_id, None
+        description = f"Fee for token {entry.queue_number} ({entry.queue_date.strftime('%d %b')})"
+        source_system = TOKEN_FEE
+    elif kind == "appointment":
+        appt = await db.get(Appointment, ref_id)
+        if appt is None or appt.business_id != business.id:
+            raise LinkError("Appointment not found.")
+        customer_id, doctor_id, appointment_id = appt.customer_id, appt.doctor_id, appt.id
+        description = f"Fee for the appointment on {appt.starts_at.strftime('%d %b, %I:%M %p')}"
+        source_system = APPOINTMENT_FEE
+    else:
+        raise LinkError("Unknown booking.")
+
+    amount = amount_paise
+    if not amount and doctor_id:
+        doctor = await db.get(Doctor, doctor_id)
+        amount = doctor.consultation_fee_paise if doctor else None
+    amount = amount or auto_settings(business)["default_fee_paise"]
+    if not amount:
+        raise LinkError("Enter the amount to collect, or set the doctor's fee or a default fee.")
+
+    commitment = await _fee_commitment_for(
+        db, business_id=business.id, customer_id=customer_id, amount_paise=amount, description=description,
+        source_system=source_system, external_ref=str(ref_id), appointment_id=appointment_id,
+    )
+    if commitment.status != CommitmentStatus.open or not commitment.outstanding_paise:
+        return None, False, "This fee is already paid."
+    existing = await _open_link_for(db, commitment.id, now)
+    if existing is not None:
+        return existing, False, "A link for this was already sent. Copy it to share it again."
+    return await send_link(
+        db, business=business, commitment=commitment, user_id=user_id,
+        template_name=template_name, template_language=template_language,
+    )
+
+
+async def auto_link_after_booking(db: AsyncSession, *, business: Business, kind: str, ref_id: uuid.UUID) -> PaymentLink | None:
+    """
+    The Settings switch: right after the AI books on WhatsApp, send the fee link - if it is switched on for this kind
+    ("tokens" or "appointments") and the gateway is connected. Never raises: a booking that worked must not fail
+    because a link could not be sent.
     """
     try:
-        settings_ = auto_settings(business)
-        if not settings_.get(kind):
+        if not auto_settings(business).get(kind):
             return None
-        amount = doctor_fee_paise or settings_["default_fee_paise"]
         gateway_row = await connection_for(db, business.id)
-        if not amount or gateway_row is None or gateway_row.status != ConnectionStatus.active:
+        if gateway_row is None or gateway_row.status != ConnectionStatus.active:
             return None
-        commitment = fee_commitment(
-            business_id=business.id, customer_id=customer_id, amount_paise=amount, description=description,
-            appointment_id=appointment_id,
+        link, sent, reason = await send_fee_link(
+            db, business=business, kind="token" if kind == "tokens" else "appointment", ref_id=ref_id,
         )
-        db.add(commitment)
-        await db.flush()
-        link, sent, reason = await send_link(db, business=business, commitment=commitment, user_id=None)
         if not sent:
-            logger.info("auto payment link made but not sent business=%s: %s", business.id, reason)
+            logger.info("auto payment link not sent business=%s: %s", business.id, reason)
         return link
+    except LinkError as exc:
+        logger.info("auto payment link skipped business=%s: %s", business.id, exc)
+        return None
     except Exception:  # noqa: BLE001 - the booking stands whatever happens here
         logger.exception("auto payment link failed business=%s kind=%s", business.id, kind)
         return None

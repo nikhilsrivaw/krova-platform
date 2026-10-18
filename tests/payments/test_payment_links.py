@@ -274,7 +274,7 @@ def test_rupees_reads_naturally():
     assert links.rupees(50000) == "Rs 500" and links.rupees(150050) == "Rs 1,500.50"
 
 
-# ── sent by itself after the AI books ────────────────────────────────────────
+# ── one fee and one link per booking, whoever sends it ───────────────────────
 
 def _biz(auto=None):
     settings_ = {"payments": {"auto_link": auto}} if auto is not None else {}
@@ -288,58 +288,187 @@ def test_auto_links_are_off_unless_switched_on():
     assert links.auto_settings(_biz({"tokens": "yes", "default_fee_paise": 5}))["tokens"] is False
 
 
-def _auto(monkeypatch, *, business, gateway=True, fail=False, **kwargs):
-    sent = {}
+class _BookingDb:
+    """A token or an appointment, its doctor, and whatever fee commitments and links already exist."""
+
+    def __init__(self, *, doctor_fee=None, existing_commitment=None, open_link=None, customer=True):
+        from datetime import date
+        self.entry = SimpleNamespace(business_id=BIZ, customer_id=uuid.uuid4() if customer else None, doctor_id=uuid.uuid4(),
+                                     queue_number=14, queue_date=date(2026, 10, 18))
+        self.appt = SimpleNamespace(id=uuid.uuid4(), business_id=BIZ, customer_id=uuid.uuid4(), doctor_id=uuid.uuid4(),
+                                    starts_at=NOW)
+        self.doctor = SimpleNamespace(consultation_fee_paise=doctor_fee)
+        self.existing, self.open_link, self.added = existing_commitment, open_link, []
+
+    async def get(self, model, key):
+        return {"QueueEntry": self.entry, "Appointment": self.appt, "Doctor": self.doctor}[model.__name__]
+
+    async def execute(self, statement):
+        sql = str(statement)
+        if "FROM commitments" in sql:
+            value = self.existing
+            return SimpleNamespace(scalar_one_or_none=lambda: value)
+        rows = [self.open_link] if self.open_link else []
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def flush(self):
+        pass
+
+
+def _fake_send(monkeypatch):
+    sent = []
+
+    async def send_link(db, *, business, commitment, user_id, template_name=None, template_language="en"):
+        sent.append(commitment)
+        return SimpleNamespace(id="l", expires_at=None), True, None
+
+    monkeypatch.setattr(links, "send_link", send_link)
+    return sent
+
+
+def _fee(db, kind="token", amount=None, business=None):
+    return asyncio.run(links.send_fee_link(db, business=business or _biz(), kind=kind, ref_id=uuid.uuid4(), amount_paise=amount))
+
+
+def test_a_token_fee_is_keyed_to_the_token(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _, ok, _ = _fee(_BookingDb(), amount=50000)
+    c = sent[0]
+    assert ok and c.amount_paise == 50000 and c.description == "Fee for token 14 (18 Oct)"
+    assert c.source_system == links.TOKEN_FEE and c.external_ref
+    assert c.direction == CommitmentDirection.they_owe and c.status == CommitmentStatus.open
+
+
+def test_amount_falls_back_to_the_doctors_fee_then_the_default(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(doctor_fee=70000), business=_biz({"default_fee_paise": 30000}))
+    _fee(_BookingDb(doctor_fee=None), business=_biz({"default_fee_paise": 30000}))
+    assert [c.amount_paise for c in sent] == [70000, 30000]
+
+
+def test_no_amount_anywhere_is_refused(monkeypatch):
+    _fake_send(monkeypatch)
+    with pytest.raises(links.LinkError, match="amount"):
+        _fee(_BookingDb(doctor_fee=None))
+
+
+def test_a_second_send_for_the_same_token_reuses_the_open_link(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    fee = SimpleNamespace(id=uuid.uuid4(), status=CommitmentStatus.open, outstanding_paise=50000)
+    open_link = SimpleNamespace(id="existing", expires_at=None)
+    link, ok, reason = _fee(_BookingDb(existing_commitment=fee, open_link=open_link), amount=50000)
+    assert link is open_link and not ok and "already sent" in reason and sent == []
+
+
+def test_a_paid_fee_sends_nothing(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    fee = SimpleNamespace(id=uuid.uuid4(), status=CommitmentStatus.met, outstanding_paise=0)
+    link, ok, reason = _fee(_BookingDb(existing_commitment=fee), amount=50000)
+    assert link is None and "already paid" in reason and sent == []
+
+
+def test_a_walk_in_without_a_customer_cannot_get_a_link(monkeypatch):
+    _fake_send(monkeypatch)
+    with pytest.raises(links.LinkError, match="phone"):
+        _fee(_BookingDb(customer=False), amount=50000)
+
+
+def test_an_appointment_fee_is_keyed_to_the_appointment(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(doctor_fee=60000), kind="appointment")
+    assert sent[0].source_system == links.APPOINTMENT_FEE and sent[0].amount_paise == 60000
+
+
+# ── the Settings switch (after the AI books on WhatsApp) ─────────────────────
+
+def _switch(monkeypatch, business, *, gateway=True, fail=None):
+    calls = []
 
     async def connection_for(db, business_id):
         return SimpleNamespace(status=ConnectionStatus.active) if gateway else None
 
-    async def send_link(db, *, business, commitment, user_id):
+    async def send_fee_link(db, **kwargs):
         if fail:
-            raise RuntimeError("WhatsApp down")
-        sent["commitment"] = commitment
+            raise fail
+        calls.append(kwargs)
         return SimpleNamespace(id="l"), True, None
 
-    db = SimpleNamespace(add=lambda row: sent.setdefault("added", row), flush=lambda: _noop())
     monkeypatch.setattr(links, "connection_for", connection_for)
-    monkeypatch.setattr(links, "send_link", send_link)
-    link = asyncio.run(links.auto_link_after_booking(db, business=business, customer_id=uuid.uuid4(), **kwargs))
-    return link, sent
+    monkeypatch.setattr(links, "send_fee_link", send_fee_link)
+    link = asyncio.run(links.auto_link_after_booking(None, business=business, kind="tokens", ref_id=uuid.uuid4()))
+    return link, calls
 
 
-async def _noop():
-    return None
+def test_switch_off_sends_nothing(monkeypatch):
+    link, calls = _switch(monkeypatch, _biz({"tokens": False}))
+    assert link is None and calls == []
 
 
-def test_switched_off_sends_nothing(monkeypatch):
-    link, sent = _auto(monkeypatch, business=_biz({"tokens": False}), kind="tokens", description="Fee for token 3")
-    assert link is None and sent == {}
+def test_switch_on_sends_the_token_fee(monkeypatch):
+    link, calls = _switch(monkeypatch, _biz({"tokens": True}))
+    assert link is not None and calls[0]["kind"] == "token"
 
 
-def test_a_token_uses_the_default_fee(monkeypatch):
-    link, sent = _auto(monkeypatch, business=_biz({"tokens": True, "default_fee_paise": 30000}), kind="tokens",
-                       description="Fee for token 3")
-    assert link is not None
-    c = sent["commitment"]
-    assert c.amount_paise == 30000 and c.description == "Fee for token 3"
-    assert c.direction == CommitmentDirection.they_owe and c.status == CommitmentStatus.open
+def test_no_gateway_sends_nothing(monkeypatch):
+    link, calls = _switch(monkeypatch, _biz({"tokens": True}), gateway=False)
+    assert link is None and calls == []
 
 
-def test_an_appointment_prefers_the_doctors_fee(monkeypatch):
-    _, sent = _auto(monkeypatch, business=_biz({"appointments": True, "default_fee_paise": 30000}), kind="appointments",
-                    description="Fee for the appointment", doctor_fee_paise=70000)
-    assert sent["commitment"].amount_paise == 70000
-
-
-def test_no_fee_known_or_no_gateway_sends_nothing(monkeypatch):
-    link, sent = _auto(monkeypatch, business=_biz({"tokens": True}), kind="tokens", description="x")
-    assert link is None and sent == {}
-    link, sent = _auto(monkeypatch, business=_biz({"tokens": True, "default_fee_paise": 30000}), gateway=False,
-                       kind="tokens", description="x")
-    assert link is None and sent == {}
-
-
-def test_a_failure_never_breaks_the_booking(monkeypatch):
-    link, _ = _auto(monkeypatch, business=_biz({"tokens": True, "default_fee_paise": 30000}), fail=True,
-                    kind="tokens", description="x")
+@pytest.mark.parametrize("error", [links.LinkError("no fee"), RuntimeError("WhatsApp down")])
+def test_a_failure_never_breaks_the_booking(monkeypatch, error):
+    link, _ = _switch(monkeypatch, _biz({"tokens": True}), fail=error)
     assert link is None
+
+
+# ── the automation action ────────────────────────────────────────────────────
+
+def _action(monkeypatch, context, config=None):
+    from shared.care import post_call_actions as pca
+    calls = []
+
+    async def send_fee_link(db, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(id="l"), True, None
+
+    monkeypatch.setattr(links, "send_fee_link", send_fee_link)
+    ok = asyncio.run(pca._send_payment_link(None, _biz(), config or {}, context, "test"))
+    return ok, calls
+
+
+def test_the_rule_sends_the_fee_for_the_token_it_fired_on(monkeypatch):
+    entry = uuid.uuid4()
+    ok, calls = _action(monkeypatch, {"queue_entry_id": str(entry)}, {"amount_paise": 50000, "template_name": "pay_link"})
+    assert ok and calls[0]["kind"] == "token" and calls[0]["ref_id"] == entry
+    assert calls[0]["amount_paise"] == 50000 and calls[0]["template_name"] == "pay_link"
+
+
+def test_the_rule_sends_the_fee_for_the_appointment_it_fired_on(monkeypatch):
+    appt = uuid.uuid4()
+    ok, calls = _action(monkeypatch, {"appointment_id": str(appt)})
+    assert ok and calls[0]["kind"] == "appointment" and calls[0]["amount_paise"] is None
+
+
+def test_the_rule_does_nothing_without_a_booking(monkeypatch):
+    ok, calls = _action(monkeypatch, {"shift": "morning"})
+    assert ok is False and calls == []
+
+
+def test_booking_events_say_which_booking_it_was():
+    import inspect
+    from shared.scheduling import booking, deposits, queue_booking
+    assert '"queue_entry_id": str(entry.id)' in inspect.getsource(queue_booking.issue_token)
+    assert '"appointment_id": str(appointment.id)' in inspect.getsource(booking)
+    assert '"appointment_id": str(appointment.id)' in inspect.getsource(deposits)
+
+
+def test_a_payment_link_rule_must_be_on_a_booking_trigger():
+    from fastapi import HTTPException
+    from services.api.routers import post_call_rules as r
+    step = r.StepIn(action_type="send_payment_link", action_config={})
+    r._validate_step("queue_token.issued", step, 0)
+    r._validate_step("appointment.booked", step, 0)
+    with pytest.raises(HTTPException):
+        r._validate_step("message.received", step, 0)

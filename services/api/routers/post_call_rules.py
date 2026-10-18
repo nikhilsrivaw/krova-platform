@@ -120,6 +120,8 @@ _VALID_ACTIONS = {
     "instagram_comment_reply", "send_carousel",
     # Inside the business: alert people, hand the chat to someone, move the pipeline.
     "notify_team", "assign_to_agent", "set_stage",
+    # Money: a fee link from the business's own payment gateway, for the token or appointment the rule fired on.
+    "send_payment_link",
 }
 
 # A generous ceiling, not a real product limit discovered anywhere - just
@@ -312,6 +314,13 @@ def _validate_step(trigger_type: str, step: StepIn, index: int) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{prefix}.action_type must be one of {sorted(_VALID_ACTIONS)}",
+        )
+    if step.action_type == "send_payment_link" and trigger_type not in (
+        WebhookEventType.appointment_booked.value, WebhookEventType.queue_token_issued.value,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{prefix}: a payment link needs a booking - use it on appointment booked or token issued",
         )
     send_to = (step.action_config or {}).get("send_to")
     if send_to not in (None, "customer", "payer"):

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
-from shared.db.models import Appointment, Business, Commitment, Doctor, PaymentLink, QueueEntry
+from shared.db.models import Business, Commitment, PaymentLink
 from shared.payments import links
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -167,49 +167,30 @@ async def send_for_commitment(body: SendIn, current_user: CurrentUserDep, db: Db
     return await _send(db, current_user, commitment, body.template_name, body.template_language)
 
 
+async def _send_fee(db, current_user, kind: str, ref_id: uuid.UUID, body: FeeIn) -> SendOut:
+    business = await _business(db, current_user)
+    try:
+        link, sent, reason = await links.send_fee_link(
+            db, business=business, kind=kind, ref_id=ref_id, amount_paise=body.amount_paise, user_id=current_user.id,
+            template_name=body.template_name, template_language=body.template_language,
+        )
+    except links.LinkError as exc:
+        raise _refuse(exc) from exc
+    if link is None:
+        raise HTTPException(status_code=409, detail=reason or "Nothing to collect.")
+    return SendOut(link=_link_out(link), sent=sent, reason=reason)
+
+
 @router.post("/queue/{entry_id}/link", response_model=SendOut)
 async def send_for_token(entry_id: uuid.UUID, body: FeeIn, current_user: CurrentUserDep, db: DbDep) -> SendOut:
-    """The fee for a token: written to the ledger as owed, then sent as a link."""
-    entry = await db.get(QueueEntry, entry_id)
-    if entry is None or entry.business_id != current_user.business:
-        raise HTTPException(status_code=404, detail="Not found")
-    if entry.customer_id is None:
-        raise HTTPException(status_code=422, detail="This token has no customer with a phone number.")
-    amount = body.amount_paise
-    if amount is None and entry.doctor_id:
-        doctor = await db.get(Doctor, entry.doctor_id)
-        amount = doctor.consultation_fee_paise if doctor else None
-    if not amount:
-        raise HTTPException(status_code=422, detail="Enter the amount to collect.")
-    commitment = links.fee_commitment(
-        business_id=current_user.business, customer_id=entry.customer_id, amount_paise=amount,
-        description=f"Fee for token {entry.queue_number} ({entry.queue_date.strftime('%d %b')})",
-    )
-    db.add(commitment)
-    await db.flush()
-    return await _send(db, current_user, commitment, body.template_name, body.template_language)
+    """The fee for a token (amount given, else the doctor's fee, else the default fee), sent as a link - once per token."""
+    return await _send_fee(db, current_user, "token", entry_id, body)
 
 
 @router.post("/appointments/{appointment_id}/link", response_model=SendOut)
 async def send_for_appointment(appointment_id: uuid.UUID, body: FeeIn, current_user: CurrentUserDep, db: DbDep) -> SendOut:
-    """The fee for an appointment (the doctor's consultation fee unless another amount is given)."""
-    appointment = await db.get(Appointment, appointment_id)
-    if appointment is None or appointment.business_id != current_user.business:
-        raise HTTPException(status_code=404, detail="Not found")
-    amount = body.amount_paise
-    if amount is None:
-        doctor = await db.get(Doctor, appointment.doctor_id)
-        amount = doctor.consultation_fee_paise if doctor else None
-    if not amount:
-        raise HTTPException(status_code=422, detail="Enter the amount to collect.")
-    commitment = links.fee_commitment(
-        business_id=current_user.business, customer_id=appointment.customer_id, amount_paise=amount,
-        description=f"Fee for the appointment on {appointment.starts_at.strftime('%d %b, %I:%M %p')}",
-        appointment_id=appointment.id,
-    )
-    db.add(commitment)
-    await db.flush()
-    return await _send(db, current_user, commitment, body.template_name, body.template_language)
+    """The fee for an appointment (amount given, else the doctor's fee, else the default fee) - once per appointment."""
+    return await _send_fee(db, current_user, "appointment", appointment_id, body)
 
 
 @router.get("/links", response_model=list[LinkOut])
