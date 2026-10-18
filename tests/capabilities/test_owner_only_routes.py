@@ -88,6 +88,7 @@ LOCKED = {(m, _P + path) for m, path in [
     # how much the AI does on its own, which features are on, and the owner's money assistant
     ("POST", "/approvals/autonomy"), ("PATCH", "/approvals/auto-send-rules"),
     ("PUT", "/payments/gateway"), ("DELETE", "/payments/gateway"), ("PUT", "/payments/auto"), ("POST", "/post-call-rules/templates"), ("PUT", "/post-call-rules/limits"),
+    ("POST", "/post-call-rules/ai-draft"),
     ("PUT", "/capabilities/{key}"), ("POST", "/capabilities/{key}/templates"),
     ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
     # what the AI is taught to say

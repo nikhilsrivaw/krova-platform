@@ -48,6 +48,9 @@ class UsageEventType(str, enum.Enum):
     # periodic sweep, not notify_escalation() itself), so channel below is
     # the escalation's own original channel, not "when this ran."
     ai_escalation_categorization = "ai_escalation_categorization"
+    # One reply of the Automations page's "describe it" builder - see shared/ai/rule_builder.py. Also what its
+    # monthly allowance is counted from.
+    ai_rule_builder = "ai_rule_builder"
 
     # Voice-specific, one row per cost component per call, matching the
     # breakdown already computed in relay.py rather than collapsing them

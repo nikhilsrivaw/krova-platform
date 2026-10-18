@@ -28,11 +28,12 @@ should cancel what it had queued.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.care.post_call_actions import (
@@ -47,15 +48,26 @@ from shared.care.post_call_actions import (
     normalize_conditions,
     resolve_tokens,
 )
+from shared.ai import rule_builder
+from shared.billing import usage
 from shared.care import post_call_actions
+from shared.channels.whatsapp import templates as meta_templates
 from shared.db.models import (
     AutomationRunLog,
     AutomationStep,
     Business,
     Channel,
+    MessageTemplate,
     PostCallActionRule,
+    TemplateStatus,
+    UsageEvent,
+    UsageEventType,
     WebhookEventType,
 )
+from shared.verticals import capabilities_for
+from shared.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/post-call-rules", tags=["post-call-rules"])
 
@@ -833,3 +845,115 @@ async def test_rule(body: RuleTestIn, current_user: CurrentUserDep) -> RuleTestO
         ))
 
     return RuleTestOut(available_fields=available, missing_fields=missing, steps=results)
+
+
+# ── Describe it, and KROVA drafts the rule ──────────────────────────────────
+
+# AI replies a business gets each calendar month (UTC), on every plan. One reply is one question asked or one rule
+# drafted; a typical rule takes 2-4. Each reply costs KROVA roughly a rupee or two, so this bounds a month at a few
+# hundred rupees at worst.
+AI_DRAFT_MONTHLY = 150
+
+
+class DraftTurnIn(BaseModel):
+    role: Literal["owner", "ai"]
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class DraftIn(BaseModel):
+    turns: list[DraftTurnIn] = Field(min_length=1, max_length=rule_builder.MAX_TURNS)
+
+
+class DraftOut(BaseModel):
+    kind: Literal["ask", "rule"]
+    text: str
+    options: list[str] = []
+    # In exactly the shape POST /post-call-rules takes - the page opens it on the canvas, unsaved.
+    rule: PostCallRuleIn | None = None
+    used: int
+    limit: int
+
+
+async def _drafts_this_month(db: DbDep, business_id: uuid.UUID) -> int:
+    start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return int((await db.execute(
+        select(func.count()).select_from(UsageEvent).where(
+            UsageEvent.business_id == business_id,
+            UsageEvent.event_type == UsageEventType.ai_rule_builder,
+            UsageEvent.occurred_at >= start,
+        )
+    )).scalar_one())
+
+
+async def _template_names(db: DbDep, business_id: uuid.UUID) -> list[str]:
+    """Approved, non-carousel templates with at most one blank - the ones a follow-up step can send."""
+    rows = (await db.execute(
+        select(MessageTemplate).where(
+            MessageTemplate.business_id == business_id, MessageTemplate.status == TemplateStatus.approved,
+        )
+    )).scalars().all()
+    names = set()
+    for t in rows:
+        components = t.components if isinstance(t.components, list) else []
+        if any(c.get("type") == "CAROUSEL" for c in components if isinstance(c, dict)):
+            continue
+        if len(meta_templates.variables_in(t.body_text or "")) <= 1:
+            names.add(t.name)
+    return sorted(names)
+
+
+@router.post("/ai-draft", response_model=DraftOut)
+async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> DraftOut:
+    """
+    The next step of the "describe it" builder: a question for the owner, or a whole rule. Nothing is saved - the
+    rule comes back to be opened on the canvas, where the owner reads it and presses Save. A draft that would not
+    pass the same validation Save runs is given back to the model once with the error, and never shown as a rule.
+    """
+    business_id = current_user.business
+    used = await _drafts_this_month(db, business_id)
+    if used >= AI_DRAFT_MONTHLY:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"This month's {AI_DRAFT_MONTHLY} AI replies are used up - build the rule by hand, or try again "
+                   "on the 1st.",
+        )
+
+    business = await db.get(Business, business_id)
+    triggers = rule_builder.allowed_triggers(capabilities_for(business) if business else [])
+    templates = await _template_names(db, business_id)
+    line = f"{business.name} ({business.vertical})" if business else "A business"
+    turns = [rule_builder.Turn(role=t.role, text=t.text) for t in body.turns]
+
+    answer = None
+    fix: str | None = None
+    for _ in range(2):
+        try:
+            answer = await rule_builder.answer(
+                turns=turns, triggers=triggers, templates=templates, business_line=line, fix=fix,
+            )
+        except Exception:  # noqa: BLE001 - the model being down is a message to the owner, not a 500
+            logger.warning("rule builder failed", exc_info=True)
+            break
+        usage.record(
+            business_id=business_id, event_type=UsageEventType.ai_rule_builder, channel="app",
+            quantity=1, unit="reply", krova_cost_paise=answer.cost_paise, db=db,
+        )
+        used += 1
+        if answer.kind != "rule":
+            break
+        try:
+            rule = PostCallRuleIn(**answer.rule)
+            _validate(rule)
+            await db.commit()
+            return DraftOut(kind="rule", text=answer.text, rule=rule, used=used, limit=AI_DRAFT_MONTHLY)
+        except (HTTPException, ValueError) as exc:
+            fix = str(exc.detail if isinstance(exc, HTTPException) else exc)[:500]
+            answer = None
+    await db.commit()
+
+    if answer is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not draft this rule right now - try saying it another way, or build it by hand.",
+        )
+    return DraftOut(kind="ask", text=answer.text, options=answer.options, used=used, limit=AI_DRAFT_MONTHLY)
