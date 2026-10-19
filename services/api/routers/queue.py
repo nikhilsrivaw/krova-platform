@@ -309,6 +309,8 @@ class QueueEntryOut(BaseModel):
     checked_in_at: datetime
     called_at: datetime | None
     completed_at: datetime | None
+    # Filled on the list, so a screen can show who without fetching every customer.
+    customer_name: str | None = None
 
 
 def _out(q: QueueEntry) -> QueueEntryOut:
@@ -373,8 +375,10 @@ async def list_queue(
         query = query.where(QueueEntry.shift == shift)
     if status_filter:
         query = query.where(QueueEntry.status == status_filter)
-    rows = await db.execute(query)
-    return [_out(q) for q in rows.scalars().all()]
+    entries = list((await db.execute(query)).scalars().all())
+    ids = {q.customer_id for q in entries if q.customer_id}
+    names = dict((await db.execute(select(Customer.id, Customer.display_name).where(Customer.id.in_(ids)))).all()) if ids else {}
+    return [_out(q).model_copy(update={"customer_name": names.get(q.customer_id)}) for q in entries]
 
 
 class QueuePatch(BaseModel):

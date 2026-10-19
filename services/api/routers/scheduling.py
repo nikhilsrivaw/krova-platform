@@ -404,9 +404,11 @@ class AppointmentOut(BaseModel):
     status: str
     intake_channel: str
     notes: str | None
+    # Filled on the list, so a screen can show who without fetching every customer.
+    customer_name: str | None = None
 
 
-def _appointment_out(a: Appointment, doctor_name: str) -> AppointmentOut:
+def _appointment_out(a: Appointment, doctor_name: str, customer_name: str | None = None) -> AppointmentOut:
     return AppointmentOut(
         id=str(a.id), doctor_id=str(a.doctor_id), doctor_name=doctor_name,
         customer_id=str(a.customer_id),
@@ -415,6 +417,7 @@ def _appointment_out(a: Appointment, doctor_name: str) -> AppointmentOut:
         status=a.status.value if hasattr(a.status, "value") else str(a.status),
         intake_channel=a.intake_channel.value if hasattr(a.intake_channel, "value") else str(a.intake_channel),
         notes=a.notes,
+        customer_name=customer_name,
     )
 
 
@@ -431,8 +434,9 @@ async def list_appointments(
     """
     await _require_scheduling(current_user.business, db)
     query = (
-        select(Appointment, Doctor.name)
+        select(Appointment, Doctor.name, Customer.display_name)
         .join(Doctor, Doctor.id == Appointment.doctor_id)
+        .outerjoin(Customer, Customer.id == Appointment.customer_id)
         .where(Appointment.business_id == current_user.business)
         .order_by(Appointment.starts_at)
     )
@@ -442,7 +446,7 @@ async def list_appointments(
         query = query.where(Appointment.starts_at < to_date)
 
     rows = await db.execute(query)
-    return [_appointment_out(a, doctor_name) for a, doctor_name in rows.all()]
+    return [_appointment_out(a, doctor_name, customer_name) for a, doctor_name, customer_name in rows.all()]
 
 
 class AppointmentIn(BaseModel):
