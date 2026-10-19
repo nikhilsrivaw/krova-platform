@@ -216,6 +216,8 @@ class BusinessMember(UUIDMixin, TimestampMixin, Base):
     last_routed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Where a call for this person rings (E.164 without the plus). None = they take no calls.
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Kinds of phone notification this person turned off here (shared/integrations/web_push.PUSH_KINDS).
+    push_muted: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
 
     business: Mapped["Business"] = relationship(back_populates="members")
     user: Mapped["User"] = relationship(back_populates="memberships")

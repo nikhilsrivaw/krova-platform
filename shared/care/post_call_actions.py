@@ -1207,7 +1207,7 @@ async def _notify_team(db: AsyncSession, business_id: uuid.UUID, customer: Custo
     }
     target = config.get("to")
     if target == "everyone":
-        sent = await web_push.send_to_business(db, business_id=business_id, payload=payload)
+        sent = await web_push.send_to_business(db, business_id=business_id, payload=payload, kind="team_alert")
     else:
         roles = (BusinessRole.owner,) if target == "owner" else (BusinessRole.owner, BusinessRole.admin)
         users: list[uuid.UUID] = []
@@ -1221,9 +1221,11 @@ async def _notify_team(db: AsyncSession, business_id: uuid.UUID, customer: Custo
                 )
             )
             users = list(rows.scalars().all())
-        sent = await web_push.send_to_users(db, business_id=business_id, user_ids=users, payload=payload)
+        sent = await web_push.send_to_users(
+            db, business_id=business_id, user_ids=users, payload=payload, kind="team_alert",
+        )
     if not sent:
-        raise NoRecipient("nobody has the app installed to receive the alert")
+        raise NoRecipient("nobody received the alert - no one has the app installed, or they turned these alerts off")
     return True
 
 

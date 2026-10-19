@@ -429,6 +429,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                 await team_conflict.notify(
                     db, business_id=message.business_id, user_id=owner_of_chat.assigned_to_user_id,
                     title="Reply waiting for you", body=(proposal.message or "")[:140], url="/app/approvals",
+                    kind="draft",
                 )
         except Exception:
             logger.exception("draft ping failed business=%s", message.business_id)

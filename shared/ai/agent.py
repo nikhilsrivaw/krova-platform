@@ -1302,9 +1302,11 @@ async def notify_escalation(
             chat = await db.get(Customer, customer_id)
             owner_id = chat.assigned_to_user_id if chat is not None else None
         if owner_id is not None:
-            await web_push.send_to_users(db, business_id=business_id, user_ids=[owner_id], payload=payload)
+            await web_push.send_to_users(
+                db, business_id=business_id, user_ids=[owner_id], payload=payload, kind="escalation",
+            )
         else:
-            await web_push.send_to_business(db, business_id=business_id, payload=payload)
+            await web_push.send_to_business(db, business_id=business_id, payload=payload, kind="escalation")
     except Exception:
         logger.exception("escalation push failed business=%s", business_id)
 

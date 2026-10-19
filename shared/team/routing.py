@@ -73,7 +73,7 @@ async def assign(
     await conflict.notify(
         db, business_id=business_id, user_id=member.user_id,
         title="Chat assigned to you", body=(customer.display_name if customer else None) or "A customer",
-        url=f"/app/inbox/{customer_id}",
+        url=f"/app/inbox/{customer_id}", kind="new_chat",
     )
     return member.user_id
 
@@ -106,6 +106,6 @@ async def route_new_chat(db: AsyncSession, *, business_id: uuid.UUID, customer_i
     await conflict.notify(
         db, business_id=business_id, user_id=member.user_id,
         title="New chat for you", body=(customer.display_name if customer else None) or "A customer wrote in",
-        url=f"/app/inbox/{customer_id}",
+        url=f"/app/inbox/{customer_id}", kind="new_chat",
     )
     return member.user_id

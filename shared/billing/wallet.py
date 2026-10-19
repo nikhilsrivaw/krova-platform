@@ -194,7 +194,7 @@ async def _tell_owner(db: AsyncSession, business_id: uuid.UUID, title: str, body
         )).scalars().all()
         await web_push.send_to_users(
             db, business_id=business_id, user_ids=list(ids),
-            payload={"title": title, "body": body, "url": "/app/more"},
+            payload={"title": title, "body": body, "url": "/app/more"}, kind="wallet",
         )
     except Exception:
         logger.exception("billing ping failed business=%s", business_id)

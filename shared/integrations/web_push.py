@@ -5,6 +5,9 @@ or a rejected push must never break the request that triggered it.
 
 A subscription the push service reports as gone (404/410) is deleted, so
 the table does not grow with installs people have since removed.
+
+Every push names its kind; a person can turn a kind off for themselves (BusinessMember.push_muted, set from the
+app's Settings). A push with no kind always goes.
 """
 
 import asyncio
@@ -15,10 +18,22 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config.settings import settings
-from shared.db.models import PushSubscription
+from shared.db.models import BusinessMember, PushSubscription
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# What a person can switch off, in the words the app shows. Order is the order on screen.
+PUSH_KINDS: dict[str, str] = {
+    "escalation": "The AI needs a person (escalations)",
+    "new_chat": "Chats given to you, or taken over",
+    "draft": "AI replies waiting for your OK",
+    "slow_reply": "A customer has waited too long",
+    "team_alert": "Alerts from your automations",
+    "calls": "A call is coming to you",
+    "wallet": "Wallet and plan",
+}
 
 
 def _send_one(sub: dict, payload: dict) -> int | None:
@@ -41,24 +56,40 @@ def _send_one(sub: dict, payload: dict) -> int | None:
 
 
 async def send_to_users(
-    db: AsyncSession, *, business_id: uuid.UUID, user_ids: list[uuid.UUID], payload: dict
+    db: AsyncSession, *, business_id: uuid.UUID, user_ids: list[uuid.UUID], payload: dict, kind: str | None = None
 ) -> int:
     """Push only to these people's installed apps (an assigned chat pings its owner, not everyone)."""
     if not user_ids:
         return 0
-    return await send_to_business(db, business_id=business_id, payload=payload, user_ids=user_ids)
+    return await send_to_business(db, business_id=business_id, payload=payload, user_ids=user_ids, kind=kind)
+
+
+async def muted_users(db: AsyncSession, business_id: uuid.UUID, kind: str) -> set[uuid.UUID]:
+    """Who in this business turned this kind of push off."""
+    rows = await db.execute(
+        select(BusinessMember.user_id).where(
+            BusinessMember.business_id == business_id, BusinessMember.push_muted.contains([kind]),
+        )
+    )
+    return set(rows.scalars().all())
 
 
 async def send_to_business(
-    db: AsyncSession, *, business_id: uuid.UUID, payload: dict, user_ids: list[uuid.UUID] | None = None
+    db: AsyncSession, *, business_id: uuid.UUID, payload: dict, user_ids: list[uuid.UUID] | None = None,
+    kind: str | None = None,
 ) -> int:
-    """Push to every installed app of this business (or just `user_ids`). Returns how many were sent."""
+    """Push to every installed app of this business (or just `user_ids`), skipping anyone who turned `kind` off.
+    Returns how many were sent."""
     if not settings.vapid_private_key:
         return 0
 
     query = select(PushSubscription).where(PushSubscription.business_id == business_id)
     if user_ids is not None:
         query = query.where(PushSubscription.user_id.in_(user_ids))
+    if kind is not None:
+        muted = await muted_users(db, business_id, kind)
+        if muted:
+            query = query.where(PushSubscription.user_id.not_in(muted))
     rows = (await db.execute(query)).scalars().all()
     if not rows:
         return 0

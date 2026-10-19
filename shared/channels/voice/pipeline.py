@@ -1293,7 +1293,7 @@ class CallPipeline:
         await conflict.notify(
             self.db, business_id=self.route.business_id, user_id=target.user_id,
             title="Call coming in", body=body,
-            url=f"/app/inbox/{self.customer_id}" if self.customer_id else "/app/today",
+            url=f"/app/inbox/{self.customer_id}" if self.customer_id else "/app/today", kind="calls",
         )
 
     async def _try_transfer(self, targets: "list[call_routing.Target]") -> bool:

@@ -155,7 +155,8 @@ BIZ = uuid.uuid4()
 class _Db:
     """Answers the few lookups send_link makes, in order."""
 
-    def __init__(self, *, gateway=True, phone="+919876543210", last_inbound=NOW, template=None):
+    # An hour ago, not NOW: NOW is a fixed date, and a fixed "last message" falls out of the 24-hour window a day later.
+    def __init__(self, *, gateway=True, phone="+919876543210", last_inbound=datetime.now(timezone.utc) - timedelta(hours=1), template=None):
         self.gateway = SimpleNamespace(business_id=BIZ, gateway="razorpay", key_id="k", key_secret="enc",
                                        status=ConnectionStatus.active) if gateway else None
         self.phone, self.last_inbound, self.template = phone, last_inbound, template

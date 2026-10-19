@@ -94,7 +94,7 @@ def test_complete_team_steps_are_accepted(action, config):
 def test_notify_team_pushes_to_the_chosen_people_with_tokens_filled(monkeypatch):
     sent = {}
 
-    async def fake_send(db, *, business_id, user_ids, payload):
+    async def fake_send(db, *, business_id, user_ids, payload, kind=None):
         sent.update(user_ids=user_ids, payload=payload)
         return len(user_ids)
 
@@ -114,7 +114,7 @@ def test_notify_team_pushes_to_the_chosen_people_with_tokens_filled(monkeypatch)
 def test_notify_team_assigned_goes_to_the_chats_owner_only(monkeypatch):
     sent = {}
 
-    async def fake_send(db, *, business_id, user_ids, payload):
+    async def fake_send(db, *, business_id, user_ids, payload, kind=None):
         sent["ids"] = user_ids
         return 1
 
@@ -128,7 +128,7 @@ def test_notify_team_assigned_goes_to_the_chats_owner_only(monkeypatch):
 
 
 def test_notify_team_says_so_when_nobody_can_receive_it(monkeypatch):
-    async def none_sent(db, *, business_id, user_ids, payload):
+    async def none_sent(db, *, business_id, user_ids, payload, kind=None):
         return 0
 
     monkeypatch.setattr(web_push, "send_to_users", none_sent)

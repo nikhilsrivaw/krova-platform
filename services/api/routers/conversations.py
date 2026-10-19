@@ -388,7 +388,7 @@ async def assign_conversation(
         await conflict.notify(
             db, business_id=current_user.business, user_id=target_id,
             title="A chat was assigned to you", body=customer.display_name or "A customer",
-            url=f"/app/inbox/{customer.id}",
+            url=f"/app/inbox/{customer.id}", kind="new_chat",
         )
     return {"customer_id": str(customer.id), "assigned_to_user_id": str(target_id)}
 
@@ -408,6 +408,7 @@ async def take_over_conversation(
         await conflict.notify(
             db, business_id=current_user.business, user_id=previous,
             title="A teammate took over a chat", body="It is no longer yours.", url=f"/app/inbox/{customer_id}",
+            kind="new_chat",
         )
     return {
         "customer_id": str(customer_id),

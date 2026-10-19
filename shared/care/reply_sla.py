@@ -101,16 +101,18 @@ async def check_reply_times(db: AsyncSession) -> int:
                         logger.exception("reply.overdue automations failed business=%s", business.id)
                     if customer.assigned_to_user_id:
                         await web_push.send_to_users(
-                            db, business_id=business.id, user_ids=[customer.assigned_to_user_id], payload=payload)
+                            db, business_id=business.id, user_ids=[customer.assigned_to_user_id], payload=payload,
+                            kind="slow_reply")
                     else:
-                        await web_push.send_to_business(db, business_id=business.id, payload=payload)
+                        await web_push.send_to_business(db, business_id=business.id, payload=payload, kind="slow_reply")
                 else:
                     customer.sla_alerted_at = customer.sla_escalated_at = now
                     payload["title"] = "Customer still waiting"
                     ids = set(await _supervisors(db, business.id))
                     if customer.assigned_to_user_id:
                         ids.add(customer.assigned_to_user_id)
-                    await web_push.send_to_users(db, business_id=business.id, user_ids=list(ids), payload=payload)
+                    await web_push.send_to_users(
+                        db, business_id=business.id, user_ids=list(ids), payload=payload, kind="slow_reply")
                 sent += 1
             except Exception:
                 logger.exception("reply-time reminder failed business=%s", business.id)

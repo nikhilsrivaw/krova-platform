@@ -88,7 +88,8 @@ async def _auto_assign_on(business_id: uuid.UUID, db: AsyncSession) -> bool:
 
 
 async def notify(
-    db: AsyncSession, *, business_id: uuid.UUID, user_id: uuid.UUID | None, title: str, body: str, url: str
+    db: AsyncSession, *, business_id: uuid.UUID, user_id: uuid.UUID | None, title: str, body: str, url: str,
+    kind: str | None = None,
 ) -> None:
     """Best-effort push to one person. Never raises: a missed ping must not undo the action."""
     if user_id is None:
@@ -98,7 +99,7 @@ async def notify(
 
         await web_push.send_to_users(
             db, business_id=business_id, user_ids=[user_id],
-            payload={"title": title, "body": body[:140], "url": url},
+            payload={"title": title, "body": body[:140], "url": url}, kind=kind,
         )
     except Exception:
         pass

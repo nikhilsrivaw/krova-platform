@@ -363,7 +363,7 @@ def test_targeted_push_only_reaches_the_named_people(monkeypatch):
 
     seen = {}
 
-    async def fake(db, *, business_id, payload, user_ids=None):
+    async def fake(db, *, business_id, payload, user_ids=None, kind=None):
         seen["ids"] = user_ids
         return 1
 
