@@ -16,6 +16,7 @@ from sqlalchemy import select
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.db.models import Business, Commitment, PaymentLink
 from shared.payments import links
+from shared.team import access
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -166,6 +167,7 @@ async def send_for_commitment(body: SendIn, current_user: CurrentUserDep, db: Db
     commitment = await db.get(Commitment, body.commitment_id)
     if commitment is None or commitment.business_id != current_user.business:
         raise HTTPException(status_code=404, detail="Not found")
+    await access.check_id(db, current_user, commitment.customer_id)
     return await _send(db, current_user, commitment, body.template_name, body.template_language)
 
 
@@ -203,6 +205,9 @@ async def list_links(
     query = select(PaymentLink).where(PaymentLink.business_id == current_user.business)
     if commitment_id is not None:
         query = query.where(PaymentLink.commitment_id == commitment_id)
+    only = await access.visible_ids(db, current_user)
+    if only is not None:
+        query = query.where(PaymentLink.commitment_id.in_(select(Commitment.id).where(Commitment.customer_id.in_(only))))
     rows = (await db.execute(query.order_by(PaymentLink.created_at.desc()).limit(limit))).scalars().all()
     return [_link_out(r) for r in rows]
 
@@ -213,6 +218,9 @@ async def check_link(link_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep
     link = await db.get(PaymentLink, link_id)
     if link is None or link.business_id != current_user.business:
         raise HTTPException(status_code=404, detail="Not found")
+    commitment = await db.get(Commitment, link.commitment_id)
+    if commitment is not None:
+        await access.check_id(db, current_user, commitment.customer_id)
     row = await links.connection_for(db, current_user.business)
     if row is None:
         raise HTTPException(status_code=422, detail="Connect your payment gateway in Settings first.")

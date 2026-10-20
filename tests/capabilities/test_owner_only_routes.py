@@ -108,6 +108,9 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/products/sync/meta"), ("POST", "/products/import"), ("POST", "/products"),
     ("DELETE", "/products/{product_id}"),
     ("POST", "/ledger/customers/import"), ("PUT", "/crm/pipeline-stages"),
+    # who the team may not see, and records the business answers for (consent, money)
+    ("POST", "/conversations/{customer_id}/private"),
+    ("PATCH", "/crm/customers/{customer_id}/deal-value"), ("PATCH", "/crm/customers/{customer_id}/marketing-opt-in"),
     ("POST", "/billing/subscribe"), ("POST", "/billing/topup"), ("POST", "/billing/cancel"), ("POST", "/billing/resume"), ("POST", "/team/members"), ("PATCH", "/team/members/{user_id}"),
     ("DELETE", "/team/members/{user_id}"), ("POST", "/team/members/{user_id}/reset-password"),
 ]}

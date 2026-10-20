@@ -23,7 +23,7 @@ from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
 from shared.db.models import Business, BusinessMember, Case, CaseStatus, DraftStatus, Customer, Escalation, MessageDraft, User
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
-from shared.team import briefing, human_calls, members
+from shared.team import access, briefing, human_calls, members
 from shared.team import settings as team_settings
 
 router = APIRouter(prefix="/team", tags=["team"])
@@ -254,14 +254,7 @@ async def my_work(current_user: CurrentUserDep, db: DbDep) -> MyWork:
 async def customer_briefing(customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> dict:
     """Who this customer is and what is open with them - shown before a call, a claim or a reply."""
     supervisor = current_user.role in ("owner", "admin")
-    customer = await db.get(Customer, customer_id)
-    if customer is None or customer.business_id != current_user.business:
-        raise HTTPException(404, "Customer not found")
-    if not supervisor:
-        business = await db.get(Business, current_user.business)
-        sees_only_own = bool(business) and team_settings.read(business)["agent_visibility"] == "assigned"
-        if sees_only_own and customer.assigned_to_user_id not in (None, current_user.id):
-            raise HTTPException(403, "This customer is with a teammate")
+    await access.check_id(db, current_user, customer_id)
     found = await briefing.build(
         db, business_id=current_user.business, customer_id=customer_id, private_ok=supervisor,
     )

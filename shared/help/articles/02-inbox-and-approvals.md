@@ -4,7 +4,7 @@
 Conversations shows every customer's WhatsApp, Instagram and voice call history as one timeline. Search finds a customer or anything ever said. Filters: All, Mine, Unassigned.
 - Reply: type your own reply, send a saved (canned) reply, or use Quick Send for tappable buttons, a picker list, a product or the catalog.
 - Customer 360 (side panel): AI profile, open promises, notes for the team (the customer never sees them), tags, known phone numbers and IDs.
-- Mark Private: hides a chat from agents who don't own it.
+- Mark Private (owner and admins only): for personal chats. The AI never reads or answers a private chat, and team members (agents) can't see it at all.
 - Call the customer: your phone rings first, then the customer is connected. You need to own (take over) the chat first.
 - Book Token: when the walk-in queue is on and a shift is open.
 

@@ -16,7 +16,7 @@ Reset password, mark Away (gets no new round-robin chats), make owner, remove. A
 - The first agent to reply owns the chat; others must take it over to answer (can be turned off).
 - New chats: "I assign them" or Round-robin (the available agent who got one longest ago).
 - Reply-time target: if a customer waits this long, the chat's owner is pinged; at double, admins too.
-- What agents can see: every chat, or only their own and unowned chats. Owners and admins always see every chat.
+- What agents can see: every chat, or only their own and unowned chats. This applies everywhere a customer shows up - Inbox, Customers, Ledger, Approvals, Escalations, Leads and payment links - not only the Inbox. Owners and admins always see every chat. Private chats are never shown to agents.
 
 ## Activity feed
 Team page → Activity feed: who did what and when - messages sent, replies approved, settings changed, data downloaded, sign-ins, and refused attempts. It never shows what a message said. Rows can't be edited or deleted.

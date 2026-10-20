@@ -7,7 +7,7 @@ Customers page lists everyone who has messaged or called you, with a health scor
 - Tags: tag one customer, or select many and tag them together. Campaigns can target a tag.
 - Pipeline: switch the Customers page to the board view and drag a customer to another stage. The stages come with your business type.
 - Import Contacts: upload a CSV with a phone column (and optionally name). Export CSV downloads the list.
-- Marketing Opt-In: only opted-in customers receive marketing templates.
+- Marketing Opt-In: only opted-in customers receive marketing templates. Only the owner or an admin can change it (and the deal value).
 
 ## Leads
 Leads page: every enquiry with its source and status - Justdial, IndiaMART, property portals, email, forms, file uploads.

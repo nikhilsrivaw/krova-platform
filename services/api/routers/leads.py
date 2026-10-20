@@ -14,6 +14,7 @@ from sqlalchemy import func, or_, select
 
 from services.api.dependencies import CurrentUserDep, DbDep
 from shared.db.models import Call, Customer, Direction, InboundLead, Message, User
+from shared.team import access
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -103,6 +104,11 @@ async def list_leads(
     offset = max(offset, 0)
 
     conditions = [InboundLead.business_id == current_user.business]
+    # Leads follow the chat rule: a team member sees the ones not yet tied to a customer, and the
+    # ones whose customer they may see (shared/team/access.py).
+    only = await access.visible_ids(db, current_user)
+    if only is not None:
+        conditions.append(or_(InboundLead.customer_id.is_(None), InboundLead.customer_id.in_(only)))
     if source:
         sources = [s.strip() for s in source.split(",") if s.strip()]
         if sources:

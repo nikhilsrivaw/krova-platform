@@ -21,7 +21,7 @@ class CaptureDb:
 def _sql(q=None, customer_id=None):
     db = CaptureDb()
     business = uuid.uuid4()
-    out = asyncio.run(ledger.list_customers(SimpleNamespace(business=business), db, 50, q, customer_id))
+    out = asyncio.run(ledger.list_customers(SimpleNamespace(business=business, role="owner"), db, 50, q, customer_id))
     assert out == []
     sql = str(db.statements[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
     return sql, business

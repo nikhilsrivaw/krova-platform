@@ -54,7 +54,7 @@ from shared.db.models import (
 )
 from shared.identity.normalise import InvalidIdentifier, normalise_phone
 from shared.audit import activity
-from shared.team import conflict
+from shared.team import access, conflict
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -125,6 +125,15 @@ async def _guard(current_user, db, *, phone: str | None = None, igsid: str | Non
     from shared.billing.guards import require_active_plan
 
     await require_active_plan(db, current_user.business)
+    # A private chat, or (when agents see only their own) a teammate's, is not this agent's to message.
+    customer_id = (await db.execute(
+        select(CustomerIdentity.customer_id).where(
+            CustomerIdentity.business_id == current_user.business,
+            CustomerIdentity.kind == ("phone" if phone else "instagram"),
+            CustomerIdentity.value == (phone or igsid or ""),
+        ).limit(1)
+    )).scalar_one_or_none()
+    await access.check_id(db, current_user, customer_id)
     try:
         await conflict.guard_reply_to(
             db, business_id=current_user.business,

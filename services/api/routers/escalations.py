@@ -12,11 +12,11 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.db.models import Business, Escalation, User
-from shared.team import conflict
+from shared.team import access, conflict
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,12 +64,37 @@ def _out(e: Escalation, names: dict | None = None) -> EscalationOut:
     )
 
 
+async def _mine_to_see(current_user, db) -> tuple:
+    """
+    The escalations a team member may see: ones from an unknown caller, ones they hold, and ones
+    about a customer they may see (shared/team/access.py). Empty for the owner and admins.
+    """
+    only = await access.visible_ids(db, current_user)
+    if only is None:
+        return ()
+    return (or_(
+        Escalation.customer_id.is_(None), Escalation.customer_id.in_(only),
+        Escalation.assigned_to_user_id == current_user.id,
+    ),)
+
+
+async def _get(escalation_id: uuid.UUID, current_user, db) -> Escalation:
+    escalation = await db.get(Escalation, escalation_id)
+    if escalation is None or escalation.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Escalation not found")
+    if escalation.assigned_to_user_id != current_user.id:
+        await access.check_id(db, current_user, escalation.customer_id)
+    return escalation
+
+
 @router.get("", response_model=list[EscalationOut])
 async def list_escalations(
     current_user: CurrentUserDep, db: DbDep, acknowledged: bool = Query(default=False),
     mine: bool = Query(default=False), unassigned: bool = Query(default=False),
 ) -> list[EscalationOut]:
-    query = select(Escalation).where(Escalation.business_id == current_user.business)
+    query = select(Escalation).where(
+        Escalation.business_id == current_user.business, *await _mine_to_see(current_user, db)
+    )
     query = query.where(Escalation.acknowledged_at.is_not(None) if acknowledged else Escalation.acknowledged_at.is_(None))
     if mine:
         query = query.where(Escalation.assigned_to_user_id == current_user.id)
@@ -91,6 +116,7 @@ async def pending_count(current_user: CurrentUserDep, db: DbDep) -> dict:
     result = await db.execute(select(func.count(Escalation.id)).where(
         Escalation.business_id == current_user.business,
         Escalation.acknowledged_at.is_(None),
+        *await _mine_to_see(current_user, db),
     ))
     return {"open": int(result.scalar_one())}
 
@@ -138,9 +164,7 @@ async def set_escalation_settings(
 async def set_escalation_status(
     escalation_id: uuid.UUID, body: EscalationStatusIn, current_user: CurrentUserDep, db: DbDep,
 ) -> EscalationOut:
-    escalation = await db.get(Escalation, escalation_id)
-    if escalation is None or escalation.business_id != current_user.business:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Escalation not found")
+    escalation = await _get(escalation_id, current_user, db)
     await conflict.guard_escalation_change(
         db, escalation=escalation, actor_id=current_user.id, actor_role=current_user.role
     )
@@ -158,9 +182,7 @@ async def set_escalation_status(
 
 @router.post("/{escalation_id}/acknowledge", response_model=EscalationOut)
 async def acknowledge_escalation(escalation_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> EscalationOut:
-    escalation = await db.get(Escalation, escalation_id)
-    if escalation is None or escalation.business_id != current_user.business:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Escalation not found")
+    escalation = await _get(escalation_id, current_user, db)
 
     if escalation.acknowledged_at is None:
         escalation.acknowledged_at = datetime.now(timezone.utc)
@@ -183,6 +205,7 @@ async def claim_escalation(
     "I've got this." One person holds an escalation; a second agent is told who.
     Taking an unheld one also acknowledges it, which stops the SMS failsafe.
     """
+    await _get(escalation_id, current_user, db)
     escalation = await conflict.claim_escalation(
         db, business_id=current_user.business, escalation_id=escalation_id,
         actor_id=current_user.id, actor_role=current_user.role, force=bool(body and body.force),

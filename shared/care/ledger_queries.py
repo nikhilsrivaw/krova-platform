@@ -53,16 +53,21 @@ class LedgerTotals:
     unconfirmed_count: int
 
 
-async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
+async def totals(business_id: uuid.UUID, db: AsyncSession, *, only=None) -> LedgerTotals:
     """
     The position, in one call - identical query shape to
     services/api/routers/ledger.py's own ledger_summary, which now
     delegates here rather than keeping a second copy.
+
+    `only` (a subquery of customer ids, shared/team/access.py) narrows it to
+    the customers an agent may see.
     """
     now = datetime.now(timezone.utc)
+    mine = (Commitment.customer_id.in_(only),) if only is not None else ()
     open_only = (
         Commitment.business_id == business_id,
         Commitment.status == CommitmentStatus.open,
+        *mine,
     )
 
     async def _total(direction: CommitmentDirection) -> int:
@@ -105,6 +110,7 @@ async def totals(business_id: uuid.UUID, db: AsyncSession) -> LedgerTotals:
         select(func.count(Commitment.id)).where(
             Commitment.business_id == business_id,
             Commitment.status == CommitmentStatus.unconfirmed,
+            *mine,
         )
     )
 
@@ -181,7 +187,7 @@ class DeliveryPromiseRow:
 
 
 async def open_delivery_promises(
-    business_id: uuid.UUID, db: AsyncSession, *, limit: int = 50,
+    business_id: uuid.UUID, db: AsyncSession, *, limit: int = 50, only=None,
 ) -> list[DeliveryPromiseRow]:
     """
     What this business promised to deliver, and what's already late - Type
@@ -201,6 +207,7 @@ async def open_delivery_promises(
             Commitment.status == CommitmentStatus.open,
             Commitment.direction == CommitmentDirection.we_owe,
             Commitment.kind == CommitmentKind.delivery,
+            *((Commitment.customer_id.in_(only),) if only is not None else ()),
         )
         .order_by(Commitment.due_at.asc().nullslast(), Commitment.created_at.desc())
         .limit(limit)
@@ -349,7 +356,7 @@ class InstallmentPlanRow:
 
 
 async def installment_plans(
-    business_id: uuid.UUID, db: AsyncSession, *, customer_id: uuid.UUID | None = None,
+    business_id: uuid.UUID, db: AsyncSession, *, customer_id: uuid.UUID | None = None, only=None,
 ) -> list[InstallmentPlanRow]:
     """
     Every installment plan for this business (or one customer), each with
@@ -365,6 +372,8 @@ async def installment_plans(
     plan_where = [InstallmentPlan.business_id == business_id]
     if customer_id is not None:
         plan_where.append(InstallmentPlan.customer_id == customer_id)
+    if only is not None:
+        plan_where.append(InstallmentPlan.customer_id.in_(only))
 
     plans = (
         await db.execute(

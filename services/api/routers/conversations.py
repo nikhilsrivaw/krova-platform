@@ -21,9 +21,9 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from services.api.dependencies import CurrentUserDep, DbDep
+from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.audit import activity
-from shared.team import conflict, presence
+from shared.team import access, conflict, presence
 from shared.channels.whatsapp.client import SERVICE_WINDOW, within_service_window
 from shared.db.models import (
     BusinessMember,
@@ -99,14 +99,6 @@ def _window(last_inbound: datetime | None) -> tuple[bool, str | None]:
     return within_service_window(last_inbound), closes.isoformat()
 
 
-async def _agents_see_only_theirs(current_user, db) -> bool:
-    from shared.db.models import Business
-    from shared.team import settings as team_settings
-
-    business = await db.get(Business, current_user.business)
-    return bool(business) and team_settings.read(business)["agent_visibility"] == "assigned"
-
-
 @router.get("", response_model=list[ConversationSummary])
 async def list_conversations(
     current_user: CurrentUserDep,
@@ -123,16 +115,16 @@ async def list_conversations(
     Every conversation, most recent first.
 
     Private customers are excluded by default. The owner marked them private
-    precisely so they stop appearing in the working view.
+    precisely so they stop appearing in the working view - and an agent never
+    sees them at all (shared/team/access.py).
     """
     business_id = current_user.business
 
     conditions = [Customer.business_id == business_id]
-    if current_user.role not in ("owner", "admin") and await _agents_see_only_theirs(current_user, db):
-        conditions.append(
-            (Customer.assigned_to_user_id == current_user.id) | Customer.assigned_to_user_id.is_(None)
-        )
-    if not include_private:
+    rule = await access.customer_rule(db, current_user)
+    if rule is not None:
+        conditions.append(rule)
+    elif not include_private:
         conditions.append(Customer.is_private == False)  # noqa: E712
 
     if q:
@@ -259,12 +251,7 @@ async def get_thread(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
         )
-    if (
-        current_user.role not in ("owner", "admin")
-        and customer.assigned_to_user_id not in (None, current_user.id)
-        and await _agents_see_only_theirs(current_user, db)
-    ):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "This chat is with a teammate.")
+    await access.check(db, current_user, customer)
 
     rows = await db.execute(
         select(Message)
@@ -325,7 +312,7 @@ async def get_thread(
 
 @router.post("/{customer_id}/private")
 async def set_private(
-    customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep, private: bool = True
+    customer_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep, private: bool = True
 ) -> dict:
     """
     Mark a conversation private.
@@ -333,7 +320,8 @@ async def set_private(
     The agent never reads or answers a private customer, and nothing is
     derived from their messages. This is what makes "that thread is personal"
     a guarantee rather than a promise - and it is why reading a mixed inbox is
-    defensible at all.
+    defensible at all. Owner and admins only: a private chat is hidden from the
+    rest of the team, so an agent could otherwise hide a chat from the owner.
     """
     customer = await db.get(Customer, customer_id)
     if customer is None or customer.business_id != current_user.business:
@@ -363,6 +351,7 @@ async def assign_conversation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
         )
+    await access.check(db, current_user, customer)
 
     if user_id is None:
         customer.assigned_to_user_id = None
@@ -401,6 +390,7 @@ async def take_over_conversation(
     Make this chat yours, whoever had it. The one-tap answer to "this chat is with
     Rahul" - logged, and the previous owner is told on their next look at it.
     """
+    await access.check_id(db, current_user, customer_id)
     previous = await conflict.take_over(
         db, business_id=current_user.business, customer_id=customer_id, actor_id=current_user.id
     )
@@ -435,6 +425,7 @@ async def thread_presence(
     customer = await db.get(Customer, customer_id)
     if customer is None or customer.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    await access.check(db, current_user, customer)
     if body.left:
         await presence.leave(
             db, business_id=current_user.business, customer_id=customer_id, user_id=current_user.id

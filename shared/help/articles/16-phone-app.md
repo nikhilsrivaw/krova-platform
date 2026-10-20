@@ -14,7 +14,7 @@ Waiting AI replies, open escalations, what is owed and overdue. Owner and admins
 - When the customer hasn't written in 24 hours, the reply box becomes "Send a template": pick an approved template, fill its blanks, check the preview, send.
 - Saved replies: the bookmark button puts one in the reply box.
 - Payment link: on an open promise in the chat or on the Ledger.
-- Tap the customer's name for their screen: stage, tags, notes, key dates, marketing consent.
+- Tap the customer's name for their screen: stage, tags, notes, key dates, marketing consent (only the owner or an admin can change consent).
 
 ## Customers
 Search finds anyone by name or phone. Owner and admins can add a contact (adding doesn't message them).

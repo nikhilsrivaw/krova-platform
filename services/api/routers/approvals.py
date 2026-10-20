@@ -37,7 +37,7 @@ from shared.db.models import (
     MessageDraft,
 )
 from shared.audit import activity
-from shared.team import conflict
+from shared.team import access, conflict
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -149,8 +149,12 @@ async def list_drafts(
     status_filter: str | None = Query(default="pending", alias="status"),
     limit: int = Query(default=50, le=200),
 ) -> list[DraftOut]:
-    """What the agent is waiting on, oldest first — the window closes."""
+    """What the agent is waiting on, oldest first — the window closes. A team member sees only
+    drafts for customers they may see (shared/team/access.py)."""
     conditions = [MessageDraft.business_id == current_user.business]
+    only = await access.visible_ids(db, current_user)
+    if only is not None:
+        conditions.append(MessageDraft.customer_id.in_(only))
     if status_filter and status_filter != "all":
         conditions.append(MessageDraft.status == status_filter)
 
@@ -166,10 +170,13 @@ async def list_drafts(
 @router.get("/count")
 async def pending_count(current_user: CurrentUserDep, db: DbDep) -> dict:
     """For the badge on the nav."""
+    only = await access.visible_ids(db, current_user)
+    mine = (MessageDraft.customer_id.in_(only),) if only is not None else ()
     total = await db.execute(
         select(func.count(MessageDraft.id)).where(
             MessageDraft.business_id == current_user.business,
             MessageDraft.status == DraftStatus.pending,
+            *mine,
         )
     )
     escalations = await db.execute(
@@ -177,6 +184,7 @@ async def pending_count(current_user: CurrentUserDep, db: DbDep) -> dict:
             MessageDraft.business_id == current_user.business,
             MessageDraft.status == DraftStatus.pending,
             MessageDraft.action == "escalate",
+            *mine,
         )
     )
     return {

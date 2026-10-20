@@ -27,6 +27,7 @@ from shared.db.models import (
     User,
     WebhookEventType,
 )
+from shared.team import access
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -117,17 +118,16 @@ def _tag_out(t: CustomerTag) -> TagOut:
     )
 
 
-async def _owned_customer(customer_id: uuid.UUID, business_id: uuid.UUID, db: DbDep) -> Customer:
-    customer = await db.get(Customer, customer_id)
-    if customer is None or customer.business_id != business_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
-    return customer
+async def _owned_customer(customer_id: uuid.UUID, current_user, db: DbDep) -> Customer:
+    """This business's customer, and one this person may see (shared/team/access.py)."""
+    return await access.check_id(db, current_user, customer_id)
 
 
-async def _owned_tag(tag_id: uuid.UUID, business_id: uuid.UUID, db: DbDep) -> CustomerTag:
+async def _owned_tag(tag_id: uuid.UUID, current_user, db: DbDep) -> CustomerTag:
     tag = await db.get(CustomerTag, tag_id)
-    if tag is None or tag.business_id != business_id:
+    if tag is None or tag.business_id != current_user.business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
+    await access.check_id(db, current_user, tag.customer_id)
     return tag
 
 
@@ -154,7 +154,7 @@ async def list_tags(
     db: DbDep,
     include_rejected: bool = False,
 ) -> list[TagOut]:
-    await _owned_customer(customer_id, current_user.business, db)
+    await _owned_customer(customer_id, current_user, db)
     conditions = [CustomerTag.customer_id == customer_id]
     if not include_rejected:
         conditions.append(CustomerTag.status != TagStatus.rejected)
@@ -169,7 +169,7 @@ async def add_tag(
     customer_id: uuid.UUID, body: TagIn, current_user: CurrentUserDep, db: DbDep
 ) -> TagOut:
     """A human's own label - confirmed the moment it's written, nothing to review."""
-    await _owned_customer(customer_id, current_user.business, db)
+    await _owned_customer(customer_id, current_user, db)
     label = body.label.strip().lower()
     if not label:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Label can't be empty")
@@ -205,7 +205,7 @@ async def add_tag(
 
 @router.post("/tags/{tag_id}/confirm", response_model=TagOut)
 async def confirm_tag(tag_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> TagOut:
-    tag = await _owned_tag(tag_id, current_user.business, db)
+    tag = await _owned_tag(tag_id, current_user, db)
     tag.status = TagStatus.confirmed
     tag.decided_by_user_id = current_user.id
     tag.decided_at = datetime.now(timezone.utc)
@@ -218,7 +218,7 @@ async def reject_tag(tag_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep)
     Say no. The row stays - rejected, not deleted - so the rule that
     proposed this label never proposes it again for this customer.
     """
-    tag = await _owned_tag(tag_id, current_user.business, db)
+    tag = await _owned_tag(tag_id, current_user, db)
     tag.status = TagStatus.rejected
     tag.decided_by_user_id = current_user.id
     tag.decided_at = datetime.now(timezone.utc)
@@ -231,13 +231,13 @@ async def delete_tag(tag_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep)
     Remove a tag entirely - unlike reject, this frees the label to be
     suggested or added again later.
     """
-    tag = await _owned_tag(tag_id, current_user.business, db)
+    tag = await _owned_tag(tag_id, current_user, db)
     await db.delete(tag)
 
 
 @router.get("/customers/{customer_id}/notes", response_model=list[NoteOut])
 async def list_notes(customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> list[NoteOut]:
-    await _owned_customer(customer_id, current_user.business, db)
+    await _owned_customer(customer_id, current_user, db)
     rows = await db.execute(
         select(CustomerNote, User.full_name)
         .outerjoin(User, User.id == CustomerNote.author_user_id)
@@ -258,7 +258,7 @@ async def list_notes(customer_id: uuid.UUID, current_user: CurrentUserDep, db: D
 async def add_note(
     customer_id: uuid.UUID, body: NoteIn, current_user: CurrentUserDep, db: DbDep
 ) -> NoteOut:
-    await _owned_customer(customer_id, current_user.business, db)
+    await _owned_customer(customer_id, current_user, db)
     note = CustomerNote(
         business_id=current_user.business,
         customer_id=customer_id,
@@ -281,6 +281,7 @@ async def delete_note(note_id: uuid.UUID, current_user: CurrentUserDep, db: DbDe
     note = await db.get(CustomerNote, note_id)
     if note is None or note.business_id != current_user.business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    await access.check_id(db, current_user, note.customer_id)
     await db.delete(note)
 
 
@@ -288,7 +289,7 @@ async def delete_note(note_id: uuid.UUID, current_user: CurrentUserDep, db: DbDe
 async def set_stage(
     customer_id: uuid.UUID, body: StageIn, current_user: CurrentUserDep, db: DbDep
 ) -> dict:
-    customer = await _owned_customer(customer_id, current_user.business, db)
+    customer = await _owned_customer(customer_id, current_user, db)
     previous = customer.stage
     # Blank or whitespace-only clears the stage. It used to save "", which
     # is neither a stage nor "no stage" - and would now also fire a
@@ -364,7 +365,7 @@ def _date_out(d: CustomerDate) -> CustomerDateOut:
 @router.get("/customers/{customer_id}/dates", response_model=list[CustomerDateOut])
 async def list_customer_dates(customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> list[CustomerDateOut]:
     """Key dates the business set on this customer - see CustomerDate."""
-    await _owned_customer(customer_id, current_user.business, db)
+    await _owned_customer(customer_id, current_user, db)
     rows = (
         await db.execute(
             select(CustomerDate).where(CustomerDate.customer_id == customer_id).order_by(CustomerDate.date)
@@ -377,7 +378,7 @@ async def list_customer_dates(customer_id: uuid.UUID, current_user: CurrentUserD
 async def add_customer_date(
     customer_id: uuid.UUID, body: CustomerDateIn, current_user: CurrentUserDep, db: DbDep
 ) -> CustomerDateOut:
-    await _owned_customer(customer_id, current_user.business, db)
+    await _owned_customer(customer_id, current_user, db)
     row = CustomerDate(
         business_id=current_user.business, customer_id=customer_id,
         label=body.label.strip(), date=body.date,
@@ -393,6 +394,7 @@ async def delete_customer_date(date_id: uuid.UUID, current_user: CurrentUserDep,
     row = await db.get(CustomerDate, date_id)
     if row is None or row.business_id != current_user.business:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Date not found")
+    await access.check_id(db, current_user, row.customer_id)
     await db.delete(row)
 
 
@@ -428,12 +430,12 @@ async def set_payer(
     the same business, and the link can't loop: someone can't pay for
     their own payer.
     """
-    customer = await _owned_customer(customer_id, current_user.business, db)
+    customer = await _owned_customer(customer_id, current_user, db)
     payer = None
     if body.paid_by_customer_id is not None:
         if body.paid_by_customer_id == customer_id:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "A customer can't pay for themselves")
-        payer = await _owned_customer(body.paid_by_customer_id, current_user.business, db)
+        payer = await _owned_customer(body.paid_by_customer_id, current_user, db)
         if payer.paid_by_customer_id == customer_id:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -462,7 +464,7 @@ async def set_price_tier(
     downstream watches a tier change today, unlike a pipeline stage. Only
     real effect: GET /ledger/price-inconsistencies groups by this.
     """
-    customer = await _owned_customer(customer_id, current_user.business, db)
+    customer = await _owned_customer(customer_id, current_user, db)
     customer.price_tier = (body.price_tier or "").strip() or None
     return {"customer_id": str(customer_id), "price_tier": customer.price_tier}
 
@@ -474,9 +476,10 @@ class DealValueIn(BaseModel):
 
 @router.patch("/customers/{customer_id}/deal-value", response_model=dict)
 async def set_deal_value(
-    customer_id: uuid.UUID, body: DealValueIn, current_user: CurrentUserDep, db: DbDep
+    customer_id: uuid.UUID, body: DealValueIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> dict:
-    customer = await _owned_customer(customer_id, current_user.business, db)
+    """Owner and admins only - it is money, and the pipeline totals add it up."""
+    customer = await _owned_customer(customer_id, current_user, db)
     customer.deal_value_paise = body.deal_value_paise
     return {"customer_id": str(customer_id), "deal_value_paise": customer.deal_value_paise}
 
@@ -487,16 +490,17 @@ class MarketingOptInIn(BaseModel):
 
 @router.patch("/customers/{customer_id}/marketing-opt-in", response_model=dict)
 async def set_marketing_opt_in(
-    customer_id: uuid.UUID, body: MarketingOptInIn, current_user: CurrentUserDep, db: DbDep
+    customer_id: uuid.UUID, body: MarketingOptInIn, current_user: OwnerOrAdminDep, db: DbDep
 ) -> dict:
     """
     A person, confirming this actually happened - shared/campaigns/
     audience.py's own enforcement is only as honest as what set this flag.
     Never called from anywhere automated (ingest, the agent) - see
     Customer.marketing_opt_in's own comment for why ordinary conversation
-    doesn't count as consent.
+    doesn't count as consent. Owner and admins only: it is a consent record,
+    and someone accountable should be the one to set it.
     """
-    customer = await _owned_customer(customer_id, current_user.business, db)
+    customer = await _owned_customer(customer_id, current_user, db)
     customer.marketing_opt_in = body.opt_in
     customer.marketing_opt_in_at = datetime.now(timezone.utc) if body.opt_in else None
     return {
@@ -548,9 +552,12 @@ async def pipeline_board(current_user: CurrentUserDep, db: DbDep) -> PipelineBoa
     stages = (business.settings or {}).get("pipeline_stages") if business else None
     stage_order = stages if stages else DEFAULT_PIPELINE_STAGES
 
+    rule = await access.customer_rule(db, current_user)
     customers = (
         await db.execute(
-            select(Customer).where(Customer.business_id == current_user.business)
+            select(Customer).where(
+                Customer.business_id == current_user.business, *((rule,) if rule is not None else ())
+            )
         )
     ).scalars().all()
     ids = [c.id for c in customers]
@@ -614,12 +621,14 @@ async def bulk_add_tag(body: BulkTagIn, current_user: CurrentUserDep, db: DbDep)
     if not label:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Label can't be empty")
 
+    rule = await access.customer_rule(db, current_user)
     owned_ids = {
         row
         for (row,) in (
             await db.execute(
                 select(Customer.id).where(
                     Customer.id.in_(body.customer_ids), Customer.business_id == current_user.business,
+                    *((rule,) if rule is not None else ()),
                 )
             )
         ).all()

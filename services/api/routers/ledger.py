@@ -52,6 +52,7 @@ from shared.care import ledger_queries
 from shared.care.commitment_payments import PaymentError, record_payment
 from shared.identity import importer
 from shared.reports import tally_export
+from shared.team import access
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -220,7 +221,9 @@ async def ledger_summary(current_user: CurrentUserDep, db: DbDep) -> LedgerSumma
     also readable by a non-HTTP caller (the owner voice interface's
     shared/ai/context.py::build_owner()).
     """
-    t = await ledger_queries.totals(current_user.business, db)
+    t = await ledger_queries.totals(
+        current_user.business, db, only=await access.visible_ids(db, current_user)
+    )
     return LedgerSummary(
         owed_to_us_paise=t.owed_to_us_paise,
         owed_by_us_paise=t.owed_by_us_paise,
@@ -241,7 +244,9 @@ async def delivery_promises(current_user: CurrentUserDep, db: DbDep) -> list[Del
     What this business promised to deliver, and what's already late - Type
     1 backlog #3. See shared/care/ledger_queries.py::open_delivery_promises.
     """
-    rows = await ledger_queries.open_delivery_promises(current_user.business, db)
+    rows = await ledger_queries.open_delivery_promises(
+        current_user.business, db, only=await access.visible_ids(db, current_user)
+    )
     return [
         DeliveryPromiseOut(
             commitment_id=str(r.commitment_id), customer_name=r.customer_name,
@@ -307,9 +312,7 @@ async def create_installment_plan(
     follows. total_paise is derived as the sum of what was actually typed,
     not a separately-entered number that could drift from it.
     """
-    customer = await db.get(Customer, body.customer_id)
-    if customer is None or customer.business_id != current_user.business:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    customer = await access.check_id(db, current_user, body.customer_id)
 
     total = sum(i.amount_paise for i in body.installments)
     plan = InstallmentPlan(
@@ -359,7 +362,9 @@ async def list_installment_plans(
     current_user: CurrentUserDep, db: DbDep, customer_id: uuid.UUID | None = Query(default=None),
 ) -> list[InstallmentPlanOut]:
     """Every installment plan for this business, or one customer's if filtered."""
-    rows = await ledger_queries.installment_plans(current_user.business, db, customer_id=customer_id)
+    rows = await ledger_queries.installment_plans(
+        current_user.business, db, customer_id=customer_id, only=await access.visible_ids(db, current_user)
+    )
     return [
         InstallmentPlanOut(
             plan_id=str(r.plan_id), customer_id=str(r.customer_id), customer_name=r.customer_name,
@@ -404,6 +409,9 @@ async def list_commitments(
         conditions.append(Commitment.status == status_filter)
     if customer_id:
         conditions.append(Commitment.customer_id == customer_id)
+    only = await access.visible_ids(db, current_user)
+    if only is not None:
+        conditions.append(Commitment.customer_id.in_(only))
     if overdue_only:
         conditions.extend(
             [Commitment.due_at < now, Commitment.status == CommitmentStatus.open]
@@ -438,7 +446,7 @@ async def commitment_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="Commitment not found"
         )
 
-    customer = await db.get(Customer, commitment.customer_id)
+    customer = await access.check_id(db, current_user, commitment.customer_id)
     evidence_rows = await db.execute(
         select(Message)
         .where(
@@ -480,7 +488,7 @@ async def confirm_commitment(
 
     Until an owner does this, an uncertain promise counts toward nothing.
     """
-    commitment = await _owned(commitment_id, current_user.business, db)
+    commitment = await _owned(commitment_id, current_user, db)
     commitment.status = CommitmentStatus.open
     commitment.confirmed_by_user_id = current_user.id
     commitment.confidence = 1.0
@@ -494,7 +502,7 @@ async def resolve_commitment(
     commitment_id: uuid.UUID, body: ResolveBody, current_user: CurrentUserDep, db: DbDep
 ) -> CommitmentOut:
     """Close a promise: paid, missed, or called off."""
-    commitment = await _owned(commitment_id, current_user.business, db)
+    commitment = await _owned(commitment_id, current_user, db)
     commitment.status = body.outcome
     commitment.resolved_at = datetime.now(timezone.utc)
     commitment.confirmed_by_user_id = current_user.id
@@ -516,7 +524,7 @@ async def record_commitment_payment(
     Closes the commitment as met once the promised amount has arrived. See
     shared/care/commitment_payments.py.
     """
-    commitment = await _owned(commitment_id, current_user.business, db)
+    commitment = await _owned(commitment_id, current_user, db)
     try:
         closed = record_payment(
             commitment, amount_paise=body.amount_paise, source="manual",
@@ -555,7 +563,7 @@ async def request_payment(
     own docstring. Confirm with a real test send before trusting this
     with a real customer's money.
     """
-    commitment = await _owned(commitment_id, current_user.business, db)
+    commitment = await _owned(commitment_id, current_user, db)
     if commitment.direction != CommitmentDirection.they_owe:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -644,9 +652,13 @@ async def list_customers(
     health score and summary rather than the client inventing a placeholder.
 
     `q` searches every customer by name or phone / handle (not only the most recent page), and `customer_id`
-    returns just that one - what the phone app's search and customer screen use.
+    returns just that one - what the phone app's search and customer screen use. An agent gets only
+    the customers they may see (shared/team/access.py).
     """
     query = select(Customer).where(Customer.business_id == current_user.business)
+    rule = await access.customer_rule(db, current_user)
+    if rule is not None:
+        query = query.where(rule)
     if customer_id is not None:
         query = query.where(Customer.id == customer_id)
     if q and q.strip():
@@ -867,12 +879,11 @@ async def export_tally_receipts(
     )
 
 
-async def _owned(
-    commitment_id: uuid.UUID, business_id: uuid.UUID, db: DbDep
-) -> Commitment:
+async def _owned(commitment_id: uuid.UUID, current_user, db: DbDep) -> Commitment:
     commitment = await db.get(Commitment, commitment_id)
-    if commitment is None or commitment.business_id != business_id:
+    if commitment is None or commitment.business_id != current_user.business:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Commitment not found"
         )
+    await access.check_id(db, current_user, commitment.customer_id)
     return commitment
