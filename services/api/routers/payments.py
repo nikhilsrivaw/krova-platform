@@ -168,10 +168,12 @@ async def send_for_commitment(body: SendIn, current_user: CurrentUserDep, db: Db
     if commitment is None or commitment.business_id != current_user.business:
         raise HTTPException(status_code=404, detail="Not found")
     await access.check_id(db, current_user, commitment.customer_id)
+    await access.require(db, current_user, "take_payments")
     return await _send(db, current_user, commitment, body.template_name, body.template_language)
 
 
 async def _send_fee(db, current_user, kind: str, ref_id: uuid.UUID, body: FeeIn) -> SendOut:
+    await access.require(db, current_user, "take_payments")
     business = await _business(db, current_user)
     try:
         link, sent, reason = await links.send_fee_link(

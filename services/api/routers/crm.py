@@ -86,7 +86,8 @@ class PipelineColumn(BaseModel):
     # None is the "not staged yet" bucket - always present, always first, so
     # a business new to the pipeline sees every customer land somewhere.
     stage: str | None
-    total_deal_value_paise: int
+    # None when the owner keeps business money from team members.
+    total_deal_value_paise: int | None
     customers: list[PipelineCard]
 
 
@@ -582,6 +583,7 @@ async def pipeline_board(current_user: CurrentUserDep, db: DbDep) -> PipelineBoa
         ).all():
             tags_by_customer.setdefault(customer_id, []).append(label)
 
+    see_money = (await access.permissions(db, current_user))["see_money"]
     by_stage: dict[str | None, list[Customer]] = {}
     for c in customers:
         by_stage.setdefault(c.stage, []).append(c)
@@ -592,13 +594,13 @@ async def pipeline_board(current_user: CurrentUserDep, db: DbDep) -> PipelineBoa
             PipelineCard(
                 customer_id=str(c.id),
                 name=c.display_name,
-                deal_value_paise=c.deal_value_paise,
+                deal_value_paise=c.deal_value_paise if see_money else None,
                 health_score=intelligence[c.id].health_score if c.id in intelligence else None,
                 tags=tags_by_customer.get(c.id, []),
             )
             for c in members
         ]
-        total = sum(c.deal_value_paise or 0 for c in members)
+        total = sum(c.deal_value_paise or 0 for c in members) if see_money else None
         return PipelineColumn(stage=stage, total_deal_value_paise=total, customers=cards)
 
     # Unstaged first, then every configured stage in order, then any stage a

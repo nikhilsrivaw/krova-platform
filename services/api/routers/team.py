@@ -191,6 +191,11 @@ class TeamSettings(BaseModel):
     agent_visibility: Literal["all", "assigned"] = "all"
     routing: Literal["manual", "round_robin"] = "manual"
     sla_minutes: int | None = Field(default=None, ge=1, le=1440)
+    # What agents may see and do - shared/team/settings.py.
+    agent_money: bool = False
+    agent_payments: bool = True
+    agent_phones: Literal["shown", "last4"] = "shown"
+    agent_templates: bool = True
 
 
 @router.get("/settings", response_model=TeamSettings)
@@ -206,7 +211,8 @@ async def put_team_settings(body: TeamSettings, current_user: OwnerOrAdminDep, d
         raise HTTPException(404, "Business not found")
     value = team_settings.write(
         business, auto_assign_on_reply=body.auto_assign_on_reply, agent_visibility=body.agent_visibility,
-        routing=body.routing, sla_minutes=body.sla_minutes,
+        routing=body.routing, sla_minutes=body.sla_minutes, agent_money=body.agent_money,
+        agent_payments=body.agent_payments, agent_phones=body.agent_phones, agent_templates=body.agent_templates,
     )
     activity.note(**{k: str(v).lower() for k, v in value.items()})
     return TeamSettings(**value)
@@ -260,6 +266,8 @@ async def customer_briefing(customer_id: uuid.UUID, current_user: CurrentUserDep
     )
     if found is None:
         raise HTTPException(404, "Customer not found")
+    if await access.hide_phones(db, current_user):
+        found.phones = [access.mask(p) for p in found.phones]
     return found.to_dict()
 
 

@@ -63,7 +63,7 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 
 
 class SendText(BaseModel):
-    to: str = Field(description="Phone number, any format")
+    to: str = Field(description="Phone number, any format - or customer:<id> (see _recipient)")
     body: str = Field(min_length=1, max_length=4096)
 
 
@@ -144,6 +144,37 @@ async def _guard(current_user, db, *, phone: str | None = None, igsid: str | Non
         raise conflict.to_http(exc) from exc
 
 
+CUSTOMER_PREFIX = "customer:"
+
+
+async def _recipient(to: str, current_user, db) -> str:
+    """
+    The number to send to: the one typed, or - `customer:<id>`, what the apps send when the owner
+    shows team members only the last 4 digits (shared/team/access.py) - that customer's own number,
+    looked up here.
+    """
+    if to.startswith(CUSTOMER_PREFIX):
+        try:
+            customer_id = uuid.UUID(to[len(CUSTOMER_PREFIX):])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Not a customer.") from exc
+        await access.check_id(db, current_user, customer_id)
+        phone = (await db.execute(
+            select(CustomerIdentity.value).where(
+                CustomerIdentity.business_id == current_user.business,
+                CustomerIdentity.customer_id == customer_id,
+                CustomerIdentity.kind == IdentityKind.phone,
+            ).limit(1)
+        )).scalar_one_or_none()
+        if not phone:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "This customer has no phone number on file.")
+        return phone
+    try:
+        return normalise_phone(to)
+    except InvalidIdentifier as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 async def _last_inbound(
     business_id: uuid.UUID, phone: str, db: DbDep
 ) -> tuple[Customer | None, datetime | None]:
@@ -222,11 +253,8 @@ async def send_text(
     told no helps nobody, and the error we would surface is less useful than
     the one we can give here.
     """
-    try:
-        to = normalise_phone(body.to)
-        activity.note(to=activity.mask_phone(to), channel="whatsapp")
-    except InvalidIdentifier as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    to = await _recipient(body.to, current_user, db)
+    activity.note(to=activity.mask_phone(to), channel="whatsapp")
     await _guard(current_user, db, phone=to)
 
     connection = await _connection(current_user.business, db)
@@ -279,13 +307,12 @@ async def send_template(
     Send using an approved template.
 
     Works whether or not the window is open - which is the whole point of
-    templates, and the only way to start a conversation.
+    templates, and the only way to start a conversation. Team members need the
+    owner's "templates" switch on (Team page).
     """
-    try:
-        to = normalise_phone(body.to)
-        activity.note(to=activity.mask_phone(to), channel="whatsapp")
-    except InvalidIdentifier as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await access.require(db, current_user, "send_templates")
+    to = await _recipient(body.to, current_user, db)
+    activity.note(to=activity.mask_phone(to), channel="whatsapp")
     await _guard(current_user, db, phone=to)
 
     connection = await _connection(current_user.business, db)
@@ -374,10 +401,7 @@ async def send_template(
 
 
 async def _open_connection_and_window(to_raw: str, current_user: CurrentUserDep, db: DbDep):
-    try:
-        to = normalise_phone(to_raw)
-    except InvalidIdentifier as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    to = await _recipient(to_raw, current_user, db)
     await _guard(current_user, db, phone=to)
 
     connection = await _connection(current_user.business, db)

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
 from shared.auth.encryption import decrypt, encrypt
@@ -47,6 +47,7 @@ from shared.db.models import (
     VoiceProvisioning,
     VoiceProvisioningStatus,
 )
+from shared.team import access
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -714,6 +715,12 @@ async def call_logs(
     conditions = [Call.business_id == current_user.business]
     if connection_id is not None:
         conditions.append(Call.connection_id == connection_id)
+    # A team member sees calls with customers they may see, or from callers not yet known
+    # (shared/team/access.py) - and, when the owner keeps money and numbers back, neither.
+    only = await access.visible_ids(db, current_user)
+    if only is not None:
+        conditions.append(or_(Call.customer_id.is_(None), Call.customer_id.in_(only)))
+    allowed = await access.permissions(db, current_user)
     rows = (
         await db.execute(
             select(Call).where(*conditions).order_by(Call.started_at.desc()).limit(limit)
@@ -745,6 +752,8 @@ async def call_logs(
         )
         for identity in id_rows.scalars().all():
             phones.setdefault(identity.customer_id, identity.value)
+        if not allowed["see_phones"]:
+            phones = {k: access.mask(v) for k, v in phones.items()}
 
     # Every cost the wallet bills for a call is a voice usage event pointing at it, not just the
     # speech + carrier part stored on the call; sum them so the page shows what is really charged.
@@ -764,8 +773,13 @@ async def call_logs(
             ).all()
         }
 
+    if not allowed["see_money"]:
+        billed = {}
+
     def _bill(c) -> tuple[int, int, int]:
         """(AI part, platform charge, total charged) in paise for one call."""
+        if not allowed["see_money"]:
+            return 0, 0, 0
         cost = max(billed.get(c.id, 0), c.cost_paise or 0)
         charged = plans.call_charge(cost) if cost > 0 else 0
         return cost - (c.cost_paise or 0), charged - cost, charged
@@ -782,9 +796,9 @@ async def call_logs(
             customer_phone=phones.get(c.customer_id) if c.customer_id else None,
             direction=c.direction.value,
             duration_seconds=c.duration_seconds,
-            cost_paise=c.cost_paise,
-            cost_display=_money(c.cost_paise),
-            cost_breakdown=c.cost_breakdown or {},
+            cost_paise=c.cost_paise if allowed["see_money"] else 0,
+            cost_display=_money(c.cost_paise) if allowed["see_money"] else "—",
+            cost_breakdown=(c.cost_breakdown or {}) if allowed["see_money"] else {},
             number=connections[c.connection_id].external_account_id if c.connection_id in connections else None,
             number_label=voice_numbers.label_of(connections[c.connection_id]) if c.connection_id in connections else None,
             hangup_cause=c.hangup_cause,

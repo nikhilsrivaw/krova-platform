@@ -107,7 +107,11 @@ async def list_escalations(
     if ids:
         users = (await db.execute(select(User).where(User.id.in_(ids)))).scalars().all()
         names = {u.id: (u.full_name or u.username or u.email) for u in users}
-    return [_out(e, names) for e in items]
+    out = [_out(e, names) for e in items]
+    if await access.hide_phones(db, current_user):
+        for item in out:
+            item.caller_phone = access.mask(item.caller_phone)
+    return out
 
 
 @router.get("/count")

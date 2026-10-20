@@ -18,5 +18,12 @@ Reset password, mark Away (gets no new round-robin chats), make owner, remove. A
 - Reply-time target: if a customer waits this long, the chat's owner is pinged; at double, admins too.
 - What agents can see: every chat, or only their own and unowned chats. This applies everywhere a customer shows up - Inbox, Customers, Ledger, Approvals, Escalations, Leads and payment links - not only the Inbox. Owners and admins always see every chat. Private chats are never shown to agents.
 
+## What agents can also do (Team page, owner and admins set it)
+- See business money - off by default. When off, agents don't see what you are owed in total, overdue totals, deal values or call costs. Each customer's own amount due stays visible so they can collect it.
+- Take payments - on by default. Record a payment and send a payment link.
+- Send templates - on by default. Reach a customer with an approved template after the 24-hour window has closed.
+- Customer phone numbers - Shown (default) or Last 4 digits only. With last 4 digits, agents can still message the customer and call them through KROVA (their phone rings first), but can't see or copy the full number.
+Owners and admins can always do all of this.
+
 ## Activity feed
 Team page → Activity feed: who did what and when - messages sent, replies approved, settings changed, data downloaded, sign-ins, and refused attempts. It never shows what a message said. Rows can't be edited or deleted.

@@ -221,6 +221,7 @@ async def ledger_summary(current_user: CurrentUserDep, db: DbDep) -> LedgerSumma
     also readable by a non-HTTP caller (the owner voice interface's
     shared/ai/context.py::build_owner()).
     """
+    await access.require(db, current_user, "see_money")
     t = await ledger_queries.totals(
         current_user.business, db, only=await access.visible_ids(db, current_user)
     )
@@ -264,6 +265,7 @@ async def missing_advances(current_user: CurrentUserDep, db: DbDep) -> list[Miss
     backlog #2. See shared/care/ledger_queries.py::quotations_missing_advance.
     Record one against a quote with quotations.py's record-advance endpoint.
     """
+    await access.require(db, current_user, "see_money")
     rows = await ledger_queries.quotations_missing_advance(current_user.business, db)
     return [
         MissingAdvanceOut(
@@ -283,6 +285,7 @@ async def price_inconsistencies(current_user: CurrentUserDep, db: DbDep) -> list
     rather than by variant alone. Set a customer's tier from the CRM page
     first, or every tiered business sees only noise here.
     """
+    await access.require(db, current_user, "see_money")
     rows = await ledger_queries.price_inconsistencies(current_user.business, db)
     return [
         PriceInconsistencyOut(
@@ -313,6 +316,7 @@ async def create_installment_plan(
     not a separately-entered number that could drift from it.
     """
     customer = await access.check_id(db, current_user, body.customer_id)
+    await access.require(db, current_user, "take_payments")
 
     total = sum(i.amount_paise for i in body.installments)
     plan = InstallmentPlan(
@@ -525,6 +529,7 @@ async def record_commitment_payment(
     shared/care/commitment_payments.py.
     """
     commitment = await _owned(commitment_id, current_user, db)
+    await access.require(db, current_user, "take_payments")
     try:
         closed = record_payment(
             commitment, amount_paise=body.amount_paise, source="manual",
@@ -564,6 +569,7 @@ async def request_payment(
     with a real customer's money.
     """
     commitment = await _owned(commitment_id, current_user, db)
+    await access.require(db, current_user, "take_payments")
     if commitment.direction != CommitmentDirection.they_owe:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -678,6 +684,7 @@ async def list_customers(
         return []
 
     ids = [c.id for c in customers]
+    allowed = await access.permissions(db, current_user)
 
     intelligence = dict(
         (row.customer_id, row)
@@ -733,13 +740,13 @@ async def list_customers(
             {
                 "id": str(c.id),
                 "name": c.display_name,
-                "identities": [
+                "identities": access.identities_out([
                     {
                         "kind": i.kind.value if hasattr(i.kind, "value") else str(i.kind),
                         "value": i.value,
                     }
                     for i in identities.scalars().all()
-                ],
+                ], not allowed["see_phones"]),
                 "last_contact_at": (
                     c.last_contact_at.isoformat() if c.last_contact_at else None
                 ),
@@ -749,7 +756,7 @@ async def list_customers(
                 "paid_by_customer_id": str(c.paid_by_customer_id) if c.paid_by_customer_id else None,
                 "paid_by_name": payer_names.get(c.paid_by_customer_id),
                 "pays_for": pays_for.get(c.id, []),
-                "deal_value_paise": c.deal_value_paise,
+                "deal_value_paise": c.deal_value_paise if allowed["see_money"] else None,
                 "tags": tags_by_customer.get(c.id, []),
                 "health_score": intel.health_score if intel else None,
                 "outstanding_paise": intel.outstanding_paise if intel else 0,

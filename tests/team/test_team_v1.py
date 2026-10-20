@@ -339,9 +339,10 @@ def test_team_settings_default_and_round_trip():
     from shared.team import settings as ts
 
     biz = SimpleNamespace(settings={})
-    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all", "routing": "manual", "sla_minutes": None}
+    agents = {"agent_money": False, "agent_payments": True, "agent_phones": "shown", "agent_templates": True}
+    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all", "routing": "manual", "sla_minutes": None, **agents}
     ts.write(biz, auto_assign_on_reply=False, agent_visibility="assigned")
-    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned", "routing": "manual", "sla_minutes": None}
+    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned", "routing": "manual", "sla_minutes": None, **agents}
     with pytest.raises(ValueError):
         ts.write(biz, auto_assign_on_reply=True, agent_visibility="nobody")
     assert ts.read(SimpleNamespace(settings={"team": {"agent_visibility": "junk"}}))["agent_visibility"] == "all"

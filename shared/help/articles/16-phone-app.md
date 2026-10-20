@@ -7,7 +7,7 @@ Open the app link on your phone (Settings in the app shows it, with a Copy butto
 Today, Inbox, Ledger, Approvals and More. More holds everything else; screens for features your business doesn't use don't appear.
 
 ## Today
-Waiting AI replies, open escalations, what is owed and overdue. Owner and admins also see today's bookings and queue (when those are on), the wallet, and shortcuts to add a contact or get help. Agents see their own chats and an Away switch.
+Waiting AI replies, open escalations, what is owed and overdue. Owner and admins also see today's bookings and queue (when those are on), the wallet, and shortcuts to add a contact or get help. Agents see their own chats and an Away switch; money totals show only if the owner allows it (Team page → What agents can also do).
 
 ## Chats
 - Reply, approve or edit AI drafts, take over a chat, call the customer (your phone rings first).

@@ -84,3 +84,49 @@ async def check_id(db: AsyncSession, user, customer_id: uuid.UUID | None) -> Cus
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
     await check(db, user, customer)
     return customer
+
+
+# ── What a team member may do (Team page -> "What agents can see") ─────────
+
+
+async def permissions(db: AsyncSession, user) -> dict:
+    """See shared/team/settings.py::permissions - everything for the owner and admins."""
+    business = await db.get(Business, user.business) if not supervisor(user) else None
+    return team_settings.permissions(business, user.role)
+
+
+REFUSED = {
+    "see_money": "The owner has kept business totals to the owner and admins.",
+    "take_payments": "The owner has kept payments to the owner and admins.",
+    "send_templates": "The owner has kept template messages to the owner and admins.",
+}
+
+
+async def require(db: AsyncSession, user, permission: str) -> None:
+    """403 when the owner switched this off for team members."""
+    if not (await permissions(db, user))[permission]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, REFUSED[permission])
+
+
+def mask(value: str | None) -> str | None:
+    """+919876543210 -> ••••••3210. Enough to tell two customers apart, not enough to dial."""
+    if not value:
+        return value
+    return "••••••" + value[-4:] if len(value) > 4 else "••••"
+
+
+PHONE_KINDS = ("phone", "whatsapp")
+
+
+async def hide_phones(db: AsyncSession, user) -> bool:
+    return not (await permissions(db, user))["see_phones"]
+
+
+def identities_out(identities: list[dict], hide: bool) -> list[dict]:
+    """Identity dicts ({kind, value}) with phone numbers masked when `hide` - marked so the apps send by customer id."""
+    if not hide:
+        return identities
+    return [
+        {**i, "value": mask(i["value"]), "masked": True} if i.get("kind") in PHONE_KINDS else i
+        for i in identities
+    ]

@@ -176,6 +176,7 @@ async def list_conversations(
         ).all()
     )
 
+    hide = await access.hide_phones(db, current_user)
     out: list[ConversationSummary] = []
     for customer in customers:
         latest = (
@@ -213,7 +214,7 @@ async def list_conversations(
             ConversationSummary(
                 customer_id=str(customer.id),
                 name=customer.display_name,
-                identities=await _identities(customer.id, db),
+                identities=access.identities_out(await _identities(customer.id, db), hide),
                 channels=sorted({_value(c) for c in channels}),
                 last_message=(latest.content or "")[:160] if latest else None,
                 last_message_at=latest.occurred_at.isoformat() if latest else None,
@@ -276,7 +277,9 @@ async def get_thread(
     return Thread(
         customer_id=str(customer.id),
         name=customer.display_name,
-        identities=await _identities(customer.id, db),
+        identities=access.identities_out(
+            await _identities(customer.id, db), await access.hide_phones(db, current_user)
+        ),
         window_open=open_now,
         window_closes_at=closes,
         is_private=customer.is_private,

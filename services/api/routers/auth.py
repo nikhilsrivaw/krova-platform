@@ -27,6 +27,7 @@ from shared.db.models import Business, BusinessDNA, User
 from shared import verticals
 from shared.commands.tools import WRITE_ROLES
 from shared.verticals import labels
+from shared.team import settings as team_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -107,6 +108,10 @@ class MeResponse(BaseModel):
     # turn on shared/care/commitment_deadline_calls.py's proactive voice
     # calls, which previously had no UI path to enable at all.
     proactive_deadline_calls_enabled: bool
+    # What this person may see and do (Team page -> "What agents can see"): see_money, take_payments,
+    # see_phones, send_templates. Always all true for the owner and admins. The API enforces each one;
+    # this is so the apps can hide what would only be refused.
+    permissions: dict = Field(default_factory=dict)
 
 
 def _session_response(s: service.Session) -> SessionResponse:
@@ -619,6 +624,7 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         proactive_deadline_calls_enabled=bool(
             (business.settings or {}).get("proactive_deadline_calls_enabled")
         ) if business else False,
+        permissions=team_settings.permissions(business, current_user.role),
     )
 
 
@@ -721,4 +727,5 @@ async def update_me(
         proactive_deadline_calls_enabled=bool(
             (business.settings or {}).get("proactive_deadline_calls_enabled")
         ) if business else False,
+        permissions=team_settings.permissions(business, current_user.role),
     )

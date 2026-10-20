@@ -140,7 +140,11 @@ async def list_leads(
             .where(Customer.id.in_(customer_ids))
         )
         owner_names = {cid: (full or uname) for cid, full, uname in owners.all()}
-    return LeadListOut(items=[_to_out(r, touches, owner_names) for r in rows], total=total)
+    items = [_to_out(r, touches, owner_names) for r in rows]
+    if await access.hide_phones(db, current_user):
+        for item in items:
+            item.phone = access.mask(item.phone)
+    return LeadListOut(items=items, total=total)
 
 
 @router.get("/sources", response_model=list[LeadSourceCountOut])

@@ -239,7 +239,7 @@ def test_the_call_log_can_be_limited_to_one_number():
     )
     # The wallet bills 150 paise for this call: the 100 stored on it plus 50 of AI that ran the call.
     db = _Db([call], [a], [(call.id, 150)])
-    out = asyncio.run(provisioning.call_logs(SimpleNamespace(business=BIZ), db, limit=10, connection_id=a.id))
+    out = asyncio.run(provisioning.call_logs(SimpleNamespace(business=BIZ, role="owner"), db, limit=10, connection_id=a.id))
     assert out[0].number == SERVICE and out[0].number_label == "Sales"
     assert "calls.connection_id" in db.compiled[0]
     # what the page shows is exactly what settle_voice_usage takes from the wallet (no platform charge for now)

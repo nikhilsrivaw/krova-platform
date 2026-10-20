@@ -41,8 +41,11 @@ class _Result:
     def scalar_one(self):
         return 0
 
+    def __init__(self, scalar=None):
+        self.scalar = scalar
+
     def scalar_one_or_none(self):
-        return None
+        return self.scalar
 
     def all(self):
         return []
@@ -55,6 +58,7 @@ class _Db:
     def __init__(self, visibility="all", customer=None):
         self.business = SimpleNamespace(id=BIZ, settings={"team": {"agent_visibility": visibility}})
         self.customer = customer
+        self.scalar = None
         self.sql: list[str] = []
 
     async def get(self, model, key, **_):
@@ -66,7 +70,7 @@ class _Db:
 
     async def execute(self, stmt):
         self.sql.append(str(stmt.compile(dialect=postgresql.dialect())))
-        return _Result()
+        return _Result(self.scalar)
 
 
 def run(coro):
@@ -165,6 +169,7 @@ def test_customers_promises_and_totals_follow_own_only():
     assert "assigned_to_user_id" in where(db.sql[0])
 
     db = _Db("assigned")
+    db.business.settings["team"]["agent_money"] = True
     run(ledger.ledger_summary(_user(), db))
     assert all("assigned_to_user_id" in where(s) for s in db.sql)
 
@@ -192,3 +197,76 @@ def test_owner_lists_are_not_narrowed():
     run(approvals.list_drafts(_user("owner"), db, status_filter="pending", limit=50))
     run(ledger.list_customers(_user("admin"), db, limit=50, q=None, customer_id=None))
     assert not any("is_private" in where(s) for s in db.sql)
+
+
+# ── what team members may do (Team page switches) ──────────────────────
+
+
+def test_default_permissions_for_an_agent_and_everything_for_the_owner():
+    from shared.team import settings as ts
+
+    biz = SimpleNamespace(settings={})
+    assert ts.permissions(biz, "agent") == {
+        "see_money": False, "take_payments": True, "see_phones": True, "send_templates": True,
+    }
+    biz = SimpleNamespace(settings={"team": {"agent_money": True, "agent_payments": False,
+                                             "agent_phones": "last4", "agent_templates": False}})
+    assert ts.permissions(biz, "agent") == {
+        "see_money": True, "take_payments": False, "see_phones": False, "send_templates": False,
+    }
+    assert all(ts.permissions(biz, "admin").values()) and all(ts.permissions(None, "owner").values())
+
+
+def test_business_totals_are_refused_to_an_agent_by_default_but_not_to_the_owner():
+    from services.api.routers import ledger
+
+    with pytest.raises(HTTPException) as err:
+        run(ledger.ledger_summary(_user(), _Db()))
+    assert err.value.status_code == 403
+    run(ledger.ledger_summary(_user("owner"), _Db()))
+
+
+def test_payments_switched_off_refuses_a_payment_link():
+    from services.api.routers import payments
+
+    db = _Db()
+    db.business.settings["team"]["agent_payments"] = False
+    with pytest.raises(HTTPException) as err:
+        run(payments._send_fee(db, _user(), "token", uuid.uuid4(), SimpleNamespace()))
+    assert err.value.status_code == 403 and "payments" in err.value.detail
+
+
+def test_templates_switched_off_refuses_a_template_send():
+    from services.api.routers import messages
+
+    db = _Db()
+    db.business.settings["team"]["agent_templates"] = False
+    body = messages.SendTemplate(to="+919876543210", template_name="hello")
+    with pytest.raises(HTTPException) as err:
+        run(messages.send_template(body, _user(), db))
+    assert err.value.status_code == 403
+
+
+def test_masked_numbers_keep_the_last_four_digits_only():
+    assert access.mask("+919876543210") == "••••••3210"
+    assert access.mask(None) is None
+    out = access.identities_out(
+        [{"kind": "phone", "value": "+919876543210"}, {"kind": "email", "value": "a@b.in"}], hide=True,
+    )
+    assert out[0] == {"kind": "phone", "value": "••••••3210", "masked": True}
+    assert out[1] == {"kind": "email", "value": "a@b.in"}
+    assert access.identities_out(out[1:], hide=False) == out[1:]
+
+
+def test_a_masked_number_is_sent_to_by_customer_id():
+    from services.api.routers import messages
+
+    db = _Db(customer=_customer())
+    db.scalar = "+919876543210"
+    assert run(messages._recipient(f"customer:{uuid.uuid4()}", _user(), db)) == "+919876543210"
+    assert run(messages._recipient("+91 98765 43210", _user(), db)) == messages.normalise_phone("+919876543210")
+
+    db = _Db(customer=_customer(is_private=True))
+    with pytest.raises(HTTPException) as err:
+        run(messages._recipient(f"customer:{uuid.uuid4()}", _user(), db))
+    assert err.value.status_code == 403
