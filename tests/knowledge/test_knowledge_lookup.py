@@ -234,3 +234,34 @@ def test_a_file_read_returns_catalogue_rows_and_more_answers(monkeypatch):
     reading = asyncio.run(kr.read_into_card(raw=b"price list", filename="a.txt", content_type=None, vertical="general", faq_room=0, bank_room=1))
     assert reading.catalogue == [{"name": "Cotton shirt", "price": "Rs 899", "details": "S-XXL"}]
     assert reading.bank == [("EMI?", "Yes")]
+
+
+# ── the fee list (shared/payments/fee_list.py) ───────────────────────────────
+
+def test_the_fee_list_is_opened_only_when_a_fee_is_asked_about():
+    from shared.payments import fee_list
+
+    item = SimpleNamespace(
+        title="Fees / Price list", kind=SimpleNamespace(value="price_list"), content="CT scan - ₹2,500", topic=fee_list.TOPIC,
+        extra={"fees": [{"id": "ct", "name": "CT scan", "amount_paise": 250000}]},
+    )
+    as_dict = context.knowledge_dict(item)
+    assert as_dict["rows"] == [{"name": "CT scan", "price": "₹2,500", "details": ""}]
+
+    ctx = _Ctx([_turn("CT scan kitne ka hai?")])
+    ctx.knowledge = [as_dict]
+    assert "CT scan - ₹2,500" in ctx.render_lookup()
+    assert "CT scan" not in "\n".join(context.render_knowledge([as_dict]))
+    assert not kc.is_other(SimpleNamespace(topic=fee_list.TOPIC, extra={}))
+
+
+def test_saving_the_fee_list_costs_no_plan_budget_and_keeps_amounts_as_numbers():
+    from shared.payments import fee_list
+
+    db = _Db()
+    out = asyncio.run(knowledge.save_fees(
+        knowledge.FeesIn(rows=[knowledge.FeeRow(name="X-ray", amount_paise=40000)]), current_user=USER, db=db,
+    ))
+    item = db.added[0]
+    assert item.topic == fee_list.TOPIC and item.token_estimate == 0
+    assert item.extra["fees"][0]["amount_paise"] == 40000 and out.rows[0].id

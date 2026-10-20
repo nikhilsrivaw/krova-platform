@@ -20,6 +20,8 @@ from shared.db.models import (
     Appointment, AppointmentStatus, AvailabilityException, AvailabilityRule, Business, Customer, Doctor,
     IntakeChannel,
 )
+from shared.payments import fee_list
+from shared.payments import links as payment_links
 from shared.verticals import labels
 from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import booking as scheduling_booking
@@ -406,6 +408,7 @@ class AppointmentOut(BaseModel):
     notes: str | None
     # Filled on the list, so a screen can show who without fetching every customer.
     customer_name: str | None = None
+    fee_items: list[dict] = []
 
 
 def _appointment_out(a: Appointment, doctor_name: str, customer_name: str | None = None) -> AppointmentOut:
@@ -418,6 +421,7 @@ def _appointment_out(a: Appointment, doctor_name: str, customer_name: str | None
         intake_channel=a.intake_channel.value if hasattr(a.intake_channel, "value") else str(a.intake_channel),
         notes=a.notes,
         customer_name=customer_name,
+        fee_items=a.fee_items or [],
     )
 
 
@@ -457,6 +461,13 @@ class AppointmentIn(BaseModel):
     # property this viewing is for. Ignored (left null) otherwise.
     property_id: str | None = None
     notes: str | None = None
+    # what it is for, ticked from the fee list - the booking's payment link then asks for their total
+    fee_ids: list[str] = Field(default_factory=list, max_length=fee_list.ITEMS_LIMIT)
+
+
+class FeesPick(BaseModel):
+    """Ids from the fee list (GET /knowledge/fees). Empty clears them."""
+    fee_ids: list[str] = Field(default_factory=list, max_length=fee_list.ITEMS_LIMIT)
 
 
 @router.post("/appointments", response_model=AppointmentOut, status_code=status.HTTP_201_CREATED)
@@ -476,6 +487,10 @@ async def create_appointment(
     customer = await db.get(Customer, uuid.UUID(body.customer_id))
     if customer is None or customer.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    try:
+        items = await fee_list.pick_for(db, current_user.business, body.fee_ids)
+    except fee_list.FeeError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     day_slots = await scheduling_availability.open_slots(
         db, business=business, doctor=doctor, on_date=body.starts_at.date()
@@ -501,7 +516,32 @@ async def create_appointment(
     except SlotUnavailable:
         raise HTTPException(status.HTTP_409_CONFLICT, "That slot was just taken")
 
+    if items:
+        appointment.fee_items = items
+        await db.flush()
     return _appointment_out(appointment, doctor.name)
+
+
+@router.put("/appointments/{appointment_id}/fees", response_model=AppointmentOut)
+async def set_appointment_fees(
+    appointment_id: uuid.UUID, body: FeesPick, current_user: CurrentUserDep, db: DbDep
+) -> AppointmentOut:
+    """Change what a booking is for. Refused once a payment link for it has gone out."""
+    appointment = await _owned_appointment(appointment_id, current_user.business, db)
+    before = appointment.fee_items
+    try:
+        appointment.fee_items = await fee_list.pick_for(db, current_user.business, body.fee_ids)
+        await payment_links.reprice_fee(db, business_id=current_user.business, kind="appointment", booking=appointment)
+    except fee_list.FeeError as exc:
+        appointment.fee_items = before
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except payment_links.LinkError as exc:
+        appointment.fee_items = before
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    await db.flush()
+    doctor = await db.get(Doctor, appointment.doctor_id)
+    customer = await db.get(Customer, appointment.customer_id)
+    return _appointment_out(appointment, doctor.name if doctor else "", customer.display_name if customer else None)
 
 
 async def _owned_appointment(appointment_id: uuid.UUID, business_id: uuid.UUID, db: DbDep) -> Appointment:

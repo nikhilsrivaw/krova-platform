@@ -20,8 +20,8 @@ Waiting AI replies, open escalations, what is owed and overdue. Owner and admins
 Search finds anyone by name or phone. Owner and admins can add a contact (adding doesn't message them).
 
 ## Screens by business type (in More)
-- Bookings: the day's appointments - They came, No-show, reschedule into an open slot, cancel, payment link, new booking.
-- Queue: open or close a shift, Call next, Done, Skip, check someone in. It refreshes by itself.
+- Bookings: the day's appointments - They came, No-show, reschedule into an open slot, cancel, payment link, new booking. Tick tests from your fee list on a new booking, or add them to one with "Add tests".
+- Queue: open or close a shift, Call next, Done, Skip, check someone in (tick tests from your fee list as you do). It refreshes by itself.
 - Leads: newest first; "Not answered yet" shows the ones nobody has replied to. Call or open the chat in one tap.
 - Orders: find an order, see COD and delivery state, change the status.
 - Quotations: open quotes, quietest first; mark Won or Lost.

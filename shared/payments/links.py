@@ -21,6 +21,7 @@ from shared.auth.encryption import decrypt, encrypt
 from shared.care.commitment_payments import PaymentError, record_payment
 from shared.channels import ingest
 from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError, within_service_window
+from shared.payments import fee_list
 from shared.db.models import (
     Business,
     Channel,
@@ -349,25 +350,26 @@ async def send_fee_link(
         if entry.customer_id is None:
             raise LinkError("This token has no customer with a phone number.")
         customer_id, doctor_id, appointment_id = entry.customer_id, entry.doctor_id, None
-        description = f"Fee for token {entry.queue_number} ({entry.queue_date.strftime('%d %b')})"
-        source_system = TOKEN_FEE
+        description = fee_description("token", entry)
+        source_system, items = TOKEN_FEE, entry.fee_items
     elif kind == "appointment":
         appt = await db.get(Appointment, ref_id)
         if appt is None or appt.business_id != business.id:
             raise LinkError("Appointment not found.")
         customer_id, doctor_id, appointment_id = appt.customer_id, appt.doctor_id, appt.id
-        description = f"Fee for the appointment on {appt.starts_at.strftime('%d %b, %I:%M %p')}"
-        source_system = APPOINTMENT_FEE
+        description = fee_description("appointment", appt)
+        source_system, items = APPOINTMENT_FEE, appt.fee_items
     else:
         raise LinkError("Unknown booking.")
 
-    amount = amount_paise
+    # Amount: what staff typed, else what was ticked from the fee list, else the doctor's fee, else the default fee.
+    amount = amount_paise or fee_list.total(items)
     if not amount and doctor_id:
         doctor = await db.get(Doctor, doctor_id)
         amount = doctor.consultation_fee_paise if doctor else None
     amount = amount or auto_settings(business)["default_fee_paise"]
     if not amount:
-        raise LinkError("Enter the amount to collect, or set the doctor's fee or a default fee.")
+        raise LinkError("Enter the amount to collect, tick tests from the fee list, or set the doctor's fee or a default fee.")
 
     commitment = await _fee_commitment_for(
         db, business_id=business.id, customer_id=customer_id, amount_paise=amount, description=description,
@@ -385,6 +387,41 @@ async def send_fee_link(
         db, business=business, commitment=commitment, user_id=user_id,
         template_name=template_name, template_language=template_language, amount_paise=part,
     )
+
+
+def fee_description(kind: str, booking) -> str:
+    """What the fee is for, as the ledger and the link show it - led by the ticked tests, if any."""
+    if kind == "token":
+        what = f"token {booking.queue_number} ({booking.queue_date.strftime('%d %b')})"
+    else:
+        what = f"the appointment on {booking.starts_at.strftime('%d %b, %I:%M %p')}"
+    items = booking.fee_items
+    return f"{fee_list.label(items)} - fee for {what}" if items else f"Fee for {what}"
+
+
+async def reprice_fee(db: AsyncSession, *, business_id: uuid.UUID, kind: str, booking) -> None:
+    """
+    The tests on a token or booking changed. A fee already written for it follows - unless a link for it has gone out
+    or money came in, when changing it would leave the customer holding a link for the old amount (LinkError).
+    """
+    source_system = TOKEN_FEE if kind == "token" else APPOINTMENT_FEE
+    commitment = (
+        await db.execute(
+            select(Commitment).where(
+                Commitment.business_id == business_id, Commitment.source_system == source_system,
+                Commitment.external_ref == str(booking.id),
+            )
+        )
+    ).scalar_one_or_none()
+    if commitment is None or commitment.status != CommitmentStatus.open:
+        if commitment is not None:
+            raise LinkError("This fee is already settled, so its tests can't be changed.")
+        return
+    if commitment.amount_received_paise or await _open_link_for(db, commitment.id, datetime.now(timezone.utc)):
+        raise LinkError("A payment link has already gone out for this. Changing the tests now would not change that link.")
+    if booking.fee_items:
+        commitment.amount_paise = fee_list.total(booking.fee_items)
+    commitment.description = fee_description(kind, booking)[:300]
 
 
 async def auto_link_after_booking(db: AsyncSession, *, business: Business, kind: str, ref_id: uuid.UUID) -> PaymentLink | None:

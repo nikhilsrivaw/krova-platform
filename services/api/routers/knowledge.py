@@ -33,6 +33,7 @@ from shared.db.models import (
     KnowledgeSource,
     MessageDraft,
 )
+from shared.payments import fee_list
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -549,8 +550,8 @@ def _is_bank(item) -> bool:
 
 
 def _is_lookup(item) -> bool:
-    """Opened only when a message matches it (Catalogue, Question bank) - never read whole, so free of the plan budget."""
-    return item.topic == knowledge_lookup.CATALOGUE_TOPIC or _is_bank(item)
+    """Opened only when a message matches it (Catalogue, Fees, Question bank) - never read whole, so free of the plan budget."""
+    return item.topic in (knowledge_lookup.CATALOGUE_TOPIC, fee_list.TOPIC) or _is_bank(item)
 
 
 @router.get("/card", response_model=CardOut)
@@ -758,6 +759,56 @@ async def save_catalogue(body: CatalogueIn, current_user: OwnerOrAdminDep, db: D
         existing.extra = {"catalogue": rows}
     await db.flush()
     return CatalogueOut(rows=[CatalogueRow(**r) for r in rows])
+
+
+# ── Fees / Price list (shared/payments/fee_list.py) ─────────────────────────────────────────────────────────────
+
+class FeeRow(BaseModel):
+    id: str | None = Field(default=None, max_length=20)
+    name: str = Field(min_length=1, max_length=fee_list.NAME_LIMIT)
+    amount_paise: int = Field(ge=fee_list.MIN_PAISE, le=fee_list.MAX_PAISE)
+    details: str = Field(default="", max_length=fee_list.DETAILS_LIMIT)
+
+
+class FeesIn(BaseModel):
+    rows: list[FeeRow] = Field(default_factory=list, max_length=fee_list.ROWS_LIMIT)
+
+
+class FeesOut(BaseModel):
+    rows: list[FeeRow]
+    limit: int = fee_list.ROWS_LIMIT
+
+
+@router.get("/fees", response_model=FeesOut)
+async def get_fees(current_user: CurrentUserDep, db: DbDep) -> FeesOut:
+    """The fee list. Open to the whole team: they tick from it when making a token or a booking."""
+    return FeesOut(rows=[FeeRow(**r) for r in await fee_list.read(db, current_user.business)])
+
+
+@router.put("/fees", response_model=FeesOut)
+async def save_fees(body: FeesIn, current_user: OwnerOrAdminDep, db: DbDep) -> FeesOut:
+    """
+    Replace the whole fee list. Tokens and bookings already made keep the prices they were made with. The AI is shown
+    only the rows a customer's message names. No rows removes it.
+    """
+    rows = fee_list.clean_rows([r.model_dump() for r in body.rows])
+    existing = await _topic_item(db, current_user.business, fee_list.TOPIC)
+    if not rows:
+        if existing is not None:
+            await db.delete(existing)
+        return FeesOut(rows=[])
+    text = "\n".join(fee_list.row_text(r) for r in rows)
+    if existing is None:
+        db.add(KnowledgeItem(
+            business_id=current_user.business, title="Fees / Price list", kind=KnowledgeKind.price_list,
+            source=KnowledgeSource.typed, content=text, token_estimate=0, active=True,
+            topic=fee_list.TOPIC, extra={"fees": rows},
+        ))
+    else:
+        existing.content, existing.token_estimate, existing.active = text, 0, True
+        existing.extra = {"fees": rows}
+    await db.flush()
+    return FeesOut(rows=[FeeRow(**r) for r in rows])
 
 
 class BankIn(BaseModel):

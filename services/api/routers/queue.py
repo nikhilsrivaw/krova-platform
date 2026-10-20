@@ -22,6 +22,8 @@ from shared import verticals
 from shared.commands.tools import WRITE_ROLES
 from shared.db.models import Business, Customer, IntakeChannel, QueueEntry, QueueStatus, Shift, ShiftSession
 from shared.integrations import google_calendar
+from shared.payments import fee_list
+from shared.payments import links as payment_links
 from shared.scheduling import notify, queue_booking
 from shared.verticals import labels
 from shared.utils.logging import get_logger
@@ -296,6 +298,13 @@ class CheckInIn(BaseModel):
     shift: Shift
     customer_id: str | None = None
     doctor_id: str | None = None
+    # what they came for, ticked from the fee list - the token's payment link then asks for their total
+    fee_ids: list[str] = Field(default_factory=list, max_length=fee_list.ITEMS_LIMIT)
+
+
+class FeesPick(BaseModel):
+    """Ids from the fee list (GET /knowledge/fees). Empty clears them."""
+    fee_ids: list[str] = Field(default_factory=list, max_length=fee_list.ITEMS_LIMIT)
 
 
 class QueueEntryOut(BaseModel):
@@ -311,6 +320,7 @@ class QueueEntryOut(BaseModel):
     completed_at: datetime | None
     # Filled on the list, so a screen can show who without fetching every customer.
     customer_name: str | None = None
+    fee_items: list[dict] = []
 
 
 def _out(q: QueueEntry) -> QueueEntryOut:
@@ -325,6 +335,7 @@ def _out(q: QueueEntry) -> QueueEntryOut:
         checked_in_at=q.checked_in_at,
         called_at=q.called_at,
         completed_at=q.completed_at,
+        fee_items=q.fee_items or [],
     )
 
 
@@ -337,6 +348,10 @@ async def check_in(body: CheckInIn, current_user: CurrentUserDep, db: DbDep) -> 
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
 
     doctor_id = uuid.UUID(body.doctor_id) if body.doctor_id else None
+    try:
+        items = await fee_list.pick_for(db, current_user.business, body.fee_ids)
+    except fee_list.FeeError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     try:
         entry = await queue_booking.issue_token(
@@ -352,6 +367,29 @@ async def check_in(body: CheckInIn, current_user: CurrentUserDep, db: DbDep) -> 
     except queue_booking.OpdQueueNotEnabled as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
+    if items:
+        entry.fee_items = items
+        await db.flush()
+    return _out(entry)
+
+
+@router.put("/{entry_id}/fees", response_model=QueueEntryOut)
+async def set_token_fees(entry_id: uuid.UUID, body: FeesPick, current_user: CurrentUserDep, db: DbDep) -> QueueEntryOut:
+    """Change what a token is for (a test added at the counter). Refused once a payment link for it has gone out."""
+    entry = await db.get(QueueEntry, entry_id)
+    if entry is None or entry.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue entry not found")
+    before = entry.fee_items
+    try:
+        entry.fee_items = await fee_list.pick_for(db, current_user.business, body.fee_ids)
+        await payment_links.reprice_fee(db, business_id=current_user.business, kind="token", booking=entry)
+    except fee_list.FeeError as exc:
+        entry.fee_items = before
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except payment_links.LinkError as exc:
+        entry.fee_items = before
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    await db.flush()
     return _out(entry)
 
 

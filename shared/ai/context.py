@@ -57,6 +57,7 @@ from shared.db.models import (
 )
 from shared.scheduling import availability as scheduling_availability
 from shared.scheduling import queue_booking
+from shared.payments import fee_list
 from shared.verticals import knowledge_card, knowledge_lookup, labels
 
 # Doctors listed per reply, when the business has the scheduling capability.
@@ -420,7 +421,10 @@ class AgentContext:
         asked = " ".join(t["text"] for t in [t for t in self.recent if t["direction"] == "inbound"][-2:])
         if not asked.strip():
             return ""
-        rows = [r for k in self.knowledge if k.get("topic") == knowledge_lookup.CATALOGUE_TOPIC for r in k.get("rows") or []]
+        rows = [
+            r for k in self.knowledge if k.get("topic") in (knowledge_lookup.CATALOGUE_TOPIC, fee_list.TOPIC)
+            for r in k.get("rows") or []
+        ]
         bank = [{"question": k["title"], "answer": k["content"]} for k in self.knowledge if k.get("card") == knowledge_lookup.BANK]
         found_rows = knowledge_lookup.match_catalogue(rows, asked)
         found_answers = knowledge_lookup.match_bank(bank, asked)
@@ -477,8 +481,12 @@ def knowledge_dict(k: KnowledgeItem) -> dict:
         "content": k.content,
         "topic": k.topic,
         "card": (k.extra or {}).get("card"),
-        # the Catalogue's rows - matched per message, never read whole (knowledge_lookup)
-        "rows": (k.extra or {}).get("catalogue") or [] if k.topic == knowledge_lookup.CATALOGUE_TOPIC else [],
+        # the Catalogue's and the fee list's rows - matched per message, never read whole (knowledge_lookup)
+        "rows": (
+            (k.extra or {}).get("catalogue") or [] if k.topic == knowledge_lookup.CATALOGUE_TOPIC
+            else fee_list.lookup_rows(fee_list.clean_rows((k.extra or {}).get("fees") or [])) if k.topic == fee_list.TOPIC
+            else []
+        ),
     }
 
 
@@ -499,7 +507,8 @@ def render_knowledge(items: list[dict]) -> list[str]:
     faqs = [i for i in items if i.get("card") == "faq" and not i.get("topic")]
     others = [i for i in items if not i.get("topic") and i.get("card") not in ("faq", knowledge_lookup.BANK)]
     has_lookup = any(
-        i.get("topic") == knowledge_lookup.CATALOGUE_TOPIC or i.get("card") == knowledge_lookup.BANK for i in items
+        i.get("topic") in (knowledge_lookup.CATALOGUE_TOPIC, fee_list.TOPIC) or i.get("card") == knowledge_lookup.BANK
+        for i in items
     )
     lines: list[str] = []
 

@@ -94,6 +94,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("PATCH", "/escalations/settings"), ("POST", "/owner/ask"),
     # what the AI is taught to say
     ("POST", "/knowledge"), ("POST", "/knowledge/read-file"), ("DELETE", "/knowledge/{item_id}"),
+    ("PUT", "/knowledge/fees"),
     ("POST", "/voice-onboarding/preview-voice"), ("POST", "/templates/carousel/draft"),
     ("POST", "/templates/carousel/image"),
     # how the business is set up (who can be booked and when, the walk-in kiosk, connected shops,
@@ -167,6 +168,9 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("PATCH", "/orders/{order_id}"), ("POST", "/quotations"),
     ("POST", "/calls/start"), ("GET", "/calls/{call_id}"), ("GET", "/calls/pending/wrapup"),
     ("POST", "/calls/{call_id}/wrapup"), ("GET", "/team/briefing/{customer_id}"),
+    # ticking tests from the fee list on a token or booking
+    ("GET", "/knowledge/fees"), ("PUT", "/queue/{entry_id}/fees"),
+    ("PUT", "/scheduling/appointments/{appointment_id}/fees"),
 ]}
 
 

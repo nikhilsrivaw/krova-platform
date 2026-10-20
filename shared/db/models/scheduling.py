@@ -277,6 +277,9 @@ class Appointment(UUIDMixin, TimestampMixin, Base):
     # confirmed) or the booking never required one.
     deposit_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Same as QueueEntry.fee_items - what was ticked from the fee list when the booking was made.
+    fee_items: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     __table_args__ = (
         Index("idx_appointments_business", "business_id"),
         Index("idx_appointments_customer", "customer_id"),

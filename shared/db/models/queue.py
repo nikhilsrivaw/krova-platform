@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import ARRAY, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -94,6 +95,10 @@ class QueueEntry(UUIDMixin, TimestampMixin, Base):
     # services/api/routers/queue.py::update_queue_entry for where this
     # actually fires.
     turn_near_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # What the person came for, ticked from the fee list when the token was made: [{id, name, amount_paise}].
+    # A copy, so a later price change leaves this bill alone - shared/payments/fee_list.py.
+    fee_items: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         # The live-list query: today's queue for a doctor, in order.

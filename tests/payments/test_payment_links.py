@@ -292,12 +292,13 @@ def test_auto_links_are_off_unless_switched_on():
 class _BookingDb:
     """A token or an appointment, its doctor, and whatever fee commitments and links already exist."""
 
-    def __init__(self, *, doctor_fee=None, existing_commitment=None, open_link=None, customer=True):
+    def __init__(self, *, doctor_fee=None, existing_commitment=None, open_link=None, customer=True, fee_items=None):
         from datetime import date
-        self.entry = SimpleNamespace(business_id=BIZ, customer_id=uuid.uuid4() if customer else None, doctor_id=uuid.uuid4(),
-                                     queue_number=14, queue_date=date(2026, 10, 18))
+        self.entry = SimpleNamespace(id=uuid.uuid4(), business_id=BIZ, customer_id=uuid.uuid4() if customer else None,
+                                     doctor_id=uuid.uuid4(), queue_number=14, queue_date=date(2026, 10, 18),
+                                     fee_items=fee_items)
         self.appt = SimpleNamespace(id=uuid.uuid4(), business_id=BIZ, customer_id=uuid.uuid4(), doctor_id=uuid.uuid4(),
-                                    starts_at=NOW)
+                                    starts_at=NOW, fee_items=fee_items)
         self.doctor = SimpleNamespace(consultation_fee_paise=doctor_fee)
         self.existing, self.open_link, self.added = existing_commitment, open_link, []
 
@@ -395,6 +396,62 @@ def test_an_appointment_fee_is_keyed_to_the_appointment(monkeypatch):
     sent = _fake_send(monkeypatch)
     _fee(_BookingDb(doctor_fee=60000), kind="appointment")
     assert sent[0].source_system == links.APPOINTMENT_FEE and sent[0].amount_paise == 60000
+
+
+# ── tests ticked from the fee list ───────────────────────────────────────────
+
+TICKED = [{"id": "ct", "name": "CT scan", "amount_paise": 250000}, {"id": "xr", "name": "X-ray", "amount_paise": 40000}]
+
+
+def test_ticked_tests_set_the_amount_ahead_of_the_doctors_fee(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(doctor_fee=70000, fee_items=TICKED))
+    assert sent[0].amount_paise == 290000
+    assert sent[0].description == "CT scan + X-ray - fee for token 14 (18 Oct)"
+
+
+def test_an_amount_typed_by_staff_still_wins_over_ticked_tests(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(fee_items=TICKED), amount=200000)
+    assert sent[0].amount_paise == 200000
+
+
+def test_ticked_tests_on_an_appointment(monkeypatch):
+    sent = _fake_send(monkeypatch)
+    _fee(_BookingDb(fee_items=TICKED[:1]), kind="appointment")
+    assert sent[0].amount_paise == 250000 and sent[0].description.startswith("CT scan - fee for the appointment on")
+
+
+def _reprice(db, existing):
+    db.existing = existing
+    asyncio.run(links.reprice_fee(db, business_id=BIZ, kind="token", booking=db.entry))
+
+
+def test_changing_the_tests_reprices_an_unsent_fee():
+    db = _BookingDb(fee_items=TICKED)
+    fee = SimpleNamespace(id=uuid.uuid4(), status=CommitmentStatus.open, amount_paise=40000, amount_received_paise=0,
+                          description="X-ray - fee for token 14 (18 Oct)")
+    _reprice(db, fee)
+    assert fee.amount_paise == 290000 and fee.description == "CT scan + X-ray - fee for token 14 (18 Oct)"
+
+
+def test_changing_the_tests_after_a_link_went_out_is_refused():
+    db = _BookingDb(fee_items=TICKED, open_link=SimpleNamespace(id="l", expires_at=None))
+    fee = SimpleNamespace(id=uuid.uuid4(), status=CommitmentStatus.open, amount_paise=40000, amount_received_paise=0,
+                          description="")
+    with pytest.raises(links.LinkError, match="already gone out"):
+        _reprice(db, fee)
+    assert fee.amount_paise == 40000
+
+
+def test_changing_the_tests_of_a_paid_fee_is_refused():
+    fee = SimpleNamespace(id=uuid.uuid4(), status=CommitmentStatus.met, amount_paise=40000, amount_received_paise=40000)
+    with pytest.raises(links.LinkError, match="settled"):
+        _reprice(_BookingDb(fee_items=TICKED), fee)
+
+
+def test_no_fee_written_yet_nothing_to_reprice():
+    _reprice(_BookingDb(fee_items=TICKED), None)
 
 
 # ── the Settings switch (after the AI books on WhatsApp) ─────────────────────

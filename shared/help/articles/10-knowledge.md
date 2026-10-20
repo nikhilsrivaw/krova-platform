@@ -14,6 +14,13 @@ Who customers can ask for, how to reach you, languages you reply in and when you
 ## Catalogue
 Every product, service, plan or dish with its price. The AI is shown only the items a customer names, so list everything - it doesn't make replies dearer. Paste a list (Name - Price - Details, one per line) or fill it from a file.
 
+## Fees / Price list
+Knowledge & Gaps page → Fees / Price list. Each test, service or visit with its fee in rupees, for example CT scan ₹2,500, X-ray ₹400. Add rows one by one or paste a rate list (Name - Amount - Details, one per line), then press Save fees.
+- When your team gives a token or makes a booking, they tick what the person came for. The payment link then asks for the total of what was ticked.
+- The AI tells customers a fee when they name it ("CT scan kitne ka hai?"). It only sees the fees a customer asks about, so a long list costs nothing extra.
+- Changing a fee later does not change tokens or bookings already made.
+- Only the owner and admins can change the list; the whole team can tick from it.
+
 ## Question bank
 More answers beyond your top questions. The AI sees one only when a customer asks something like it.
 
