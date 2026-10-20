@@ -492,7 +492,8 @@ def knowledge_dict(k: KnowledgeItem) -> dict:
 
 async def business_knowledge(business_id: uuid.UUID, db: AsyncSession) -> list[dict]:
     """The knowledge the agent may read right now, as render_knowledge takes it."""
-    return [knowledge_dict(k) for k in (await db.execute(live_knowledge_query(business_id))).scalars().all()]
+    items = list((await db.execute(live_knowledge_query(business_id))).scalars().all())
+    return [knowledge_dict(k) for k in fee_list.usable(items, await db.get(Business, business_id))]
 
 
 def render_knowledge(items: list[dict]) -> list[str]:
@@ -603,7 +604,7 @@ async def build(
     messages = list(rows.scalars().all())[::-1]
 
     knowledge = await db.execute(live_knowledge_query(business_id))
-    knowledge_items = list(knowledge.scalars().all())
+    knowledge_items = fee_list.usable(list(knowledge.scalars().all()), business)
 
     carousels = await db.execute(
         select(InstagramCarousel)
@@ -947,7 +948,7 @@ async def build_anonymous(
     dna = await db.get(BusinessDNA, business_id)
 
     knowledge = await db.execute(live_knowledge_query(business_id))
-    knowledge_items = list(knowledge.scalars().all())
+    knowledge_items = fee_list.usable(list(knowledge.scalars().all()), business)
 
     gaps = standing_gaps(dna)
 

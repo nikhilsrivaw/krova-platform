@@ -64,7 +64,23 @@ def test_every_switchable_capability_is_one_a_template_really_declares():
     declared = set()
     for key in verticals.keys():
         declared |= set(verticals.get(key).get("capabilities", []))
-    assert set(SWITCHABLE) <= declared
+    # a typo here would be a switch wired to nothing; the opt-in-only ones are off for every type on purpose
+    from shared.verticals.capability_info import OPT_IN_ONLY
+
+    assert set(SWITCHABLE) - OPT_IN_ONLY <= declared
+    assert not OPT_IN_ONLY & declared
+
+
+def test_price_list_payments_is_off_until_the_business_turns_it_on():
+    from types import SimpleNamespace
+
+    from shared.payments import fee_list
+
+    for key in verticals.keys():
+        business = SimpleNamespace(vertical=key, settings={})
+        assert not fee_list.enabled(business), key
+    on = SimpleNamespace(vertical="general", settings={"capability_overrides": {"price_list_payments": True}})
+    assert fee_list.enabled(on)
 
 
 def test_the_always_on_and_the_dead_capability_are_not_offered():

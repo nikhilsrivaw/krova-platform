@@ -255,9 +255,13 @@ def test_the_fee_list_is_opened_only_when_a_fee_is_asked_about():
     assert not kc.is_other(SimpleNamespace(topic=fee_list.TOPIC, extra={}))
 
 
-def test_saving_the_fee_list_costs_no_plan_budget_and_keeps_amounts_as_numbers():
+def test_saving_the_fee_list_costs_no_plan_budget_and_keeps_amounts_as_numbers(monkeypatch):
     from shared.payments import fee_list
 
+    async def switched_on(db, business_id):
+        return None
+
+    monkeypatch.setattr(fee_list, "require_enabled", switched_on)
     db = _Db()
     out = asyncio.run(knowledge.save_fees(
         knowledge.FeesIn(rows=[knowledge.FeeRow(name="X-ray", amount_paise=40000)]), current_user=USER, db=db,
@@ -265,3 +269,26 @@ def test_saving_the_fee_list_costs_no_plan_budget_and_keeps_amounts_as_numbers()
     item = db.added[0]
     assert item.topic == fee_list.TOPIC and item.token_estimate == 0
     assert item.extra["fees"][0]["amount_paise"] == 40000 and out.rows[0].id
+
+
+def test_the_fee_list_is_refused_and_hidden_from_the_ai_while_switched_off():
+    from shared.payments import fee_list
+
+    off = SimpleNamespace(id=uuid.uuid4(), vertical="general", settings={})
+    on = SimpleNamespace(id=off.id, vertical="general", settings={"capability_overrides": {fee_list.CAPABILITY: True}})
+
+    class _BizDb(_Db):
+        def __init__(self, business):
+            super().__init__()
+            self.business = business
+
+        async def get(self, model, key):
+            return self.business
+
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(knowledge.get_fees(current_user=USER, db=_BizDb(off)))
+    assert err.value.status_code == 403 and "Price list & payments" in err.value.detail
+
+    fees, card = SimpleNamespace(topic=fee_list.TOPIC), SimpleNamespace(topic="about")
+    assert fee_list.usable([fees, card], off) == [card]
+    assert fee_list.usable([fees, card], on) == [fees, card]

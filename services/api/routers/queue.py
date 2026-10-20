@@ -348,6 +348,8 @@ async def check_in(body: CheckInIn, current_user: CurrentUserDep, db: DbDep) -> 
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
 
     doctor_id = uuid.UUID(body.doctor_id) if body.doctor_id else None
+    if body.fee_ids:
+        await fee_list.require_enabled(db, current_user.business)
     try:
         items = await fee_list.pick_for(db, current_user.business, body.fee_ids)
     except fee_list.FeeError as exc:
@@ -376,6 +378,7 @@ async def check_in(body: CheckInIn, current_user: CurrentUserDep, db: DbDep) -> 
 @router.put("/{entry_id}/fees", response_model=QueueEntryOut)
 async def set_token_fees(entry_id: uuid.UUID, body: FeesPick, current_user: CurrentUserDep, db: DbDep) -> QueueEntryOut:
     """Change what a token is for (a test added at the counter). Refused once a payment link for it has gone out."""
+    await fee_list.require_enabled(db, current_user.business)
     entry = await db.get(QueueEntry, entry_id)
     if entry is None or entry.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue entry not found")

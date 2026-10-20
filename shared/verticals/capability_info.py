@@ -111,6 +111,16 @@ _CAPABILITIES = (
         "Connect a lead source, or build and share a form.",
     ),
     CapabilityInfo(
+        "price_list_payments",
+        "Price list & payments",
+        "Keep a list of your fees or products with prices, tick what the customer takes, and send one payment link for the total.",
+        ("Fees / Price list tab on the Knowledge page - the AI quotes these fees",
+         "Tick tests or services when giving a token or making a booking; the payment link asks for their total",
+         "Take an order in a chat: products and quantities, then a payment link or cash on delivery",
+         "Payment link for an unpaid WhatsApp order on the Orders page"),
+        "Connect Razorpay in Settings -> Leads & payments, then add your fees (Knowledge) or products (Catalogue).",
+    ),
+    CapabilityInfo(
         "care_recall",
         "Recall reminders",
         "Customers on a repeat schedule get a reminder before their next visit is due.",
@@ -120,3 +130,6 @@ _CAPABILITIES = (
 )
 
 SWITCHABLE: dict[str, CapabilityInfo] = {c.key: c for c in _CAPABILITIES}
+
+# Switches no business type starts with - each business turns them on itself, whatever its type.
+OPT_IN_ONLY = frozenset({"price_list_payments"})

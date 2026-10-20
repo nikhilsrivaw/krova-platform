@@ -6,6 +6,7 @@ Settings has five tabs: Business, Channels, Calls & queue, Leads & payments, Int
 - Business name, owner name, Google Review Link (set it to ask customers for a review after a completed visit; blank turns it off).
 - What kind of business is this: decides your starting modules, how the AI talks and what it must never promise. Changing it updates your menu and the AI's rules; features you added yourself stay.
 - Features: switch modules on or off (see the list of features below). Some need a one-time setup after switching on.
+- Price list & payments (off for every business until you switch it on): the Fees / Price list on the Knowledge page, ticking tests on tokens and bookings, taking an order in a chat, and the payment link for WhatsApp orders. Needs Razorpay connected (Leads & payments tab) to send links; Cash on delivery works without it.
 - Agent Autonomy Level: Observe, Draft (recommended), Conditional, Act.
 - Phone Login: link a phone number to also sign in with a code read out on a call (no SMS).
 

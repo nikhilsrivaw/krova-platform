@@ -20,12 +20,39 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 TOPIC = "fees"
+# The Features switch for this and for taking orders in a chat (shared/catalogue/chat_orders.py) - off by default.
+CAPABILITY = "price_list_payments"
 ROWS_LIMIT = 300
 NAME_LIMIT = 80
 DETAILS_LIMIT = 150
 MIN_PAISE = 100  # ₹1
 MAX_PAISE = 100_000_000  # ₹10,00,000
 ITEMS_LIMIT = 20  # tests on one token or booking
+
+
+def enabled(business) -> bool:
+    from shared import verticals
+
+    return business is not None and verticals.has_capability(business, CAPABILITY)
+
+
+async def require_enabled(db: AsyncSession, business_id: uuid.UUID) -> None:
+    """403 unless the business switched on "Price list & payments" (Settings -> Features)."""
+    from fastapi import HTTPException, status
+
+    from shared.db.models import Business
+
+    if not enabled(await db.get(Business, business_id)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Switch on \"Price list & payments\" in Settings -> Features to use this.",
+        )
+
+
+def usable(items: list, business) -> list:
+    """The knowledge items the AI may read: the fee list only while the switch is on."""
+    if enabled(business):
+        return items
+    return [k for k in items if getattr(k, "topic", None) != TOPIC]
 
 
 class FeeError(ValueError):

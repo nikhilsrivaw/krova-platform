@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.db.models import Business, Commitment, PaymentLink
-from shared.payments import links
+from shared.payments import fee_list, links
 from shared.team import access
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -206,6 +206,7 @@ async def send_for_order(order_id: uuid.UUID, body: OrderLinkIn, current_user: C
 
     await access.require(db, current_user, "take_payments")
     business = await _business(db, current_user)
+    await fee_list.require_enabled(db, business.id)
     order = await db.get(Order, order_id)
     if order is None or order.business_id != business.id:
         raise HTTPException(status_code=404, detail="Order not found")

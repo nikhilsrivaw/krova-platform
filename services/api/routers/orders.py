@@ -21,6 +21,7 @@ from shared import verticals
 from shared.auth.encryption import encrypt
 from shared.care import shiprocket_sync
 from shared.catalogue import chat_orders
+from shared.payments import fee_list
 from shared.db.models import Business, Order, OrderStatus, ShippingConnection, StoreConnection
 from shared.payments import links as payment_links
 from shared.team import access
@@ -190,6 +191,7 @@ async def take_order_in_chat(body: ChatOrderIn, current_user: CurrentUserDep, db
     from services.api.routers.payments import _link_out
 
     business = await _require_order_sync(current_user.business, db)
+    await fee_list.require_enabled(db, business.id)
     customer = await access.check_id(db, current_user, body.customer_id)
     if body.payment == "link":
         await access.require(db, current_user, "take_payments")

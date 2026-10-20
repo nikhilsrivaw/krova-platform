@@ -487,6 +487,8 @@ async def create_appointment(
     customer = await db.get(Customer, uuid.UUID(body.customer_id))
     if customer is None or customer.business_id != current_user.business:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    if body.fee_ids:
+        await fee_list.require_enabled(db, current_user.business)
     try:
         items = await fee_list.pick_for(db, current_user.business, body.fee_ids)
     except fee_list.FeeError as exc:
@@ -527,6 +529,7 @@ async def set_appointment_fees(
     appointment_id: uuid.UUID, body: FeesPick, current_user: CurrentUserDep, db: DbDep
 ) -> AppointmentOut:
     """Change what a booking is for. Refused once a payment link for it has gone out."""
+    await fee_list.require_enabled(db, current_user.business)
     appointment = await _owned_appointment(appointment_id, current_user.business, db)
     before = appointment.fee_items
     try:

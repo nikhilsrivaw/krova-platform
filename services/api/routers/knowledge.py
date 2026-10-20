@@ -782,6 +782,7 @@ class FeesOut(BaseModel):
 @router.get("/fees", response_model=FeesOut)
 async def get_fees(current_user: CurrentUserDep, db: DbDep) -> FeesOut:
     """The fee list. Open to the whole team: they tick from it when making a token or a booking."""
+    await fee_list.require_enabled(db, current_user.business)
     return FeesOut(rows=[FeeRow(**r) for r in await fee_list.read(db, current_user.business)])
 
 
@@ -791,6 +792,7 @@ async def save_fees(body: FeesIn, current_user: OwnerOrAdminDep, db: DbDep) -> F
     Replace the whole fee list. Tokens and bookings already made keep the prices they were made with. The AI is shown
     only the rows a customer's message names. No rows removes it.
     """
+    await fee_list.require_enabled(db, current_user.business)
     rows = fee_list.clean_rows([r.model_dump() for r in body.rows])
     existing = await _topic_item(db, current_user.business, fee_list.TOPIC)
     if not rows:

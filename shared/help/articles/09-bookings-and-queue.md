@@ -19,7 +19,7 @@ Turn it on in Settings → Calls & queue → Walk-in Queue, and name it what you
 - Warn when N are ahead: the customer gets a WhatsApp alert when their turn is near.
 
 ## Tests and fees on a token or booking
-If you keep a fee list (Knowledge & Gaps → Fees / Price list), a "What for" list appears when you check someone in, book a token from a chat or a customer's page, or make a booking. Tick the tests or services they came for; the total shows as you tick.
+If "Price list & payments" is on (Settings → Features) and you keep a fee list (Knowledge & Gaps → Fees / Price list), a "What for" list appears when you check someone in, book a token from a chat or a customer's page, or make a booking. Tick the tests or services they came for; the total shows as you tick.
 - The token or booking shows what was ticked and the total. Use "Add tests" or "Change" on it to fix it later.
 - Payment link: leave the amount empty and the link asks for the ticked total. If nothing is ticked it uses the doctor's fee, then your default fee. A typed amount always wins.
 - Once a payment link has been sent (or money received) for a token or booking, its tests can't be changed - that link is for the old amount.
