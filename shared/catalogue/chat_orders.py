@@ -34,6 +34,8 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 SOURCE = "chat"
+# Orders a link may be sent for: taken on WhatsApp. A Shopify or WooCommerce order is paid through its own store.
+LINKABLE_SOURCES = (SOURCE, "whatsapp")
 ORDER_PAYMENT = "order_payment"
 MAX_LINES = 30
 MAX_QUANTITY = 99
@@ -133,6 +135,8 @@ async def send_link(
 
     if order.business_id != business.id:
         raise links.LinkError("Order not found.")
+    if order.source_platform not in LINKABLE_SOURCES:
+        raise links.LinkError("This order is paid through its own store, not by a KROVA link.")
     if order.customer_id is None:
         raise links.LinkError("This order has no customer to send a link to.")
     if order.status != OrderStatus.pending:

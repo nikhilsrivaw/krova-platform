@@ -97,7 +97,7 @@ def test_a_prepaid_order_is_not_marked_confirmed():
 
 
 def _order(**kw):
-    base = dict(id=uuid.uuid4(), business_id=BIZ, customer_id=uuid.uuid4(), status=OrderStatus.pending, total_paise=229700,
+    base = dict(id=uuid.uuid4(), business_id=BIZ, source_platform="chat", customer_id=uuid.uuid4(), status=OrderStatus.pending, total_paise=229700,
                 order_number="WA-1A2B3C", items=[{"title": "Kurta - M", "quantity": 2, "price_paise": 89900}], is_cod=False)
     base.update(kw)
     return SimpleNamespace(**base)
@@ -166,3 +166,14 @@ def test_a_part_payment_or_another_commitment_leaves_the_order_alone():
     assert asyncio.run(chat_orders.settle_if_paid(_Db(order), part)) is None
     assert asyncio.run(chat_orders.settle_if_paid(_Db(order), fee)) is None
     assert order.status == OrderStatus.pending
+
+
+def test_a_whatsapp_cart_order_gets_a_link_too(monkeypatch):
+    (link, sent, _), made = _link(monkeypatch, _order(source_platform="whatsapp", order_number=None,
+                                                      items=[{"product_retailer_id": "a1", "quantity": 2}]))
+    assert sent and made["description"] == "WhatsApp order: 2 items"
+
+
+def test_a_shopify_order_is_never_sent_a_link(monkeypatch):
+    with pytest.raises(links.LinkError, match="its own store"):
+        _link(monkeypatch, _order(source_platform="shopify"))
