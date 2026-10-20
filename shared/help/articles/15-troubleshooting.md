@@ -30,3 +30,6 @@ Use "Forgot password" on the sign-in page. Team members sign in with their Team 
 
 ## Still stuck
 Raise a ticket from the Help page. Describe what you did, what you expected and what happened instead; mention the page. KROVA's team replies on the Help page.
+
+## KROVA Buddy on every page
+Owners and admins see a round KROVA Buddy button in the bottom-right corner of every page on the computer (not on Conversations or Help). It opens a small chat with the same Buddy as the Help page, and it knows which page you asked from. The chat carries on when you move to another page or open Help. To raise a ticket from it, press "Raise a ticket": the Help page opens with the form already filled. Close it with the X or the Esc key. In the phone app, Buddy is under More → Help.
