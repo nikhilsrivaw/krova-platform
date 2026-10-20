@@ -190,8 +190,8 @@ class OpenShiftIn(BaseModel):
 @router.post("/shifts/open", response_model=ShiftSessionOut, status_code=status.HTTP_201_CREATED)
 async def open_shift(body: OpenShiftIn, current_user: CurrentUserDep, db: DbDep) -> ShiftSessionOut:
     """Opens today's session for a shift, or reopens it if it was closed earlier today."""
-    await _require_opd_queue(current_user.business, db)
-    today = datetime.now(timezone.utc).date()
+    business = await _require_opd_queue(current_user.business, db)
+    today = queue_booking.today_for(business)
     existing = await queue_booking.get_open_session(
         db, business_id=current_user.business, shift=body.shift, on_date=today
     )
@@ -242,7 +242,7 @@ async def close_shift(session_id: uuid.UUID, current_user: CurrentUserDep, db: D
 @router.get("/shifts", response_model=list[ShiftSessionOut])
 async def list_shifts(current_user: CurrentUserDep, db: DbDep) -> list[ShiftSessionOut]:
     """Today's shift sessions (open and closed) - the staff dashboard's shift tiles."""
-    today = datetime.now(timezone.utc).date()
+    today = queue_booking.today_for(await db.get(Business, current_user.business))
     rows = await db.execute(
         select(ShiftSession).where(
             ShiftSession.business_id == current_user.business,
@@ -364,7 +364,7 @@ async def list_queue(
     status_filter: QueueStatus | None = Query(default=None, alias="status"),
     queue_date: date | None = None,
 ) -> list[QueueEntryOut]:
-    target_date = queue_date or datetime.now(timezone.utc).date()
+    target_date = queue_date or queue_booking.today_for(await db.get(Business, current_user.business))
     query = select(QueueEntry).where(
         QueueEntry.business_id == current_user.business,
         QueueEntry.queue_date == target_date,

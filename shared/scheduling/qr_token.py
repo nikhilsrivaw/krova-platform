@@ -124,12 +124,12 @@ async def _reply(db: AsyncSession, business: Business, customer: Customer, text:
     return True
 
 
-async def _waiting_token_today(db: AsyncSession, business_id, customer_id, shift: Shift) -> QueueEntry | None:
-    today = datetime.now(timezone.utc).date()
+async def _waiting_token_today(db: AsyncSession, business: Business, customer_id, shift: Shift) -> QueueEntry | None:
+    today = queue_booking.today_for(business)
     return (
         await db.execute(
             select(QueueEntry).where(
-                QueueEntry.business_id == business_id, QueueEntry.customer_id == customer_id,
+                QueueEntry.business_id == business.id, QueueEntry.customer_id == customer_id,
                 QueueEntry.queue_date == today, QueueEntry.shift == shift,
                 QueueEntry.status.in_([QueueStatus.waiting, QueueStatus.in_consultation]),
             )
@@ -168,7 +168,7 @@ async def handle(message: Message, business: Business, customer: Customer, db: A
         await _reply(db, business, customer, CLOSED_TEXT)
         return True
 
-    entry = await _waiting_token_today(db, business.id, customer.id, shift)
+    entry = await _waiting_token_today(db, business, customer.id, shift)
     if entry is None:
         try:
             entry = await queue_booking.issue_token(

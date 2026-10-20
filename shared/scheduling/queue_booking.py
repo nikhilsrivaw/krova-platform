@@ -14,6 +14,7 @@ shift, number) is the real guarantee either way.
 
 import uuid
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -37,6 +38,14 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _MAX_ATTEMPTS = 2
+
+
+def today_for(business: Business | None) -> date:
+    """
+    The business's own calendar date - the queue day. Not the UTC date: between midnight and 05:30
+    in India the UTC date is still yesterday, so tokens issued then joined yesterday's list.
+    """
+    return datetime.now(ZoneInfo(getattr(business, "timezone", None) or "Asia/Kolkata")).date()
 
 
 class ShiftNotOpen(Exception):
@@ -74,7 +83,7 @@ async def get_open_session(
 async def open_shifts_today(db: AsyncSession, *, business_id: uuid.UUID) -> list[ShiftSession]:
     """Every shift open right now, for a status display (kiosk idle screen,
     staff dashboard, or the agent's own "which shifts can I offer" context)."""
-    today = datetime.now(timezone.utc).date()
+    today = today_for(await db.get(Business, business_id))
     result = await db.execute(
         select(ShiftSession).where(
             ShiftSession.business_id == business_id,
@@ -134,7 +143,7 @@ async def issue_token(
     if business is None or not verticals.has_capability(business, "opd_queue"):
         raise OpdQueueNotEnabled(f"Business {business_id} does not have the opd_queue capability")
 
-    today = datetime.now(timezone.utc).date()
+    today = today_for(business)
     session = await get_open_session(db, business_id=business_id, shift=shift, on_date=today)
     if session is None:
         raise ShiftNotOpen(f"No open {shift.value} shift for business {business_id}")
