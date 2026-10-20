@@ -10,6 +10,7 @@ to send them or which secret to expect.
 """
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -19,7 +20,10 @@ from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared import verticals
 from shared.auth.encryption import encrypt
 from shared.care import shiprocket_sync
+from shared.catalogue import chat_orders
 from shared.db.models import Business, Order, OrderStatus, ShippingConnection, StoreConnection
+from shared.payments import links as payment_links
+from shared.team import access
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -150,6 +154,64 @@ def _order_out(o: Order) -> OrderOut:
         ndr_at=o.ndr_at.isoformat() if o.ndr_at else None,
         placed_at=o.placed_at.isoformat(),
     )
+
+
+# ── Taking an order in a chat (shared/catalogue/chat_orders.py) ────────────
+
+class ChatOrderLine(BaseModel):
+    variant_id: uuid.UUID
+    quantity: int = Field(default=1, ge=1, le=chat_orders.MAX_QUANTITY)
+
+
+class ChatOrderIn(BaseModel):
+    customer_id: uuid.UUID
+    lines: list[ChatOrderLine] = Field(min_length=1, max_length=chat_orders.MAX_LINES)
+    # "link": send a payment link for the total now. "cod": cash on delivery.
+    payment: Literal["link", "cod"]
+    note: str | None = Field(default=None, max_length=500)
+    template_name: str | None = None
+    template_language: str = "en"
+
+
+class ChatOrderOut(BaseModel):
+    order: OrderOut
+    # the payment link, when one was asked for - see routers/payments.py
+    link: dict | None = None
+    sent: bool = False
+    reason: str | None = None
+
+
+@router.post("/chat", response_model=ChatOrderOut, status_code=status.HTTP_201_CREATED)
+async def take_order_in_chat(body: ChatOrderIn, current_user: CurrentUserDep, db: DbDep) -> ChatOrderOut:
+    """
+    Staff ticked products and quantities in a chat. Priced here from the product list. With a payment link, the
+    order is made only if the link can be made too - nothing is left half-done.
+    """
+    from services.api.routers.payments import _link_out
+
+    business = await _require_order_sync(current_user.business, db)
+    customer = await access.check_id(db, current_user, body.customer_id)
+    if body.payment == "link":
+        await access.require(db, current_user, "take_payments")
+    try:
+        items = await chat_orders.build_items(db, business.id, [(line.variant_id, line.quantity) for line in body.lines])
+    except chat_orders.OrderError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    order = await chat_orders.create(
+        db, business=business, customer=customer, items=items, cod=body.payment == "cod", note=body.note,
+        user_id=current_user.id,
+    )
+    if body.payment == "cod":
+        return ChatOrderOut(order=_order_out(order))
+    try:
+        link, sent, reason = await chat_orders.send_link(
+            db, business=business, order=order, user_id=current_user.id,
+            template_name=body.template_name, template_language=body.template_language,
+        )
+    except payment_links.LinkError as exc:
+        # raising rolls the order back with it
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    return ChatOrderOut(order=_order_out(order), link=_link_out(link).model_dump() if link else None, sent=sent, reason=reason)
 
 
 @router.get("", response_model=list[OrderOut])

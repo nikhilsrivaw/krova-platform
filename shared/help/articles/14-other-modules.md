@@ -10,6 +10,16 @@ What's worth knowing from conversations: complaints, churn risk, praise, competi
 Orders page (Orders & products feature): orders from your Shopify store, so the AI can answer "where is my order". Connect Shopify with a webhook (Shopify Admin → Settings → Notifications → Webhooks, topics orders/create, orders/updated, orders/cancelled, plus checkouts/create and checkouts/update for abandoned carts) and paste its secret. Connect Shiprocket (email and password) to check delivery status and catch failed delivery attempts. COD orders can be confirmed on WhatsApp.
 Catalogue page: what you sell - import from your WhatsApp catalogue, upload a CSV, or add by hand.
 
+## Taking an order in a chat
+Conversations → open a chat → "Take order" (also inside the customer panel, and in the phone app chat: "Take an order"). Needs the Orders & products feature and products with a price on the Catalogue page.
+- Find a product, press Add, set how many with - and +. The total shows as you go. Prices come from your Catalogue page; you can't type a different price.
+- Choose "Send payment link" or "Cash on delivery", add a note if you like (size, address, gift wrap), and place the order.
+- Payment link: a Razorpay link for the total goes on WhatsApp, naming what was ordered. The order is made only if the link could be made. When the customer pays, the order turns "paid" by itself, your order automations run, and if the customer came from a Meta ad, Meta is told about the purchase. Money recorded by hand on the Ledger for it does the same.
+- Cash on delivery: the order is saved as confirmed, so KROVA's COD confirmation message and call don't go to this customer.
+- The order appears on the Orders page with a number like WA-1A2B3C.
+- If the customer hasn't written in 24 hours, WhatsApp needs an approved template with two variables (amount, link) - you're asked to pick one.
+- A team member who isn't allowed to take payments (Team page) only sees Cash on delivery.
+
 ## Properties
 Your listings (price, status, RERA number). The AI quotes price and availability only from here.
 

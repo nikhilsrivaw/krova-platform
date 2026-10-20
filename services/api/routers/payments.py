@@ -193,6 +193,35 @@ async def send_for_token(entry_id: uuid.UUID, body: FeeIn, current_user: Current
     return await _send_fee(db, current_user, "token", entry_id, body)
 
 
+class OrderLinkIn(BaseModel):
+    template_name: str | None = None
+    template_language: str = "en"
+
+
+@router.post("/orders/{order_id}/link", response_model=SendOut)
+async def send_for_order(order_id: uuid.UUID, body: OrderLinkIn, current_user: CurrentUserDep, db: DbDep) -> SendOut:
+    """The total of an unpaid order (taken in a chat, or a WhatsApp cart) as a link - once per order."""
+    from shared.catalogue import chat_orders
+    from shared.db.models import Order
+
+    await access.require(db, current_user, "take_payments")
+    business = await _business(db, current_user)
+    order = await db.get(Order, order_id)
+    if order is None or order.business_id != business.id:
+        raise HTTPException(status_code=404, detail="Order not found")
+    await access.check_id(db, current_user, order.customer_id)
+    try:
+        link, sent, reason = await chat_orders.send_link(
+            db, business=business, order=order, user_id=current_user.id,
+            template_name=body.template_name, template_language=body.template_language,
+        )
+    except links.LinkError as exc:
+        raise _refuse(exc) from exc
+    if link is None:
+        raise HTTPException(status_code=409, detail=reason or "Nothing to collect.")
+    return SendOut(link=_link_out(link), sent=sent, reason=reason)
+
+
 @router.post("/appointments/{appointment_id}/link", response_model=SendOut)
 async def send_for_appointment(appointment_id: uuid.UUID, body: FeeIn, current_user: CurrentUserDep, db: DbDep) -> SendOut:
     """The fee for an appointment (amount given, else the doctor's fee, else the default fee) - once per appointment."""

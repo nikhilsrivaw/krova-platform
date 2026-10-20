@@ -171,6 +171,8 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     # ticking tests from the fee list on a token or booking
     ("GET", "/knowledge/fees"), ("PUT", "/queue/{entry_id}/fees"),
     ("PUT", "/scheduling/appointments/{appointment_id}/fees"),
+    # taking an order in a chat, and its payment link
+    ("POST", "/orders/chat"), ("POST", "/payments/orders/{order_id}/link"),
 ]}
 
 

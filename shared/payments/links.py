@@ -491,8 +491,14 @@ async def refresh_link(db: AsyncSession, link: PaymentLink, gateway_row: Payment
 
 
 async def fire_payment_received(db: AsyncSession, commitment: Commitment, amount_paise: int) -> None:
-    """payment.received for money that just landed on a commitment - a link paid here, a receipt on the Ledger."""
+    """
+    payment.received for money that just landed on a commitment - a link paid here, a receipt on the Ledger. An
+    order's payment, once complete, also marks the order paid (shared/catalogue/chat_orders.py).
+    """
     from shared.care import post_call_actions
+    from shared.catalogue import chat_orders
+
+    await chat_orders.settle_if_paid(db, commitment)
 
     await post_call_actions.fire_safely(
         db, business_id=commitment.business_id, trigger_type="payment.received", customer_id=commitment.customer_id,
