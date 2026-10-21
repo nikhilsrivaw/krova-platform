@@ -238,8 +238,8 @@ async def preview(
         )
     elif category == "UTILITY":
         cost_note = (
-            "Utility templates are free inside the 24-hour window and cheap "
-            "outside it. This is the right category for reminders."
+            "Utility templates cost a fraction of marketing ones (inside the 24-hour "
+            "window too, since October 2026). This is the right category for reminders."
         )
     else:
         cost_note = "Authentication templates are for verification codes only."

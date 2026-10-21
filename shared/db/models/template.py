@@ -35,8 +35,9 @@ class TemplateCategory(str, enum.Enum):
     """
     Meta's three categories, and the difference is money.
 
-    Utility and authentication are free inside the customer service window and
-    cheap outside it. Marketing is always charged. An agent that reaches for
+    Utility and authentication cost a fraction of marketing (charged inside the
+    customer service window too since 1 October 2026 - shared/channels/whatsapp/
+    usage.py). Marketing costs most. An agent that reaches for
     utility when utility will do is the difference between a platform that
     saves a business money and one that quietly spends it.
     """

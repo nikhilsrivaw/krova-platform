@@ -118,7 +118,11 @@ def _link(monkeypatch, order, existing=None, open_link=None):
 
     monkeypatch.setattr(links, "_fee_commitment_for", fee_commitment_for)
     monkeypatch.setattr(links, "_open_link_for", open_link_for)
+    async def summary_text(db, order):
+        return "summary"
+
     monkeypatch.setattr(links, "send_link", send_link)
+    monkeypatch.setattr(chat_orders, "summary_text", summary_text)
     out = asyncio.run(chat_orders.send_link(_Db(order), business=SimpleNamespace(id=BIZ), order=order, user_id=None))
     return out, made
 
@@ -177,3 +181,27 @@ def test_a_whatsapp_cart_order_gets_a_link_too(monkeypatch):
 def test_a_shopify_order_is_never_sent_a_link(monkeypatch):
     with pytest.raises(links.LinkError, match="its own store"):
         _link(monkeypatch, _order(source_platform="shopify"))
+
+
+class _PolicyDb:
+    def __init__(self, policy):
+        self.policy = policy
+
+    async def execute(self, statement):
+        policy = self.policy
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: policy))
+
+
+def test_the_summary_breaks_down_the_price_and_states_the_return_policy():
+    order = _order(is_cod=True, items=[{"title": "Kurta - M", "quantity": 2, "price_paise": 89900},
+                                       {"title": "Dupatta", "quantity": 1, "price_paise": 49900}], total_paise=229700)
+    text = asyncio.run(chat_orders.summary_text(_PolicyDb("Exchange within 7 days, unworn."), order))
+    assert text.splitlines() == [
+        "Order WA-1A2B3C", "2 × Kurta - M - Rs 1,798", "1 × Dupatta - Rs 499", "Total: Rs 2,297",
+        "Payment: cash on delivery / delivery par cash", "Returns and refunds: Exchange within 7 days, unworn.",
+    ]
+
+
+def test_no_policy_on_the_card_no_policy_line():
+    text = asyncio.run(chat_orders.summary_text(_PolicyDb(None), _order()))
+    assert "Returns" not in text and text.endswith("Total: Rs 2,297")

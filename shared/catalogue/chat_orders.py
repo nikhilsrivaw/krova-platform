@@ -157,7 +157,77 @@ async def send_link(
     return await links.send_link(
         db, business=business, commitment=commitment, user_id=user_id,
         template_name=template_name, template_language=template_language,
+        summary=await summary_text(db, order) if order.source_platform == SOURCE else None,
     )
+
+
+async def summary_text(db: AsyncSession, order: Order) -> str:
+    """
+    What the customer is told about an order taken in a chat: each line with its price, the total, how they pay, and
+    the business's own return and refund policy (Business Card -> "Cancel, return and refund") - the price breakdown
+    and policy the Consumer Protection (E-Commerce) Rules, 2020 ask a seller to give.
+    """
+    from shared.db.models import KnowledgeItem
+    from shared.payments.links import rupees
+
+    lines = [f"Order {order.order_number}" if order.order_number else "Your order"]
+    for item in order.items or []:
+        qty = int(item.get("quantity") or 1)
+        price = int(item.get("price_paise") or 0)
+        lines.append(f"{qty} × {item.get('title') or 'item'} - {rupees(price * qty)}")
+    lines.append(f"Total: {rupees(order.total_paise or 0)}")
+    if order.is_cod:
+        lines.append("Payment: cash on delivery / delivery par cash")
+    policy = (
+        await db.execute(
+            select(KnowledgeItem.content).where(
+                KnowledgeItem.business_id == order.business_id, KnowledgeItem.topic == "changes",
+                KnowledgeItem.active.is_(True),
+            )
+        )
+    ).scalars().first()
+    if policy and policy.strip():
+        lines.append(f"Returns and refunds: {policy.strip()[:300]}")
+    return "\n".join(lines)
+
+
+async def send_summary(db: AsyncSession, *, business: Business, order: Order, user_id: uuid.UUID | None) -> tuple[bool, str | None]:
+    """
+    A cash-on-delivery order's summary, on WhatsApp - only inside the 24-hour window (a plain message; a template
+    would need its own approval). Returns (sent, reason). Never raises: the order stands either way.
+    """
+    from shared.channels import ingest
+    from shared.channels.whatsapp.client import WhatsAppClient, WhatsAppError, within_service_window
+    from shared.auth.encryption import decrypt
+    from shared.db.models import Channel, Direction, IdentityKind
+    from shared.payments import links
+
+    try:
+        customer = await db.get(Customer, order.customer_id) if order.customer_id else None
+        if customer is None:
+            return False, "No customer on this order."
+        if getattr(customer, "is_private", False):
+            return False, "This is a private conversation."
+        phone = await links._phone(db, customer.id)
+        if not phone:
+            return False, "This customer has no phone number on file."
+        if not within_service_window(await links._last_inbound(db, customer.id)):
+            return False, "The customer hasn't written in 24 hours, so the summary wasn't sent."
+        wa = await links._whatsapp(db, business.id)
+        text = await summary_text(db, order)
+        result = await WhatsAppClient(decrypt(wa.access_token), wa.external_account_id).send_text(phone, text)
+        await ingest.ingest(
+            business_id=business.id, channel=Channel.whatsapp, direction=Direction.outbound,
+            identity_kind=IdentityKind.phone, identity_value=phone, external_id=result.external_id,
+            text=text, occurred_at=datetime.now(timezone.utc), connection_id=wa.id, enqueue_analysis=False,
+            sent_by_user_id=user_id, db=db,
+        )
+        return True, None
+    except (links.LinkError, WhatsAppError) as exc:
+        return False, str(exc)[:200]
+    except Exception:  # noqa: BLE001
+        logger.exception("order summary not sent order=%s", order.id)
+        return False, "The summary could not be sent."
 
 
 async def settle_if_paid(db: AsyncSession, commitment: Commitment) -> Order | None:

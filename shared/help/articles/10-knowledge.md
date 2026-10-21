@@ -20,6 +20,7 @@ Switch on "Price list & payments" first (Settings → Business → Features); un
 - The AI tells customers a fee when they name it ("CT scan kitne ka hai?"). It only sees the fees a customer asks about, so a long list costs nothing extra.
 - Changing a fee later does not change tokens or bookings already made.
 - Only the owner and admins can change the list; the whole team can tick from it.
+- "Print rate list" prints the saved list as an A4 sheet with your business name, to put up at reception. Clinics and labs in many states must display their charge for each service where patients can see it.
 
 ## Question bank
 More answers beyond your top questions. The AI sees one only when a customer asks something like it.

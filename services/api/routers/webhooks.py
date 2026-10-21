@@ -512,6 +512,11 @@ async def _apply_status(update: webhook.StatusUpdate, db) -> None:
             update.errors,
         )
 
+    # what the message cost the business, and a payment method that stopped working (shared/channels/whatsapp/usage.py)
+    from shared.channels.whatsapp import usage as whatsapp_usage
+
+    await whatsapp_usage.record(db, update)
+
     payment = update.raw.get("payment")
     if payment:
         await _apply_payment_status(update, payment, db)

@@ -22,3 +22,10 @@ A template is a message Meta approves in advance, so you can send it any time - 
 - Business Profile (Settings → Channels): the photo, about line, description, address and category customers see.
 - Account Health (Settings → Channels): quality rating, daily limit and status as Meta reports them. Quality falls before a restriction.
 - Two-step verification PIN (Settings → Channels): change the number's 6-digit PIN.
+
+## What WhatsApp messages cost
+Meta charges your own WhatsApp Business account for messages - not KROVA, and not from your KROVA wallet.
+- Since 1 October 2026, replies are free for the first 1,000 a month on each number; after that each reply is charged. Templates are charged too, inside the 24-hour window as well. Marketing templates cost the most.
+- Messages are free while a customer who came from a Click-to-WhatsApp ad is in their free window (up to 7 days).
+- WhatsApp page → Connection & Health → "WhatsApp messages this month" shows how many were charged and how many free replies are left. Counting began when this card was added. The amounts themselves are in Meta's billing.
+- Your WhatsApp account needs a working payment method in Meta's billing. Without one, Meta stops delivering replies once they would be charged. If Meta reports a payment problem, a red warning shows on the WhatsApp page and the Command Center - fix the card in Meta's billing; the warning clears after the next charged message goes out.

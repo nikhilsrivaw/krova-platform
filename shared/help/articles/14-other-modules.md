@@ -19,6 +19,9 @@ Conversations → open a chat → "Take order" (also inside the customer panel, 
 - The order appears on the Orders page with a number like WA-1A2B3C.
 - If the customer hasn't written in 24 hours, WhatsApp needs an approved template with two variables (amount, link) - you're asked to pick one.
 - A team member who isn't allowed to take payments (Team page) only sees Cash on delivery.
+- The customer gets one WhatsApp message with each item and its price, the total, and your return and refund policy from the Business Card ("Cancel, return and refund"), with the payment link below it. For Cash on delivery the same summary goes on its own, if they wrote in the last 24 hours. Fill in that Business Card field - Indian e-commerce rules expect buyers to be told the price breakdown and the return policy.
+- What you may not sell this way: WhatsApp's rules don't allow medicines, medical devices, test kits, thermometers or supplements to be sold in a chat, whatever licence you hold, and selling them can get your number restricted. Fees for services (a consultation, a scan, a test done at your lab) are fine.
+- Razorpay keeps its fee from each paid link - about 2% plus GST on that fee, UPI included (check your Razorpay plan). Cash on delivery has no gateway fee.
 - An order that came as a WhatsApp cart (or a chat order whose link was lost): on the Orders page, an unpaid order shows "Payment link" - it sends a link for the order's total, and the order turns paid by itself once paid. Shopify and WooCommerce orders don't get one; they are paid through their own store.
 
 ## Properties

@@ -138,6 +138,8 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     ("GET", "/voice-onboarding/numbers/mine"),
     ("GET", "/voice-onboarding/agent-settings"), ("GET", "/channels/instagram/connect-url"),
     ("GET", "/channels/instagram/fb-connect-url"),
+    # what the business's WhatsApp messages cost it
+    ("GET", "/channels/whatsapp/usage"),
 ]}
 
 # What staff do all day - one customer at a time - must stay open to them.

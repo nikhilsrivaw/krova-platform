@@ -372,3 +372,29 @@ class VoiceProvisioning(UUIDMixin, TimestampMixin, Base):
     documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
     __table_args__ = (Index("idx_voice_provisioning_business", "business_id"),)
+
+
+class WhatsAppUsage(UUIDMixin, Base):
+    """
+    How many WhatsApp messages a business sent this month, by Meta's pricing category and type - counted from the
+    "sent" status webhook (shared/channels/whatsapp/usage.py). Meta bills the business's own WhatsApp account, not
+    KROVA; this is only so the owner can see what is being charged. One row per (business, month, category, type),
+    incremented in place.
+    """
+
+    __tablename__ = "whatsapp_usage"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    # the first day of the month (UTC), as Meta's monthly free tier counts
+    month: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    # Meta's pricing.category: service, utility, marketing, authentication, ...
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Meta's pricing.type: regular (charged), free_customer_service, free_entry_point, ...
+    pricing_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    messages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "month", "category", "pricing_type", name="uq_whatsapp_usage_month"),
+    )

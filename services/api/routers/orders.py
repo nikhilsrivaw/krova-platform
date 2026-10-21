@@ -204,7 +204,8 @@ async def take_order_in_chat(body: ChatOrderIn, current_user: CurrentUserDep, db
         user_id=current_user.id,
     )
     if body.payment == "cod":
-        return ChatOrderOut(order=_order_out(order))
+        sent, reason = await chat_orders.send_summary(db, business=business, order=order, user_id=current_user.id)
+        return ChatOrderOut(order=_order_out(order), sent=sent, reason=reason)
     try:
         link, sent, reason = await chat_orders.send_link(
             db, business=business, order=order, user_id=current_user.id,

@@ -42,6 +42,7 @@ from shared.db.models.channel import (
     Message,
     VoiceProvisioning,
     VoiceProvisioningStatus,
+    WhatsAppUsage,
 )
 from shared.db.models.integrations import (
     ApiKey,
@@ -142,6 +143,7 @@ __all__ = [
     "CannedResponse",
     "Channel",
     "ChannelConnection",
+    "WhatsAppUsage",
     "ClaimStatus",
     "Commitment",
     "CommitmentDirection",

@@ -13,8 +13,8 @@ about the ledger, not a spreadsheet.
 That difference matters commercially as well as usefully. A blast to a
 purchased list is marketing-category traffic, which Meta always charges for
 and which drags a number's quality rating down. A payment reminder to someone
-who genuinely owes you is utility-category - free inside the service window,
-cheap outside it - and nobody marks it as spam because they were expecting it.
+who genuinely owes you is utility-category - a fraction of marketing's
+price - and nobody marks it as spam because they were expecting it.
 
 The same feature on a pricing page. A different thing underneath.
 """

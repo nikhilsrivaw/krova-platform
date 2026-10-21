@@ -308,6 +308,17 @@ class PaymentConfigIn(BaseModel):
     payment_gateway: Literal["razorpay", "payu"] | None = None
 
 
+@router.get("/whatsapp/usage")
+async def whatsapp_usage(current_user: OwnerOrAdminDep, db: DbDep) -> dict:
+    """
+    This month's WhatsApp messages as Meta prices them - charged and free, by category - and whether Meta has
+    reported a problem with the payment method on the business's WhatsApp account. Meta bills the business directly.
+    """
+    from shared.channels.whatsapp import usage
+
+    return await usage.this_month(db, current_user.business)
+
+
 @router.get("/whatsapp/payment-config")
 async def get_payment_config(current_user: CurrentUserDep, db: DbDep) -> dict:
     result = await db.execute(

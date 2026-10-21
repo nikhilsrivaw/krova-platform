@@ -181,10 +181,12 @@ def payment_mode(business: Business) -> str:
 async def send_link(
     db: AsyncSession, *, business: Business, commitment: Commitment, user_id: uuid.UUID | None,
     template_name: str | None = None, template_language: str = "en", amount_paise: int | None = None,
+    summary: str | None = None,
 ) -> tuple[PaymentLink, bool, str | None]:
     """
     Create a link for what is still owed and send it. Returns (link, sent, reason_not_sent): when WhatsApp refuses,
-    the link still exists, so staff can copy it and share it another way.
+    the link still exists, so staff can copy it and share it another way. `summary` replaces the one-line description
+    in a plain (inside-24-hours) message - an order's lines and total, so it goes as one message, not two.
     """
     if commitment.business_id != business.id:
         raise LinkError("Not found.")
@@ -254,7 +256,10 @@ async def send_link(
             for i, value in enumerate(params, start=1):
                 text = text.replace(f"{{{{{i}}}}}", value)
         else:
-            text = message_text(commitment.description, amount, info.short_url, balance)
+            text = (
+                f"{summary}\nPay here / yahan pay karein: {info.short_url}" if summary and not balance
+                else message_text(commitment.description, amount, info.short_url, balance)
+            )
             result = await client.send_text(phone, text)
     except WhatsAppError as exc:
         logger.warning("payment link %s made but not sent: %s", link.id, exc)

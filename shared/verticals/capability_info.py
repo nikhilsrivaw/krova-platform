@@ -113,7 +113,8 @@ _CAPABILITIES = (
     CapabilityInfo(
         "price_list_payments",
         "Price list & payments",
-        "Keep a list of your fees or products with prices, tick what the customer takes, and send one payment link for the total.",
+        "Keep a list of your fees or products with prices, tick what the customer takes, and send one payment link for the total. "
+        "WhatsApp does not allow selling medicines, medical devices, test kits or supplements in a chat - fees for services are fine.",
         ("Fees / Price list tab on the Knowledge page - the AI quotes these fees",
          "Tick tests or services when giving a token or making a booking; the payment link asks for their total",
          "Take an order in a chat: products and quantities, then a payment link or cash on delivery",
