@@ -131,6 +131,7 @@ _add("POST", "/knowledge", "knowledge_changed", "Added to the knowledge base", W
 _add("POST", "/knowledge/read-file", "knowledge_changed", "Read a file to fill the knowledge card", WORK)
 _add("DELETE", "/knowledge/{item_id}", "knowledge_changed", "Removed from the knowledge base", WORK)
 _add("PUT", "/knowledge/fees", "knowledge_changed", "Changed the fee list", WORK)
+_add("POST", "/knowledge/reset", "knowledge_changed", "Reset the whole knowledge base", WORK)
 _add("PUT", "/queue/{entry_id}/fees", "token_fees_changed", "Changed the tests on a token", WORK)
 _add("PUT", "/scheduling/appointments/{appointment_id}/fees", "appointment_fees_changed", "Changed the tests on a booking", WORK)
 _add("POST", "/payments/links", "payment_link_sent", "Sent a payment link", WORK)

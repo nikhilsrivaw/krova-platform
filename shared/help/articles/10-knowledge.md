@@ -30,3 +30,6 @@ Real questions customers asked that the AI couldn't answer. For each: add the an
 
 ## Extra knowledge entries
 Short notes for things that fit nowhere on the Business card. Every entry that is on is read on every message, so there is a size limit (your plan sets it).
+
+## Delete all knowledge (start again)
+Owner only. At the bottom of the Knowledge & Gaps page, "Delete all knowledge" removes the Business card, Team card, Catalogue, Fees / Price list, Question bank, extra entries and everything in the Gaps queue. Type DELETE to confirm; it cannot be undone. Your "Always hand this to me" rules are kept. Until you add knowledge again, the AI hands more questions to your team because it no longer has the answers.

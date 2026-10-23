@@ -852,6 +852,45 @@ async def add_to_bank(body: BankIn, current_user: OwnerOrAdminDep, db: DbDep) ->
     return FaqOut(id=str(item.id), question=item.title, answer=item.content, active=True)
 
 
+RESET_WORD = "DELETE"
+
+
+class ResetIn(BaseModel):
+    # The owner types the word, so a stray click cannot wipe the knowledge base.
+    confirm: str = Field(max_length=20)
+
+
+class ResetOut(BaseModel):
+    items: int
+    gaps: int
+
+
+@router.post("/reset", response_model=ResetOut)
+async def reset_knowledge(body: ResetIn, current_user: OwnerOrAdminDep, db: DbDep) -> ResetOut:
+    """
+    Wipe everything the AI was taught on this page - both cards, the Catalogue, the fee list, the Question bank, other
+    entries - and the Unanswered Gaps queue. Owner only, and it cannot be undone. "Always hand this to me" rules are
+    kept: they decide what the AI must NOT answer, and losing them silently would make it answer those again.
+    """
+    if current_user.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can reset the knowledge base.")
+    if body.confirm.strip().upper() != RESET_WORD:
+        raise HTTPException(status_code=422, detail=f'Type {RESET_WORD} to confirm.')
+    items = (await db.execute(select(KnowledgeItem).where(KnowledgeItem.business_id == current_user.business))).scalars().all()
+    for item in items:
+        await db.delete(item)
+    gaps = 0
+    dna = await db.get(BusinessDNA, current_user.business)
+    if dna is not None:
+        known = dict(dna.known_gaps or {})
+        gaps = len(known.get("learned", []))
+        known["learned"] = []
+        dna.known_gaps = known
+    await db.flush()
+    logger.info("knowledge reset business=%s items=%s gaps=%s", current_user.business, len(items), gaps)
+    return ResetOut(items=len(items), gaps=gaps)
+
+
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_knowledge(
     item_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep
