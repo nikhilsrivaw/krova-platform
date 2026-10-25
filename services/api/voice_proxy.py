@@ -97,6 +97,25 @@ async def proxy_voice_transfer_xml(request: Request) -> Response:
     return await _proxy_http(request, f"/voice/transfer-xml{query}")
 
 
+@router.post("/voice/voicemail")
+async def proxy_voice_voicemail(request: Request) -> Response:
+    # A message left when nobody on a number's "who answers" list picked up (answer.py's _nobody_answered).
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/voicemail{query}")
+
+
+@router.post("/voice/line-test-answer")
+async def proxy_voice_line_test_answer(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/line-test-answer{query}")
+
+
+@router.post("/voice/line-test-hangup")
+async def proxy_voice_line_test_hangup(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return await _proxy_http(request, f"/voice/line-test-hangup{query}")
+
+
 @router.post("/voice/bridge-answer")
 async def proxy_voice_bridge_answer(request: Request) -> Response:
     query = f"?{request.url.query}" if request.url.query else ""

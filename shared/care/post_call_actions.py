@@ -60,9 +60,10 @@ logger = get_logger(__name__)
 # trigger_type, so a rule can never be saved referencing data that trigger
 # will never actually carry.
 CONDITION_FIELDS: dict[str, tuple[str, ...]] = {
-    "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic", "requested_service"),
-    "call.voicemail": ("campaign_objective",),
-    "call.no_answer": ("campaign_objective",),
+    # "number" is the id of the business's voice number the call was on (Voice page: each number its own job).
+    "call.completed": ("duration_seconds", "outcome", "sentiment", "escalated", "topic", "requested_service", "number"),
+    "call.voicemail": ("campaign_objective", "number"),
+    "call.no_answer": ("campaign_objective", "number"),
     "message.received": ("text",),
     "comment.received": ("text",),
     "story_reply.received": ("text",),

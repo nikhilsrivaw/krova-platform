@@ -110,6 +110,11 @@ def _run(monkeypatch, answers, used=0, turns=None):
     monkeypatch.setattr(post_call_rules.rule_builder, "answer", fake_answer)
     monkeypatch.setattr(post_call_rules, "_drafts_this_month", fake_used)
     monkeypatch.setattr(post_call_rules, "_template_names", fake_templates)
+
+    async def no_numbers(db, business_id):
+        return ""
+
+    monkeypatch.setattr(post_call_rules, "_numbers_line", no_numbers)
     monkeypatch.setattr(post_call_rules, "capabilities_for", lambda b: [])
     db = FakeDb()
     body = post_call_rules.DraftIn(turns=turns or [{"role": "owner", "text": "naye lead ko turant WhatsApp bhejo"}])

@@ -179,6 +179,10 @@ class AgentContext:
     # since _static_lines() only has self, never the business object
     # directly. None whenever `claims` itself is None.
     claim_party_noun: str | None = None
+    # The phone number a caller rang, when the business told KROVA what that number is for ("this is the sales
+    # line ..."). Voice only, inbound only - shared/channels/voice/line_profile.py. Rendered with the live lines so
+    # the business block stays one cacheable prefix across numbers.
+    line_note: str | None = None
 
     # What the owner has written down. Injected whole - see the knowledge
     # module for why this is not a retrieval step.
@@ -282,6 +286,8 @@ class AgentContext:
         byte-identical prefix; see render_business.
         """
         lines: list[str] = []
+        if self.line_note:
+            lines.append(f"About this phone line: {self.line_note}\n")
         if self.availability is not None:
             lines.append(
                 "Real current availability (only source of truth for booking "

@@ -531,10 +531,17 @@ async def outbound_hangup(
                             recipient.id, trigger,
                         )
                     try:
+                        # The number this campaign actually calls from - named on it, or the one chosen for it.
+                        line = campaign.connection_id or getattr(await voice_numbers.pick_outbound(
+                            db, campaign.business_id, purpose=campaign.purpose,
+                        ), "id", None)
                         await post_call_actions.apply_rules(
                             db, business_id=campaign.business_id, trigger_type=trigger,
                             customer_id=recipient.customer_id, channel="voice",
-                            context={"campaign_objective": campaign.objective},
+                            context={
+                                "campaign_objective": campaign.objective,
+                                "number": str(line) if line else None,
+                            },
                         )
                     except Exception:
                         logger.exception(

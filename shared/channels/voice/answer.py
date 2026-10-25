@@ -19,18 +19,22 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Header, Request, Response, status
 from sqlalchemy import select
 
-from shared.channels.voice import compliance, human_calls
+from shared.channels.voice import compliance, human_calls, missed_calls
 from shared.channels.voice.call_registry import remember
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.tenant import resolve
 from shared.channels.voice.xml import (
+    callback_promise_response,
     copilot_response,
+    dial_group_response,
     dial_response,
     dial_step_response,
     hangup_response,
+    listen_stream_line,
     nobody_answered_response,
     speak_response,
     stream_response,
+    voicemail_response,
 )
 from shared.config.settings import settings
 from shared.db.models import Call, VoiceProvisioning
@@ -111,6 +115,12 @@ async def answer(
             from_number=str(from_number or ""),
         )
 
+    # Live Copilot on a number with its own "who answers" list rings that list. The AI never speaks; a short
+    # greeting does.
+    direct = await _direct_to_people(route, str(from_number or ""))
+    if direct is not None:
+        return Response(content=direct, media_type="application/xml")
+
     # Live copilot mode: a human's phone rings directly, never the AI's
     # voice - copilot_mode with no staff_phone_number configured is treated
     # as not-opted-in rather than an error, so a half-finished setting can
@@ -156,6 +166,56 @@ async def answer(
     )
 
 
+async def _direct_to_people(route, caller: str) -> str | None:
+    """
+    The XML that puts a Live Copilot call straight through to this number's "who answers" list. None means: carry
+    on as before (the AI answers, or the old one-number copilot).
+    """
+    from shared.channels.voice import line_profile
+    from shared.db.models import CustomerIdentity, IdentityKind
+    from shared.identity.normalise import InvalidIdentifier, normalise_phone
+
+    profile = line_profile.read(route.extra)
+    if not route.copilot_mode or not profile["pickup"]["levels"]:
+        return None
+    try:
+        async with AsyncSessionLocal() as db:
+            customer_id = None
+            try:
+                phone = normalise_phone(caller) if caller else None
+            except InvalidIdentifier:
+                phone = None
+            if phone:
+                customer_id = (await db.execute(
+                    select(CustomerIdentity.customer_id).where(
+                        CustomerIdentity.business_id == route.business_id,
+                        CustomerIdentity.kind == IdentityKind.phone, CustomerIdentity.value == phone,
+                    )
+                )).scalar_one_or_none()
+            targets = await line_profile.plan(
+                db, business_id=route.business_id, extra=route.extra, customer_id=customer_id,
+                fallback=route.staff_phone_number,
+            )
+    except Exception:  # noqa: BLE001 - a lookup failure must fall back to the AI answering, never a dead call
+        logger.exception("could not work out who answers business=%s", route.business_id)
+        return None
+    if not targets:
+        return None
+    steps = call_routing.decode_plan(call_routing.encode_plan(targets))
+    query = plan_query(targets, connection_id=route.connection_id, call_id=None, caller=caller, start=1)
+    stream = None
+    if route.copilot_live_suggestions:
+        stream = listen_stream_line(
+            f"{settings.public_base_url.replace('https://', 'wss://')}/voice/copilot-stream",
+            f"{settings.public_base_url}/voice/status",
+        )
+    logger.info("copilot call put through to the list business=%s steps=%s", route.business_id, len(steps))
+    return dial_group_response(
+        [number for number, _ in steps[0].stops], action_url=_transfer_url(query), timeout=steps[0].ring_seconds,
+        greeting=f"Thank you for calling {route.business_name}. Connecting you to our team.", stream=stream,
+    )
+
+
 @router.post("/voice/transfer-xml")
 async def transfer_xml(
     request: Request,
@@ -163,6 +223,9 @@ async def transfer_xml(
     t: str | None = None,
     i: int = 0,
     call: uuid.UUID | None = None,
+    p: str | None = None,
+    c: uuid.UUID | None = None,
+    frm: str | None = None,
     x_plivo_signature_ma_v3: str | None = Header(default=None),
     x_plivo_signature_v3_nonce: str | None = Header(default=None),
 ) -> Response:
@@ -190,6 +253,9 @@ async def transfer_xml(
     except InvalidSignature:
         logger.warning("rejected /voice/transfer-xml - bad plivo signature")
         return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    if p is not None:
+        return await _walk_plan(p, i, call, c, frm, params)
 
     if t is None:
         # One fixed number (a phone-menu key that rings somewhere specific).
@@ -219,6 +285,209 @@ async def transfer_xml(
         content=dial_step_response(next_number, action_url=action_url, timeout=call_routing.RING_SECONDS),
         media_type="application/xml",
     )
+
+
+def plan_query(targets: list, *, connection_id: uuid.UUID, call_id: uuid.UUID | None, caller: str | None,
+               start: int = 0) -> dict[str, str]:
+    """The query string that carries a number's "who answers" steps through Plivo, one step per request."""
+    query = {"p": call_routing.encode_plan(targets), "i": str(start), "c": str(connection_id)}
+    if call_id is not None:
+        query["call"] = str(call_id)
+    if caller:
+        query["frm"] = "".join(ch for ch in caller if ch.isdigit())[:15]
+    return query
+
+
+def _transfer_url(query: dict) -> str:
+    return f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?{urlencode(query)}"
+
+
+async def _walk_plan(
+    p: str, i: int, call: uuid.UUID | None, c: uuid.UUID | None, frm: str | None, params: dict,
+) -> Response:
+    """
+    One step of a number's "who answers" list (shared/channels/voice/line_profile.py). `i` is the step to ring
+    next; after each step Plivo posts back here with DialStatus. A step that rang several phones together does
+    not say which one answered, so that is read from the answered leg's call record.
+    """
+    steps = call_routing.decode_plan(p)
+    outcome = params.get("DialStatus")
+    if outcome == "completed" and 0 < i <= len(steps):
+        stops = steps[i - 1].stops
+        b_leg = str(params.get("DialBLegUUID") or "")
+        user_id = stops[0][1] if len(stops) == 1 else await _who_answered(c, b_leg, stops)
+        if call is not None:
+            await _record_handler(call, user_id, b_leg)
+        return Response(content=hangup_response("transfer completed"), media_type="application/xml")
+    if i >= len(steps):
+        return await _nobody_answered(c, call, frm, steps)
+
+    step = steps[i]
+    query = {"p": p, "i": str(i + 1)}
+    for key, value in (("c", c), ("call", call), ("frm", frm)):
+        if value:
+            query[key] = str(value)
+    return Response(
+        content=dial_group_response(
+            [number for number, _ in step.stops], action_url=_transfer_url(query), timeout=step.ring_seconds,
+        ),
+        media_type="application/xml",
+    )
+
+
+async def _who_answered(connection_id: uuid.UUID | None, b_leg: str, stops: list) -> uuid.UUID | None:
+    """Which of several phones rung together picked up - from the answered leg's own call record."""
+    if not connection_id or not b_leg:
+        return None
+    from shared.auth.encryption import decrypt
+    from shared.channels.voice import plivo_client
+    from shared.db.models import ChannelConnection
+
+    try:
+        async with AsyncSessionLocal() as db:
+            connection = await db.get(ChannelConnection, connection_id)
+        auth_id = ((connection.extra or {}) if connection else {}).get("subaccount_auth_id")
+        if not connection or not auth_id or not connection.access_token:
+            return None
+        record = await plivo_client.get_call_cdr(
+            auth_id=auth_id, auth_token=decrypt(connection.access_token), call_uuid=b_leg,
+        )
+    except Exception:  # noqa: BLE001 - not knowing who answered must never break the call
+        logger.exception("could not read who answered b_leg=%s", b_leg)
+        return None
+    answered = "".join(ch for ch in str((record or {}).get("to_number") or "") if ch.isdigit())
+    return next((uid for number, uid in stops if answered and answered.endswith(number[-10:])), None)
+
+
+async def _nobody_answered(
+    connection_id: uuid.UUID | None, call_id: uuid.UUID | None, caller: str | None, steps: list,
+) -> Response:
+    """Every step was tried. Do what this number's owner chose: a callback promise, a voicemail, or an apology."""
+    from shared.channels.voice import line_profile
+    from shared.db.models import ChannelConnection
+
+    profile = line_profile.read(None)
+    if connection_id is not None:
+        async with AsyncSessionLocal() as db:
+            connection = await db.get(ChannelConnection, connection_id)
+        if connection is not None:
+            profile = line_profile.read(connection.extra)
+    choice = profile["no_answer"]
+    if choice == "apology" or connection_id is None:
+        return Response(content=nobody_answered_response(), media_type="application/xml")
+    level_one = [uid for step in steps[:1] for _, uid in step.stops if uid]
+    if choice == "voicemail":
+        query = {"c": str(connection_id)}
+        if call_id is not None:
+            query["call"] = str(call_id)
+        if caller:
+            query["frm"] = caller
+        if level_one:
+            query["u"] = ",".join(str(u) for u in level_one)
+        url = f"{settings.public_base_url.rstrip('/')}/voice/voicemail?{urlencode(query)}"
+        return Response(content=voicemail_response(action_url=url), media_type="application/xml")
+    human_calls._detach(missed_calls.promise_callback(
+        connection_id=connection_id, call_id=call_id, caller=caller, notify=level_one,
+        hours=profile["callback_hours"],
+    ))
+    return Response(content=callback_promise_response(profile["callback_hours"]), media_type="application/xml")
+
+
+@router.post("/voice/voicemail")
+async def voicemail(
+    request: Request,
+    c: uuid.UUID,
+    call: uuid.UUID | None = None,
+    frm: str | None = None,
+    u: str | None = None,
+    x_plivo_signature_ma_v3: str | None = Header(default=None),
+    x_plivo_signature_v3_nonce: str | None = Header(default=None),
+) -> Response:
+    """Plivo posts the message a caller left when nobody picked up. It goes on the Ledger as a callback to make."""
+    body = await request.form()
+    params = {k: str(v) for k, v in body.items()}
+    try:
+        verify(
+            uri=f"{settings.public_base_url.rstrip('/')}/voice/voicemail?{request.url.query}",
+            signature=x_plivo_signature_ma_v3,
+            nonce=x_plivo_signature_v3_nonce,
+            method="POST",
+            params=params,
+        )
+    except InvalidSignature:
+        logger.warning("rejected /voice/voicemail - bad plivo signature")
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    from shared.channels.voice import line_profile
+    from shared.db.models import ChannelConnection
+
+    async with AsyncSessionLocal() as db:
+        connection = await db.get(ChannelConnection, c)
+    hours = line_profile.read(connection.extra if connection else None)["callback_hours"]
+    notify = []
+    for part in (u or "").split(","):
+        try:
+            notify.append(uuid.UUID(part))
+        except ValueError:
+            continue
+    seconds = params.get("RecordingDuration") or "0"
+    human_calls._detach(missed_calls.promise_callback(
+        connection_id=c, call_id=call, caller=frm, notify=notify, hours=hours,
+        recording_url=params.get("RecordUrl") or None,
+        recording_seconds=int(seconds) if seconds.lstrip("-").isdigit() else 0,
+    ))
+    return Response(
+        content=speak_response("Thank you. Your message has been recorded and someone from the team will call you back."),
+        media_type="application/xml",
+    )
+
+
+@router.post("/voice/line-test-answer")
+async def line_test_answer(
+    request: Request,
+    c: uuid.UUID,
+    x_plivo_signature_ma_v3: str | None = Header(default=None),
+    x_plivo_signature_v3_nonce: str | None = Header(default=None),
+) -> Response:
+    """The owner's "Test call" from the Voice page: a fixed line, no AI, then hang up."""
+    body = await request.form()
+    params = {k: str(v) for k, v in body.items()}
+    try:
+        verify(
+            uri=f"{settings.public_base_url.rstrip('/')}/voice/line-test-answer?{request.url.query}",
+            signature=x_plivo_signature_ma_v3,
+            nonce=x_plivo_signature_v3_nonce,
+            method="POST",
+            params=params,
+        )
+    except InvalidSignature:
+        logger.warning("rejected /voice/line-test-answer - bad plivo signature")
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+
+    from shared.channels.voice import numbers
+    from shared.db.models import ChannelConnection
+
+    async with AsyncSessionLocal() as db:
+        connection = await db.get(ChannelConnection, c)
+    label = numbers.label_of(connection) if connection else "KROVA"
+    return Response(
+        content=speak_response(
+            f"This is a KROVA test call from your {label} line. If you can hear this, calls put through to this "
+            "phone will reach you. Goodbye."
+        ),
+        media_type="application/xml",
+    )
+
+
+@router.post("/voice/line-test-hangup")
+async def line_test_hangup(request: Request) -> dict:
+    """Plivo needs a hangup URL; this only records how the test call ended, for support."""
+    body = await request.form()
+    logger.info(
+        "line test call ended to=%s status=%s cause=%s", body.get("To"), body.get("CallStatus"),
+        body.get("HangupCauseName") or body.get("HangupCause"),
+    )
+    return {"status": "ok"}
 
 
 async def _record_handler(call_id: uuid.UUID, user_id: uuid.UUID | None, b_leg: str = "") -> None:

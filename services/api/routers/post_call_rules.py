@@ -904,6 +904,18 @@ async def _template_names(db: DbDep, business_id: uuid.UUID) -> list[str]:
     return sorted(names)
 
 
+async def _numbers_line(db, business_id: uuid.UUID) -> str:
+    """The business's voice numbers, for the model: a "number" condition on a call trigger compares these ids."""
+    from shared.channels.voice import numbers as voice_numbers
+
+    lines = await voice_numbers.active(db, business_id)
+    if len(lines) < 2:
+        return ""
+    return "\nVoice numbers (a 'number' condition takes the id): " + "; ".join(
+        f"{c.id} = {voice_numbers.label_of(c)}" for c in lines
+    )
+
+
 @router.post("/ai-draft", response_model=DraftOut)
 async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> DraftOut:
     """
@@ -924,6 +936,7 @@ async def ai_draft(body: DraftIn, current_user: OwnerOrAdminDep, db: DbDep) -> D
     triggers = rule_builder.allowed_triggers(capabilities_for(business) if business else [])
     templates = await _template_names(db, business_id)
     line = f"{business.name} ({business.vertical})" if business else "A business"
+    line += await _numbers_line(db, business_id)
     turns = [
         rule_builder.Turn(role=t.role, text=t.text, rule=t.rule if t.role == "ai" else None) for t in body.turns
     ]

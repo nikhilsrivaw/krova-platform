@@ -41,7 +41,7 @@ from shared.ai import context as agent_context
 from shared.auth.encryption import decrypt
 from shared.billing import usage
 from shared.channels import ingest
-from shared.channels.voice import keypad_menu, plivo_client
+from shared.channels.voice import keypad_menu, line_profile, plivo_client
 from shared.care import post_call_actions
 from shared.identity import resolver
 from shared.team import briefing, call_routing, conflict
@@ -252,6 +252,9 @@ class CallPipeline:
     # for the post-call structured extraction
     # (shared/ai/call_script_extract.py).
     call_script_id: uuid.UUID | None = None
+    # What the AI is told about the number this caller rang ("this is the sales line ..."), set by relay.py for
+    # inbound customer calls only. See shared/channels/voice/line_profile.py.
+    line_note: str | None = None
 
     history: list[dict] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
@@ -532,6 +535,7 @@ class CallPipeline:
                 self._context_cache.customer_summary
             ):
                 self._context_cache.customer_summary = None
+            self._context_cache.line_note = self.line_note
         # The turns as this call has actually heard them, in the shape
         # AgentContext.recent already uses.
         self._context_cache.recent = [
@@ -1182,8 +1186,8 @@ class CallPipeline:
     async def _transfer_targets(self) -> "list[call_routing.Target]":
         """Who this call could ring: the customer's own team member first, then whoever is free."""
         try:
-            return await call_routing.targets_for(
-                self.db, business_id=self.route.business_id, customer_id=self.customer_id,
+            return await line_profile.plan(
+                self.db, business_id=self.route.business_id, extra=self.route.extra, customer_id=self.customer_id,
                 fallback=self.route.staff_phone_number,
             )
         except Exception:
@@ -1290,9 +1294,11 @@ class CallPipeline:
                     body = found.headline
             except Exception:
                 logger.exception("could not build the pick-up briefing call=%s", self.provider_call_id)
+        label = self.route.label
+        title = f"Call coming in - {label}" if label and label != self.route.business_name else "Call coming in"
         await conflict.notify(
             self.db, business_id=self.route.business_id, user_id=target.user_id,
-            title="Call coming in", body=body,
+            title=title[:60], body=body,
             url=f"/app/inbox/{self.customer_id}" if self.customer_id else "/app/today", kind="calls",
         )
 
@@ -1328,9 +1334,17 @@ class CallPipeline:
             )
             return False
 
-        query: dict[str, str] = {"t": call_routing.encode(targets), "i": "0"}
-        if self.call_row_id is not None:
-            query["call"] = str(self.call_row_id)
+        if any(t.step is not None for t in targets):
+            # A number with its own "who answers" list: levels, together-rings and the no-answer choice.
+            from shared.channels.voice.answer import plan_query
+
+            query = plan_query(
+                targets, connection_id=self.route.connection_id, call_id=self.call_row_id, caller=self.caller_phone,
+            )
+        else:
+            query = {"t": call_routing.encode(targets), "i": "0"}
+            if self.call_row_id is not None:
+                query["call"] = str(self.call_row_id)
         aleg_url = f"{settings.public_base_url.rstrip('/')}/voice/transfer-xml?{urlencode(query)}"
         try:
             await plivo_client.transfer_call(

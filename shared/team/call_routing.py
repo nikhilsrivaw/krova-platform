@@ -33,6 +33,11 @@ class Target:
     number: str          # E.164 without the plus
     user_id: uuid.UUID | None  # None for the business's own fallback number
     name: str
+    # Set only by a number's own "who answers" list (shared/channels/voice/line_profile.py): targets sharing a
+    # step ring together, and each step rings for its own time. None = the old one-at-a-time chain.
+    step: int | None = None
+    ring_seconds: int = 18
+    together: bool = False
 
 
 async def targets_for(
@@ -84,6 +89,40 @@ def order(members: list[Target], fallback: str | None) -> list[Target]:
 def encode(targets: list[Target]) -> str:
     """number:user,number:user - the user part is '-' for the business's own number."""
     return ",".join(f"{t.number}:{t.user_id or '-'}" for t in targets)
+
+
+def encode_plan(targets: list[Target]) -> str:
+    """Steps for a list with levels: 'ring[*]~number:user,number:user;...' - '*' marks a step that rings together."""
+    steps: dict[int, list[Target]] = {}
+    for t in targets:
+        steps.setdefault(t.step or 0, []).append(t)
+    parts = []
+    for _, group in sorted(steps.items()):
+        head = f"{group[0].ring_seconds}{'*' if group[0].together else ''}"
+        parts.append(head + "~" + encode(group))
+    return ";".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    ring_seconds: int
+    together: bool
+    stops: list[tuple[str, uuid.UUID | None]]
+
+
+def decode_plan(raw: str) -> list[Step]:
+    out: list[Step] = []
+    for part in raw.split(";"):
+        head, _, body = part.partition("~")
+        together = head.endswith("*")
+        try:
+            ring = int(head.rstrip("*"))
+        except ValueError:
+            ring = RING_SECONDS
+        stops = decode(body)
+        if stops:
+            out.append(Step(max(5, min(ring, 60)), together, stops))
+    return out
 
 
 def decode(raw: str) -> list[tuple[str, uuid.UUID | None]]:

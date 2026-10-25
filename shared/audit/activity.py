@@ -191,6 +191,8 @@ for _m, _p, _a, _s in [
     ("POST", "/voice-onboarding/compliance/resubmit", "voice_setup", "Resubmitted the voice KYC application"),
     ("POST", "/voice-onboarding/numbers/buy", "number_bought", "Bought a phone number"),
     ("POST", "/voice-onboarding/numbers/{number}/release", "number_released", "Released a phone number"),
+    ("PUT", "/voice-onboarding/numbers/{connection_id}/profile", "voice_agent_changed", "Changed what a phone number is for and who answers it"),
+    ("POST", "/voice-onboarding/numbers/{connection_id}/test-call", "voice_previewed", "Placed a test call from a phone number"),
     ("PUT", "/voice-onboarding/keypad-menu", "keypad_menu_changed", "Changed the phone keypad menu"),
     ("PATCH", "/team/members/{user_id}/phone", "member_phone_changed", "Changed a team member's phone number"),
     ("POST", "/voice-onboarding/preview-voice", "voice_previewed", "Played a voice preview"),

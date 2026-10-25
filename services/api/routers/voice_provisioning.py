@@ -573,8 +573,58 @@ async def buy_number(body: BuyIn, current_user: OwnerOrAdminDep, db: DbDep) -> B
     return BuyOut(number=body.number, connection_id=str(connection.id))
 
 
+class ReleaseCheckOut(BaseModel):
+    campaigns: list[dict]
+    rules: list[dict]
+    is_default: bool
+    # Numbers the campaigns could move to: still connected and allowed to call out.
+    others: list[dict]
+    rent_paise: int
+
+
+async def _connection_by_number(db, business_id: uuid.UUID, number: str) -> ChannelConnection | None:
+    rows = (await db.execute(
+        select(ChannelConnection).where(
+            ChannelConnection.business_id == business_id,
+            ChannelConnection.channel == Channel.voice,
+            ChannelConnection.external_account_id == number,
+        ).order_by(ChannelConnection.created_at.desc())
+    )).scalars().all()
+    # A number bought again after a release has an old disconnected row too: the live one is the one that matters.
+    return next((c for c in rows if c.status == ConnectionStatus.active), rows[0] if rows else None)
+
+
+@router.get("/numbers/{number}/release-check", response_model=ReleaseCheckOut)
+async def release_check(number: str, current_user: OwnerOrAdminDep, db: DbDep) -> ReleaseCheckOut:
+    """What still points at this number - shown before it is given back, so nothing is left calling from nowhere."""
+    from shared.channels.voice import number_release
+
+    connection = await _connection_by_number(db, current_user.business, number)
+    if connection is None or connection.status != ConnectionStatus.active:
+        return ReleaseCheckOut(campaigns=[], rules=[], is_default=False, others=[], rent_paise=plans.NUMBER_RENT_PAISE)
+    found = await number_release.dependents(db, current_user.business, connection)
+    return ReleaseCheckOut(
+        campaigns=[{"id": str(c.id), "name": c.name, "status": c.status.value} for c in found.campaigns],
+        rules=[{"id": str(r.id), "name": r.name or r.trigger_type} for r in found.rules],
+        is_default=found.is_default,
+        others=[
+            {"connection_id": str(c.id), "number": c.external_account_id, "label": voice_numbers.label_of(c),
+             "series": voice_numbers.series_of(c.external_account_id)}
+            for c in found.others if voice_numbers.allows_outbound(c)
+        ],
+        rent_paise=plans.NUMBER_RENT_PAISE,
+    )
+
+
+class ReleaseIn(BaseModel):
+    # Where campaigns that call from this number go. None: they stop pointing at a number (a sending one is paused).
+    move_campaigns_to: uuid.UUID | None = None
+
+
 @router.post("/numbers/{number}/release", status_code=status.HTTP_204_NO_CONTENT)
-async def release_number(number: str, current_user: OwnerOrAdminDep, db: DbDep) -> None:
+async def release_number(
+    number: str, current_user: OwnerOrAdminDep, db: DbDep, body: ReleaseIn | None = None,
+) -> None:
     """
     Give a number back - a business that churns stops being billed the
     monthly rental from here on. The connection is marked disconnected
@@ -588,27 +638,33 @@ async def release_number(number: str, current_user: OwnerOrAdminDep, db: DbDep) 
     with this business's own subaccount credentials, so Plivo simply
     refuses a number that subaccount doesn't actually own.
     """
-    row = await _require_provisioning(current_user.business, db)
+    from shared.channels.voice import number_release
 
-    result = await db.execute(
-        select(ChannelConnection).where(
-            ChannelConnection.business_id == current_user.business,
-            ChannelConnection.channel == Channel.voice,
-            ChannelConnection.external_account_id == number,
+    row = await _require_provisioning(current_user.business, db)
+    connection = await _connection_by_number(db, current_user.business, number)
+
+    move_to = None
+    if body is not None and body.move_campaigns_to is not None:
+        move_to = next(
+            (c for c in await voice_numbers.active(db, current_user.business)
+             if c.id == body.move_campaigns_to and (connection is None or c.id != connection.id)),
+            None,
         )
-    )
-    connection = result.scalar_one_or_none()
+        if move_to is None or not voice_numbers.allows_outbound(move_to):
+            raise HTTPException(status_code=422, detail="Choose a number you still have that can make outgoing calls.")
 
     try:
         await plivo_client.release_number(_subaccount_of(row), number)
     except PlivoError as exc:
         raise _fail(exc) from exc
 
-    if connection is not None:
+    settled = None
+    if connection is not None and connection.status == ConnectionStatus.active:
+        settled = await number_release.settle(db, current_user.business, connection, move_to=move_to)
         connection.status = ConnectionStatus.disconnected
     await db.commit()
 
-    logger.info("voice number released business=%s number=%s", current_user.business, number)
+    logger.info("voice number released business=%s number=%s settled=%s", current_user.business, number, settled)
 
 
 class MyNumberOut(BaseModel):
@@ -659,6 +715,141 @@ async def my_numbers(current_user: OwnerOrAdminDep, db: DbDep) -> list[MyNumberO
             rent_paise=billing_plans.NUMBER_RENT_PAISE, calls_30d=calls, cost_paise_30d=cost,
         ))
     return out
+
+
+# ── what each number is for, and who answers it ──────────────────────────
+
+class PickupPerson(BaseModel):
+    user_id: str | None = None
+    phone: str | None = None
+    name: str | None = None
+
+
+class PickupLevel(BaseModel):
+    mode: str = "one_by_one"
+    ring_seconds: int = 18
+    people: list[PickupPerson] = []
+
+
+class PickupIO(BaseModel):
+    levels: list[PickupLevel] = []
+    max_wait: int = 60
+
+
+class LineProfileIO(BaseModel):
+    role: str | None = None
+    role_note: str = ""
+    pickup: PickupIO = PickupIO()
+    no_answer: str = "callback"
+    callback_hours: int = 2
+
+
+class LineProfileOut(LineProfileIO):
+    connection_id: str
+    roles: list[dict]
+    # The number's old single staff phone, shown as the list's first entry until the owner saves a list.
+    legacy_staff_phone: str | None = None
+
+
+def _profile_out(connection: ChannelConnection) -> LineProfileOut:
+    from shared.channels.voice import line_profile
+
+    profile = line_profile.read(connection.extra)
+    return LineProfileOut(
+        connection_id=str(connection.id), **profile,
+        roles=[{"key": k, "label": v["label"], "note": v["note"]} for k, v in line_profile.ROLES.items()],
+        legacy_staff_phone=None if profile["pickup"]["levels"] else (connection.extra or {}).get("staff_phone_number"),
+    )
+
+
+@router.get("/numbers/{connection_id}/profile", response_model=LineProfileOut)
+async def get_line_profile(connection_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> LineProfileOut:
+    """What this number is for, who answers it (in levels), and what happens when nobody picks up."""
+    return _profile_out(await _voice_connection(current_user.business, db, connection_id))
+
+
+@router.put("/numbers/{connection_id}/profile", response_model=LineProfileOut)
+async def put_line_profile(
+    connection_id: uuid.UUID, body: LineProfileIO, current_user: OwnerOrAdminDep, db: DbDep,
+) -> LineProfileOut:
+    """Replace this number's profile. The screen always sends all of it, so what you see is what is stored."""
+    from shared.channels.voice import line_profile
+    from shared.db.models import BusinessMember
+
+    connection = await _voice_connection(current_user.business, db, connection_id)
+    member_ids = {
+        str(uid) for uid in (await db.execute(
+            select(BusinessMember.user_id).where(BusinessMember.business_id == current_user.business)
+        )).scalars().all()
+    }
+    try:
+        cleaned = line_profile.clean(body.model_dump(), member_ids=member_ids, normalise_phone=normalise_phone)
+    except line_profile.ProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    extra = {**(connection.extra or {}), **cleaned}
+    if extra.get("copilot_mode") and not cleaned["pickup"]["levels"] and not extra.get("staff_phone_number"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Live Copilot is on for this number, so it needs at least one person to ring.",
+        )
+    if cleaned["pickup"]["levels"]:
+        # The list replaces the old single staff phone; the screen showed it as the list's first entry.
+        extra["staff_phone_number"] = None
+    connection.extra = extra
+    await db.commit()
+    logger.info(
+        "voice line profile saved business=%s number=%s role=%s levels=%s no_answer=%s",
+        current_user.business, connection.external_account_id, cleaned["role"], len(cleaned["pickup"]["levels"]),
+        cleaned["no_answer"],
+    )
+    return _profile_out(connection)
+
+
+TEST_CALLS_PER_DAY = 5
+
+
+class TestCallIn(BaseModel):
+    phone: str
+
+
+@router.post("/numbers/{connection_id}/test-call")
+async def test_call(connection_id: uuid.UUID, body: TestCallIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
+    """
+    Ring a phone from this number with a short recorded line, to check a "who answers" number really rings. Never
+    the AI; a few a day, since KROVA pays the carrier for each.
+    """
+    from datetime import datetime, timezone
+
+    connection = await _voice_connection(current_user.business, db, connection_id)
+    try:
+        to = normalise_phone(body.phone)
+    except InvalidIdentifier as exc:
+        raise HTTPException(status_code=422, detail=f"That is not a phone number ({exc}).") from exc
+    business = await db.get(Business, current_user.business)
+    settings_now = dict(business.settings or {})
+    today = datetime.now(timezone.utc).date().isoformat()
+    used = settings_now.get("line_test_calls") or {}
+    count = used.get("count", 0) if used.get("day") == today else 0
+    if count >= TEST_CALLS_PER_DAY:
+        raise HTTPException(status_code=429, detail=f"{TEST_CALLS_PER_DAY} test calls a day - try again tomorrow.")
+    auth_id = (connection.extra or {}).get("subaccount_auth_id")
+    if not auth_id or not connection.access_token:
+        raise HTTPException(status_code=409, detail="This number is not fully connected yet.")
+    base = settings.public_base_url.rstrip("/")
+    try:
+        await plivo_client.make_call(
+            auth_id=auth_id, auth_token=decrypt(connection.access_token),
+            from_number=connection.external_account_id, to_number=to,
+            answer_url=f"{base}/voice/line-test-answer?c={connection.id}",
+            hangup_url=f"{base}/voice/line-test-hangup",
+        )
+    except PlivoError as exc:
+        raise _fail(exc) from exc
+    settings_now["line_test_calls"] = {"day": today, "count": count + 1}
+    business.settings = settings_now
+    await db.commit()
+    logger.info("line test call placed business=%s from=%s", current_user.business, connection.external_account_id)
+    return {"calling": to, "left_today": TEST_CALLS_PER_DAY - count - 1}
 
 
 # ── call log ─────────────────────────────────────────────────────────────
@@ -1095,10 +1286,13 @@ async def update_agent_settings(
         body.copilot_mode if body.copilot_mode is not None
         else bool(extra.get("copilot_mode", False))
     )
-    if resulting_copilot_mode and not resulting_staff_number:
+    from shared.channels.voice import line_profile
+
+    has_list = bool(line_profile.read(extra)["pickup"]["levels"])
+    if resulting_copilot_mode and not resulting_staff_number and not has_list:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="staff_phone_number must be set (and non-empty) for copilot_mode to be on",
+            detail="Add someone under \"Who answers\" (or a staff phone) before turning Live Copilot on",
         )
 
     if body.greeting is not None:

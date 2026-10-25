@@ -130,7 +130,18 @@ def staff_phone_of(numbers: list[ChannelConnection]) -> str | None:
 
 
 async def staff_phone(db: AsyncSession, business_id: uuid.UUID) -> str | None:
-    return staff_phone_of(await active(db, business_id))
+    """
+    Where an urgent alert SMS goes: the first person with a phone on the default number's "who answers" list
+    (then the other numbers'), else the old per-number staff phone.
+    """
+    from shared.channels.voice import line_profile
+
+    connections = await active(db, business_id)
+    for connection in sorted(connections, key=lambda c: not is_default_outbound(c)):
+        phone = await line_profile.first_phone(db, business_id, connection.extra)
+        if phone:
+            return phone
+    return staff_phone_of(connections)
 
 
 class NumberError(ValueError):

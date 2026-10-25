@@ -124,6 +124,9 @@ class VoiceRoute:
     use: str = "both"
     # The number's own name, e.g. "Sales".
     label: str = ""
+    # The number's whole settings dict - its role, "who answers" list and no-answer choice are read from it
+    # (shared/channels/voice/line_profile.py).
+    extra: dict | None = None
 
 
 def _build_route(business: Business, connection: ChannelConnection) -> VoiceRoute:
@@ -147,6 +150,7 @@ def _build_route(business: Business, connection: ChannelConnection) -> VoiceRout
         keypad_menu=extra.get("keypad_menu") or None,
         use=numbers.use_of(connection),
         label=numbers.label_of(connection),
+        extra=dict(extra),
     )
 
 

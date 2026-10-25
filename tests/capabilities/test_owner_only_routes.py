@@ -69,6 +69,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/voice-onboarding/compliance/documents"), ("POST", "/voice-onboarding/compliance/application"),
     ("POST", "/voice-onboarding/compliance/resubmit"), ("POST", "/voice-onboarding/numbers/buy"),
     ("POST", "/voice-onboarding/numbers/{number}/release"), ("PATCH", "/voice-onboarding/agent-settings"),
+    ("PUT", "/voice-onboarding/numbers/{connection_id}/profile"), ("POST", "/voice-onboarding/numbers/{connection_id}/test-call"),
     ("POST", "/voice-onboarding/number-requests"), ("PATCH", "/voice-onboarding/number-requests/{request_id}"),
     # the business's channels and identity
     ("POST", "/channels/whatsapp/embedded-signup"), ("POST", "/channels/whatsapp/ad-tracking"),
@@ -135,7 +136,8 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     ("GET", "/team/activity"), ("GET", "/team/activity/summary"),
     ("GET", "/billing"), ("GET", "/billing/quote"), ("GET", "/voice-onboarding/keypad-menu"),
     ("GET", "/knowledge"), ("GET", "/knowledge/gaps"), ("GET", "/knowledge/status"),
-    ("GET", "/voice-onboarding/numbers/mine"),
+    ("GET", "/voice-onboarding/numbers/mine"), ("GET", "/voice-onboarding/numbers/{connection_id}/profile"),
+    ("GET", "/voice-onboarding/numbers/{number}/release-check"),
     ("GET", "/voice-onboarding/agent-settings"), ("GET", "/channels/instagram/connect-url"),
     ("GET", "/channels/instagram/fb-connect-url"),
     # what the business's WhatsApp messages cost it

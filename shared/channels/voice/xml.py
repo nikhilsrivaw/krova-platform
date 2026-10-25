@@ -82,6 +82,54 @@ def dial_step_response(number: str, *, action_url: str, timeout: int) -> str:
     )
 
 
+def dial_group_response(
+    numbers: list[str], *, action_url: str, timeout: int, greeting: str | None = None, stream: str | None = None,
+) -> str:
+    """
+    Ring one step of a number's "who answers" list: one number, or several at once (Plivo connects whoever
+    answers first). `greeting` is spoken first and `stream` forks a listen-only copy of the audio (Live Copilot)
+    - both only on the step that starts a call. When the step ends Plivo asks `action_url` for the next one.
+    """
+    speak_line = f"  <Speak>{escape(greeting)}</Speak>\n" if greeting else ""
+    lines = "".join(f"<Number>+{escape(n)}</Number>" for n in numbers)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"{speak_line}"
+        f"{stream or ''}"
+        f'  <Dial action="{escape(action_url)}" method="POST" timeout="{int(timeout)}">{lines}</Dial>\n'
+        "</Response>"
+    )
+
+
+def callback_promise_response(hours: int) -> str:
+    """Nobody picked up and the business promises a callback - which KROVA has just put on its Ledger."""
+    when = "within the hour" if hours <= 1 else f"within {hours} hours"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        f"  <Speak>Sorry, nobody is free to take your call right now. Someone from the team will call you back {when}. "
+        "Thank you for calling.</Speak>\n"
+        "  <Hangup/>\n"
+        "</Response>"
+    )
+
+
+def voicemail_response(*, action_url: str, max_seconds: int = 120) -> str:
+    """Nobody picked up: take a message. Plivo posts the recording to `action_url` when the caller finishes."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<Response>\n"
+        "  <Speak>Sorry, nobody is free to take your call right now. Please leave your name and message after the "
+        "beep, and press hash when you are done.</Speak>\n"
+        f'  <Record action="{escape(action_url)}" method="POST" maxLength="{int(max_seconds)}" finishOnKey="#" '
+        'playBeep="true" timeout="8" fileFormat="mp3"/>\n'
+        "  <Speak>We did not hear a message. Someone from the team will call you back.</Speak>\n"
+        "  <Hangup/>\n"
+        "</Response>"
+    )
+
+
 def bridge_response(*, announce: str, number: str, caller_id: str, action_url: str, timeout: int = 30) -> str:
     """
     A team member's click-to-call, once they have picked up: tell them who they are about
@@ -142,6 +190,18 @@ def speak_response(text: str) -> str:
     )
 
 
+def listen_stream_line(websocket_url: str, status_callback_url: str | None = None) -> str:
+    """A listen-only fork of the call audio (Live Copilot suggestions) - KROVA never speaks into it."""
+    stream_attrs = [
+        'bidirectional="false"',
+        'audioTrack="both"',
+        f'contentType="{CONTENT_TYPE}"',
+    ]
+    if status_callback_url:
+        stream_attrs.append(f'statusCallbackUrl="{escape(status_callback_url)}"')
+    return f"  <Stream {' '.join(stream_attrs)}>{escape(websocket_url)}</Stream>\n"
+
+
 def copilot_response(
     staff_number: str,
     *,
@@ -172,17 +232,7 @@ def copilot_response(
     for that call.
     """
     speak_line = f"  <Speak>{escape(greeting)}</Speak>\n" if greeting else ""
-
-    stream_line = ""
-    if websocket_url:
-        stream_attrs = [
-            'bidirectional="false"',
-            'audioTrack="both"',
-            f'contentType="{CONTENT_TYPE}"',
-        ]
-        if status_callback_url:
-            stream_attrs.append(f'statusCallbackUrl="{escape(status_callback_url)}"')
-        stream_line = f"  <Stream {' '.join(stream_attrs)}>{escape(websocket_url)}</Stream>\n"
+    stream_line = listen_stream_line(websocket_url, status_callback_url) if websocket_url else ""
 
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'

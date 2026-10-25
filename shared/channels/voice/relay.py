@@ -40,7 +40,7 @@ from shared.ai import context as agent_context
 from shared.ai import outbound_opener
 from shared.auth.encryption import decrypt
 from shared.billing import usage
-from shared.channels.voice import outbound, plivo_client, sarvam
+from shared.channels.voice import line_profile, outbound, plivo_client, sarvam
 from shared.channels.voice.call_registry import recall as recall_call
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.pipeline import CallPipeline
@@ -677,6 +677,10 @@ async def stream(
                         mode=pipeline_mode,
                         scripted_context=scripted_context,
                         call_script_id=call_script_id,
+                        line_note=(
+                            line_profile.line_note(route.extra, route.label)
+                            if direction == Direction.inbound and pipeline_mode == "customer" else None
+                        ),
                     )
 
                     logger.info(
@@ -1243,6 +1247,7 @@ async def _analyze_call(
                             "escalated": call_row.escalated,
                             "topic": call_row.topic,
                             "requested_service": call_row.requested_service,
+                            "number": str(call_row.connection_id) if call_row.connection_id else None,
                             # Not in CONDITION_FIELDS (a condition can't gate
                             # on it - free text, not something to compare),
                             # but real: available here for the same reason
