@@ -12,7 +12,9 @@ Ask anything about your business in Hindi, Hinglish or English - from the round 
 ## Today
 Waiting AI replies, open escalations, what is owed and overdue. Owner and admins also see today's bookings and queue (when those are on), the wallet, and shortcuts to add a contact or get help. Agents see their own chats and an Away switch; money totals show only if the owner allows it (Team page → What agents can also do).
 
-## Chats
+## Inbox and chats
+- Inbox: search names, numbers or anything ever said; filter All, Waiting (the customer wrote last), Mine or Unassigned. A dot marks customers waiting for a reply; "Template only" means their 24-hour WhatsApp window has closed. The list refreshes by itself.
+- A chat opens at the latest message, shows new messages and AI drafts as they arrive, and separates days (Today, Yesterday, a date). AI drafts waiting for approval sit just above the reply box.
 - Reply, approve or edit AI drafts, take over a chat, call the customer (your phone rings first).
 - When the customer hasn't written in 24 hours, the reply box becomes "Send a template": pick an approved template, fill its blanks, check the preview, send.
 - Saved replies: the bookmark button puts one in the reply box.
@@ -21,6 +23,9 @@ Waiting AI replies, open escalations, what is owed and overdue. Owner and admins
 
 ## Customers
 Search finds anyone by name or phone. Owner and admins can add a contact (adding doesn't message them).
+
+## More
+More is grouped into Your day, Your business and You. Screens for features your business doesn't use don't appear - for example Bookings shows only when "Appointments & staff calendar" is on (Settings → Features on a computer), and Queue only with the walk-in queue.
 
 ## Screens by business type (in More)
 - Bookings: the day's appointments - They came, No-show, reschedule into an open slot, cancel, payment link, new booking. Tick tests from your fee list on a new booking, or add them to one with "Add tests".
@@ -31,8 +36,9 @@ Search finds anyone by name or phone. Owner and admins can add a contact (adding
 
 ## For owner and admins (in More)
 - Business at a glance: wallet, money owed, reply speed this week, how the AI is doing, who on the team is available.
-- Quick broadcast: send one approved template to everyone with a tag. Check who it reaches, test on your own number, then send. Follow-up steps and other audiences are on the desktop Campaigns page.
 - Automations: switch a rule off or on and see what it did. Building rules is on a computer.
+- KROVA commands: change a setting by typing it ("kal 2 se 4 band karo"); you see a preview and confirm.
+- Campaigns and broadcasts are on the desktop Campaigns page.
 - Help: KROVA Buddy and tickets.
 
 ## Notifications
