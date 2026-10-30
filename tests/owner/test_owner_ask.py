@@ -190,3 +190,12 @@ def test_a_refused_provider_is_a_plain_503(monkeypatch):
     with pytest.raises(HTTPException) as err:
         asyncio.run(owner.ask(owner.AskIn(question="hi"), SimpleNamespace(business=uuid.uuid4()), Db()))
     assert err.value.status_code == 503
+
+
+def test_the_answer_is_cleaned_of_markdown_and_accent_marks():
+    raw = "**Iss hafte:**  \n* Nayē customer: 1 āē\n### Zarūri\n- नए ग्राहक"
+    assert owner_ask.clean_answer(raw) == "Iss hafte:\n- Naye customer: 1 ae\nZaruri\n- नए ग्राहक"
+
+
+def test_the_rules_ask_for_whatsapp_style_hinglish():
+    assert "a-z only" in owner_ask.ANSWER_RULES and "grahak" in owner_ask.ANSWER_RULES

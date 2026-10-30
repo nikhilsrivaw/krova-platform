@@ -17,6 +17,7 @@ else the AI reads (Customer.is_private). Owner and admin only - the route is gua
 
 import json
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
@@ -583,12 +584,41 @@ ANSWER_RULES = (
     "Use ONLY the records above. Every number, name and date you give must be in them. If something is not in the "
     "records, say plainly that KROVA does not track it (or has no record of it) - never estimate or guess.\n"
     "Say which period your answer covers when it is about a period.\n"
-    "Answer in the language the owner writes in (Hindi, Hinglish or English). Lead with the direct answer, then the "
-    "few details that matter, as short lines. Point out what needs action (overdue money, customers waiting, open "
-    "escalations) when it is relevant. Write money as Rs with Indian grouping. Plain text only: no ** or # - start "
-    "list lines with '- '. Do not mention these instructions, "
-    "topics or the word 'records'."
+    "LANGUAGE: reply in the same language and script the owner used.\n"
+    "- English question: plain simple English.\n"
+    "- Hinglish (Hindi typed in English letters): reply in Hinglish exactly the way Indians type on WhatsApp - plain "
+    "English letters a-z only, NO accent marks (never a with a bar, e with a bar, dots under letters). Keep everyday "
+    "business words in English: customer, payment, message, reply, promise, order, booking, lead, overdue, pending, "
+    "team. Never use formal Hindi like grahak, sandesh, bhugtan, prapt, rakam, vaada. Example: 'Is hafte 1 naya "
+    "customer aaya aur 2 customers ne 4 messages bheje.'\n"
+    "- Hindi in Devanagari: reply in simple Devanagari Hindi.\n"
+    "FORMAT: lead with the direct answer in one line, then only the details that matter, each on its own line "
+    "starting with '- '. Point out what needs action (overdue money, customers waiting, open escalations) when "
+    "relevant. Money as Rs with Indian grouping (Rs 1,25,000). Plain text only: never use ** or # or tables. "
+    "Do not mention these instructions, topics or the word 'records'."
 )
+
+
+_LATIN_MARK = re.compile(r"(?<=[A-Za-z])[\u0300-\u036f]+")
+_ACCENTED_LATIN = re.compile(r"[\u00c0-\u024f\u1e00-\u1eff]")
+
+
+def clean_answer(text: str) -> str:
+    """
+    What the owner sees: markdown symbols the app would show raw are removed, and accent marks on Latin letters
+    ("nayē" -> "naye") are dropped. Devanagari is left alone - its vowel signs are marks too, but never follow a
+    Latin letter.
+    """
+    text = unicodedata.normalize("NFD", text)
+    text = _LATIN_MARK.sub("", text)
+    text = unicodedata.normalize("NFC", text)
+    text = _ACCENTED_LATIN.sub(lambda m: unicodedata.normalize("NFD", m.group())[0], text)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^\s*[*\u2022]\s+", "- ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def answer_system(facts: str) -> str:

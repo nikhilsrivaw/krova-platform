@@ -71,4 +71,4 @@ async def ask(body: AskIn, current_user: OwnerOrAdminDep, db: DbDep) -> AskOut:
         )
     client._log_usage("owner_ask", settings.owner_ask_model, answer.usage, answer.cost_paise)
     logger.info("owner ask business=%s plan=%s facts_chars=%s", business.id, owner_ask.jsonable(plan), len(facts))
-    return AskOut(answer=answer.text.strip())
+    return AskOut(answer=owner_ask.clean_answer(answer.text))
