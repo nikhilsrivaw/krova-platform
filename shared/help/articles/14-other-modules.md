@@ -34,4 +34,4 @@ Claims: track a warranty or insurance claim until it closes; customers can be up
 AI performance (approval rate, edits, rejections - whether it is safe to move from Draft to Act mode), response speed, the trust report, team performance, receivables aging and promise-keeping.
 
 ## Mobile app
-KROVA has a mobile app view with "Ask KROVA", where the owner can ask about their own ledger ("aaj kya pending hai?", "kaun ka paisa overdue hai?").
+KROVA has a mobile app view with "Ask KROVA" (owner and admins), where you can ask anything about your own business in Hindi, Hinglish or English and get an answer from KROVA's records: money owed and received, a customer by name or number (their messages, promises, bookings, orders, calls, notes), bookings, walk-in tokens, orders, leads, quotations, calls, escalations, signals, campaigns, AI replies, the team's work and the voice wallet - for today, last week, last month or any dates you name. For example "aaj kya pending hai?", "pichhle mahine business mein kya hua?", "Sharma ji ka kya scene hai?". It never guesses: what KROVA doesn't record (like expenses or profit) it says it doesn't track.

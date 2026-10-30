@@ -1,16 +1,17 @@
 """
-"Ask KROVA": the owner asks a question in text, in the app, and gets an
-answer from their own ledger. Same context the owner voice call uses
-(agent_context.build_owner), but over text and a non-Anthropic model -
-Claude is reserved for voice. Refused with a plain 503 until the chosen
+"Ask KROVA": the owner asks anything about their own business in text, in the app - money, customers, bookings,
+orders, leads, calls, the team - and gets an answer from KROVA's own records (shared/ai/owner_ask.py), on a
+non-Anthropic model - Claude is reserved for voice. Refused with a plain 503 until the chosen
 provider is approved and its account quota is live (shared/ai/providers.py).
 """
+
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
-from shared.ai import client, context as agent_context, providers
+from shared.ai import client, providers
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
 
@@ -19,12 +20,6 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/owner", tags=["owner"])
 
 HISTORY_TURNS = 10
-
-ANSWER_RULES = (
-    "Answer in the same language the owner writes in (Hindi, Hinglish or English). "
-    "Be brief: a few sentences. Use only the ledger data above. If the answer is "
-    "not in it, say it is not tracked yet - never estimate."
-)
 
 
 class Turn(BaseModel):
@@ -43,14 +38,30 @@ class AskOut(BaseModel):
 
 @router.post("/ask", response_model=AskOut)
 async def ask(body: AskIn, current_user: OwnerOrAdminDep, db: DbDep) -> AskOut:
-    owner = await agent_context.build_owner(current_user.business, db)
-    system = f"{owner.render()}\n\n{ANSWER_RULES}"
-    messages = [{"role": t.role, "content": t.text} for t in body.history[-HISTORY_TURNS:]]
-    messages.append({"role": "user", "content": body.question})
+    """
+    Two steps (shared/ai/owner_ask.py): the model first says which period, customers and parts of the business the
+    question needs; those records are gathered here; then it answers from them alone.
+    """
+    from shared.ai import owner_ask
+    from shared.db.models import Business
+
+    business = await db.get(Business, current_user.business)
+    if business is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business not found")
+    today = datetime.now(owner_ask._tz(business)).date()
+    history = [{"role": t.role, "content": t.text} for t in body.history[-HISTORY_TURNS:]]
+    question = [*history, {"role": "user", "content": body.question}]
     try:
+        planned = await providers.call(settings.owner_ask_model, {
+            "system": owner_ask.plan_prompt(today), "messages": question, "max_tokens": 300,
+            "tools": [owner_ask.PLAN_TOOL], "tool_choice": {"type": "tool", "name": owner_ask.PLAN_TOOL["name"]},
+        })
+        client._log_usage("owner_ask", settings.owner_ask_model, planned.usage, planned.cost_paise)
+        plan = owner_ask.read_plan(planned.tool_input, today)
+        facts = await owner_ask.gather(db, business, plan)
         answer = await providers.call(
             settings.owner_ask_model,
-            {"system": system, "messages": messages, "max_tokens": 600},
+            {"system": owner_ask.answer_system(facts), "messages": question, "max_tokens": 900},
         )
     except providers.ProviderRefused as exc:
         logger.warning("owner ask refused: %s", exc)
@@ -59,4 +70,5 @@ async def ask(body: AskIn, current_user: OwnerOrAdminDep, db: DbDep) -> AskOut:
             "Ask KROVA is not available yet. It needs its AI provider approved and running.",
         )
     client._log_usage("owner_ask", settings.owner_ask_model, answer.usage, answer.cost_paise)
+    logger.info("owner ask business=%s plan=%s facts_chars=%s", business.id, owner_ask.jsonable(plan), len(facts))
     return AskOut(answer=answer.text.strip())
