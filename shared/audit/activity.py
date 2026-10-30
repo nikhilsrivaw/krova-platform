@@ -118,6 +118,7 @@ _add("POST", "/billing/cancel", "plan_cancelled", "Cancelled the plan", SECURITY
 _add("POST", "/billing/resume", "plan_resumed", "Resumed the plan", SECURITY)
 _add("PUT", "/team/settings", "team_settings_changed", "Changed team settings", CONFIG)
 _add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
+_add("POST", "/conversations/{customer_id}/resolve", "conversation_resolved", "Marked a chat resolved (or opened it again)", WORK)
 _add("POST", "/conversations/{customer_id}/private", "conversation_privacy_changed", "Marked a chat private (or not)", SECURITY)
 _add("PATCH", "/crm/customers/{customer_id}/deal-value", "deal_value_changed", "Changed a customer's deal value", WORK)
 _add("PATCH", "/crm/customers/{customer_id}/marketing-opt-in", "marketing_consent_changed", "Changed a customer's marketing consent", SECURITY)
@@ -283,7 +284,7 @@ NOT_ACTIVITY = {
     ("POST", API + "/templates/carousel/draft"), ("POST", API + "/commands/understand"),
     ("POST", API + "/owner/ask"), ("POST", API + "/voice-onboarding/preview-voice"),
     # Heartbeat of an open thread, every few seconds - not a decision anyone made.
-    ("POST", API + "/conversations/{customer_id}/presence"),
+    ("POST", API + "/conversations/{customer_id}/presence"), ("POST", API + "/conversations/{customer_id}/read"),
     # PayU calling us - no signed-in person behind these.
     ("POST", API + "/billing/payu/return"), ("POST", API + "/billing/payu/webhook"),
 }

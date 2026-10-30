@@ -26,14 +26,17 @@ from shared.audit import activity
 from shared.team import access, conflict, presence
 from shared.channels.whatsapp.client import SERVICE_WINDOW, within_service_window
 from shared.db.models import (
+    Business,
     BusinessMember,
     Commitment,
     CommitmentStatus,
+    ConversationRead,
     Customer,
     CustomerIdentity,
     Direction,
     Message,
 )
+from shared.team import settings as team_settings
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -54,6 +57,14 @@ class ConversationSummary(BaseModel):
     window_closes_at: str | None
     is_private: bool
     assigned_to_user_id: str | None
+    # When the customer's unanswered run began (their first message after the last reply), or None if nobody is
+    # waiting; and the business's first-reply target in minutes (Team page), so a screen can turn the wait red.
+    waiting_since: str | None = None
+    wait_target_minutes: int | None = None
+    # Marked done by the team and nothing new from the customer since.
+    resolved: bool = False
+    # Customer messages this person has not read yet (0 once anyone has replied).
+    unread: int = 0
 
 
 class ThreadMessage(BaseModel):
@@ -77,6 +88,10 @@ class Thread(BaseModel):
     assigned_to_user_id: str | None
     messages: list[ThreadMessage]
     commitments: list[dict]
+    waiting_since: str | None = None
+    wait_target_minutes: int | None = None
+    resolved: bool = False
+    resolved_at: str | None = None
 
 
 def _value(v) -> str:
@@ -88,6 +103,33 @@ async def _identities(customer_id: uuid.UUID, db: DbDep) -> list[dict]:
         select(CustomerIdentity).where(CustomerIdentity.customer_id == customer_id)
     )
     return [{"kind": _value(i.kind), "value": i.value} for i in rows.scalars().all()]
+
+
+def _aware(at: datetime | None) -> datetime | None:
+    if at is not None and at.tzinfo is None:
+        return at.replace(tzinfo=timezone.utc)
+    return at
+
+
+def chat_state(
+    *, last_inbound: datetime | None, last_outbound: datetime | None, first_waiting: datetime | None,
+    resolved_at: datetime | None,
+) -> tuple[str | None, bool]:
+    """
+    (waiting_since, resolved) for one chat. The customer is waiting when their latest message is newer than the
+    business's latest reply; the chat is resolved when the team marked it done and the customer has not written since.
+    Pure, so the rule is tested on its own.
+    """
+    last_inbound, last_outbound, resolved_at = _aware(last_inbound), _aware(last_outbound), _aware(resolved_at)
+    resolved = resolved_at is not None and (last_inbound is None or last_inbound <= resolved_at)
+    waiting = last_inbound is not None and (last_outbound is None or last_inbound > last_outbound) and not resolved
+    since = _aware(first_waiting) or last_inbound
+    return (since.isoformat() if waiting and since else None), resolved
+
+
+async def _wait_target(db, business_id: uuid.UUID) -> int | None:
+    business = await db.get(Business, business_id)
+    return team_settings.read(business)["sla_minutes"] if business else None
 
 
 def _window(last_inbound: datetime | None) -> tuple[bool, str | None]:
@@ -177,6 +219,11 @@ async def list_conversations(
     )
 
     hide = await access.hide_phones(db, current_user)
+    target = await _wait_target(db, business_id)
+    read_at = dict((await db.execute(
+        select(ConversationRead.customer_id, ConversationRead.last_read_at).where(
+            ConversationRead.user_id == current_user.id, ConversationRead.customer_id.in_(ids))
+    )).all())
     out: list[ConversationSummary] = []
     for customer in customers:
         latest = (
@@ -209,6 +256,7 @@ async def list_conversations(
         ).scalars().all()
 
         open_now, closes = _window(last_inbound)
+        waiting_since, resolved, unread = await _waiting(db, customer, last_inbound, read_at.get(customer.id))
 
         out.append(
             ConversationSummary(
@@ -227,10 +275,119 @@ async def list_conversations(
                 assigned_to_user_id=(
                     str(customer.assigned_to_user_id) if customer.assigned_to_user_id else None
                 ),
+                waiting_since=waiting_since,
+                wait_target_minutes=target,
+                resolved=resolved,
+                unread=unread,
             )
         )
 
     return out
+
+
+async def _waiting(db, customer: Customer, last_inbound, read_at) -> tuple[str | None, bool, int]:
+    """waiting_since, resolved and this person's unread count for one chat (a reply by anyone counts as read)."""
+    last_outbound = (await db.execute(
+        select(func.max(Message.occurred_at)).where(
+            Message.customer_id == customer.id, Message.direction == Direction.outbound)
+    )).scalar()
+    first_waiting = None
+    if last_inbound is not None and (last_outbound is None or _aware(last_inbound) > _aware(last_outbound)):
+        after = [Message.customer_id == customer.id, Message.direction == Direction.inbound]
+        if last_outbound is not None:
+            after.append(Message.occurred_at > last_outbound)
+        first_waiting = (await db.execute(select(func.min(Message.occurred_at)).where(*after))).scalar()
+    waiting_since, resolved = chat_state(
+        last_inbound=last_inbound, last_outbound=last_outbound, first_waiting=first_waiting,
+        resolved_at=customer.resolved_at,
+    )
+    unread = 0
+    if waiting_since:
+        floor = max(x for x in (_aware(last_outbound), _aware(read_at), _aware(customer.resolved_at),
+                                datetime.min.replace(tzinfo=timezone.utc)) if x is not None)
+        unread = int((await db.execute(select(func.count(Message.id)).where(
+            Message.customer_id == customer.id, Message.direction == Direction.inbound, Message.occurred_at > floor,
+        ))).scalar() or 0)
+    return waiting_since, resolved, unread
+
+
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+@router.get("/unread-count")
+async def unread_count(current_user: CurrentUserDep, db: DbDep) -> dict:
+    """
+    How many chats this person may see have customer messages they have not read - the number on the app's Inbox
+    tab. A chat counts when the customer wrote after the last reply, after this person last opened it, and after it
+    was marked resolved.
+    """
+    per_customer = (
+        select(
+            Message.customer_id.label("customer_id"),
+            func.max(Message.occurred_at).filter(Message.direction == Direction.inbound).label("last_in"),
+            func.max(Message.occurred_at).filter(Message.direction == Direction.outbound).label("last_out"),
+        )
+        .where(Message.business_id == current_user.business)
+        .group_by(Message.customer_id)
+        .subquery()
+    )
+    conditions = [
+        Customer.business_id == current_user.business,
+        per_customer.c.last_in.is_not(None),
+        per_customer.c.last_in > func.coalesce(per_customer.c.last_out, EPOCH),
+        per_customer.c.last_in > func.coalesce(ConversationRead.last_read_at, EPOCH),
+        per_customer.c.last_in > func.coalesce(Customer.resolved_at, EPOCH),
+    ]
+    rule = await access.customer_rule(db, current_user)
+    conditions.append(rule if rule is not None else Customer.is_private == False)  # noqa: E712
+    count = (await db.execute(
+        select(func.count(Customer.id))
+        .join(per_customer, per_customer.c.customer_id == Customer.id)
+        .outerjoin(ConversationRead, (ConversationRead.customer_id == Customer.id) & (ConversationRead.user_id == current_user.id))
+        .where(*conditions)
+    )).scalar()
+    return {"unread_chats": int(count or 0)}
+
+
+@router.post("/{customer_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_read(customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep) -> None:
+    """This person has the chat open: everything in it so far counts as read, for them alone."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    customer = await db.get(Customer, customer_id)
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    await access.check(db, current_user, customer)
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        insert(ConversationRead)
+        .values(id=uuid.uuid4(), business_id=current_user.business, customer_id=customer_id,
+                user_id=current_user.id, last_read_at=now)
+        .on_conflict_do_update(constraint="uq_conversation_read", set_={"last_read_at": now})
+    )
+
+
+@router.post("/{customer_id}/resolve")
+async def resolve_conversation(
+    customer_id: uuid.UUID, current_user: CurrentUserDep, db: DbDep, resolved: bool = True,
+) -> dict:
+    """
+    Mark the chat done (or open it again). Anyone who may reply to the customer may do it. A new message from the
+    customer reopens it by itself - nothing has to be reset.
+    """
+    customer = await db.get(Customer, customer_id)
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    await access.check(db, current_user, customer)
+    if resolved:
+        customer.resolved_at = datetime.now(timezone.utc)
+        customer.resolved_by_user_id = current_user.id
+    else:
+        customer.resolved_at = None
+        customer.resolved_by_user_id = None
+    activity.note(resolved=str(resolved).lower())
+    return {"customer_id": str(customer.id), "resolved": resolved,
+            "resolved_at": customer.resolved_at.isoformat() if customer.resolved_at else None}
 
 
 @router.get("/{customer_id}", response_model=Thread)
@@ -267,6 +424,7 @@ async def get_thread(
         None,
     )
     open_now, closes = _window(last_inbound)
+    waiting_since, resolved, _ = await _waiting(db, customer, last_inbound, None)
 
     commitments = await db.execute(
         select(Commitment)
@@ -286,6 +444,10 @@ async def get_thread(
         assigned_to_user_id=(
             str(customer.assigned_to_user_id) if customer.assigned_to_user_id else None
         ),
+        waiting_since=waiting_since,
+        wait_target_minutes=await _wait_target(db, current_user.business),
+        resolved=resolved,
+        resolved_at=customer.resolved_at.isoformat() if customer.resolved_at else None,
         messages=[
             ThreadMessage(
                 id=str(m.id),

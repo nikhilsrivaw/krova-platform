@@ -1,11 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.db.base import Base
+from shared.db.base import Base, UUIDMixin
 
 
 class ThreadPresence(Base):
@@ -34,3 +34,29 @@ class ThreadPresence(Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (Index("idx_thread_presence_seen", "customer_id", "seen_at"),)
+
+
+class ConversationRead(UUIDMixin, Base):
+    """
+    When one person last read one customer's chat - what "3 new" is counted from. Personal, unlike assignment: two
+    teammates can each have their own unread count on the same chat. A reply from anyone also counts as read (see
+    services/api/routers/conversations.py), so a chat someone has answered is never shown as unread.
+    """
+
+    __tablename__ = "conversation_reads"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    last_read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "customer_id", name="uq_conversation_read"),
+        Index("idx_conversation_reads_user", "user_id", "business_id"),
+    )

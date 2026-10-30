@@ -160,6 +160,8 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("GET", "/escalations"), ("GET", "/voice-onboarding/logs"),
     # working a shared inbox as a team
     ("POST", "/conversations/{customer_id}/take-over"), ("POST", "/conversations/{customer_id}/presence"),
+    ("POST", "/conversations/{customer_id}/resolve"), ("POST", "/conversations/{customer_id}/read"),
+    ("GET", "/conversations/unread-count"),
     ("POST", "/escalations/{escalation_id}/claim"), ("POST", "/escalations/{escalation_id}/release"),
     ("POST", "/auth/change-password"),
     ("GET", "/team/settings"), ("GET", "/team/my-work"), ("PUT", "/team/me/availability"),

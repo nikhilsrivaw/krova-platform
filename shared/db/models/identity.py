@@ -289,6 +289,13 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     sla_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sla_escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # The team marked the chat done. It reads as resolved only while no customer message is newer than this - a new
+    # message from them reopens it by itself, with nothing to reset (services/api/routers/conversations.py).
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     # A business's own funnel step ("New", "Qualified", "Won"), free text and
     # set by hand. Unlike everything in customer_tags this is never inferred -
     # the words a business uses for its own pipeline are theirs to define, in
