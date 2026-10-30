@@ -78,8 +78,14 @@ async def assign(
     return member.user_id
 
 
-async def route_new_chat(db: AsyncSession, *, business_id: uuid.UUID, customer_id: uuid.UUID) -> uuid.UUID | None:
-    """Hand an unowned chat to the next available agent. Returns who got it, or None."""
+async def route_new_chat(
+    db: AsyncSession, *, business_id: uuid.UUID, customer_id: uuid.UUID,
+    title: str = "New chat for you", body: str | None = None,
+) -> uuid.UUID | None:
+    """
+    Hand an unowned chat to the next available agent. Returns who got it, or None. Also runs for a new lead from a
+    portal or form (shared/leads/intake.py), so a lead has an owner the moment it arrives, not when the customer writes.
+    """
     business = await db.get(Business, business_id)
     if business is None or team_settings.read(business)["routing"] != "round_robin":
         return None
@@ -105,7 +111,7 @@ async def route_new_chat(db: AsyncSession, *, business_id: uuid.UUID, customer_i
     customer = await db.get(Customer, customer_id)
     await conflict.notify(
         db, business_id=business_id, user_id=member.user_id,
-        title="New chat for you", body=(customer.display_name if customer else None) or "A customer wrote in",
+        title=title, body=body or (customer.display_name if customer else None) or "A customer wrote in",
         url=f"/app/inbox/{customer_id}", kind="new_chat",
     )
     return member.user_id
