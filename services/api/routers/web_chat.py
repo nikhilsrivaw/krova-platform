@@ -13,18 +13,22 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import DbDep, OwnerOrAdminDep
 from shared.channels.web import sites
 from shared.db.models import Channel, Customer, Direction, Message, WebSession, WebWidgetConfig
+from shared.integrations import media_storage
+from shared.integrations.media_storage import MediaStorageError
 
 router = APIRouter(prefix="/web-chat", tags=["web-chat"])
 
 MAX_SITES = 10
 STATS_DAYS = 7
+_LOGO_TYPES = {"image/jpeg", "image/png"}
+_LOGO_MAX_BYTES = 2 * 1024 * 1024
 
 
 class SiteIn(BaseModel):
@@ -41,6 +45,10 @@ class SiteIn(BaseModel):
     language: str | None = None
     theme: str | None = None
     whatsapp_button: bool = False
+    status_text: str | None = Field(default=None, max_length=40)
+    offset_bottom: int | None = Field(default=None, ge=0, le=300)
+    mobile_mode: str | None = None
+    hide_paths: list[str] = Field(default_factory=list, max_length=20)
 
 
 class SiteOut(BaseModel):
@@ -59,6 +67,11 @@ class SiteOut(BaseModel):
     language: str
     theme: str
     whatsapp_button: bool
+    logo_url: str | None
+    status_text: str | None
+    offset_bottom: int | None
+    mobile_mode: str
+    hide_paths: list[str]
     last_loaded_at: str | None
     # A page with the code loaded the widget in the last two days.
     working: bool
@@ -112,7 +125,9 @@ def _out(site: WebWidgetConfig) -> SiteOut:
         id=str(site.id), domain=site.allowed_domain, site_key=site.site_key, title=site.title, greeting=site.greeting,
         accent=site.accent, active=site.active, position=site.position or "right", launcher_text=site.launcher_text,
         teaser=site.teaser, starters=list(site.starters or []), ask_contact=site.ask_contact or "when_needed",
-        language=site.language or "en", theme=site.theme or "dark", whatsapp_button=bool(site.whatsapp_button),
+        language=site.language or "en", theme=site.theme or "light", whatsapp_button=bool(site.whatsapp_button),
+        logo_url=site.logo_url, status_text=site.status_text, offset_bottom=site.offset_bottom,
+        mobile_mode=site.mobile_mode or "full", hide_paths=list(site.hide_paths or []),
         last_loaded_at=_iso(loaded), working=working,
     )
 
@@ -141,6 +156,10 @@ def _look(site: WebWidgetConfig, body: SiteIn) -> None:
     site.language = sites.pick(body.language, sites.LANGUAGES)
     site.theme = sites.pick(body.theme, sites.THEMES)
     site.whatsapp_button = body.whatsapp_button
+    site.status_text = _text(body.status_text)
+    site.offset_bottom = sites.clean_offset(body.offset_bottom)
+    site.mobile_mode = sites.pick(body.mobile_mode, sites.MOBILE_MODES)
+    site.hide_paths = sites.clean_paths(body.hide_paths)
 
 
 async def _site(db, business_id: uuid.UUID, site_id: uuid.UUID) -> WebWidgetConfig:
@@ -190,6 +209,32 @@ async def update_site(site_id: uuid.UUID, body: SiteIn, current_user: OwnerOrAdm
         raise HTTPException(409, "This website is already added.")
     site.allowed_domain = domain
     _look(site, body)
+    await db.flush()
+    return _out(site)
+
+
+@router.post("/sites/{site_id}/logo", response_model=SiteOut)
+async def upload_logo(
+    site_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile = File(...),
+) -> SiteOut:
+    """The logo in the chat header - a PNG or JPG up to 2 MB, square works best."""
+    site = await _site(db, current_user.business, site_id)
+    content = await file.read()
+    try:
+        site.logo_url = await media_storage.upload_media(
+            content, file.content_type or "application/octet-stream", key_prefix="web-chat/logos",
+            max_bytes=_LOGO_MAX_BYTES, allowed_content_types=_LOGO_TYPES,
+        )
+    except MediaStorageError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await db.flush()
+    return _out(site)
+
+
+@router.delete("/sites/{site_id}/logo", response_model=SiteOut)
+async def remove_logo(site_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> SiteOut:
+    site = await _site(db, current_user.business, site_id)
+    site.logo_url = None
     await db.flush()
     return _out(site)
 

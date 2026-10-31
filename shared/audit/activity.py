@@ -128,6 +128,8 @@ _add("PUT", "/routing/rules-order", "routing_changed", "Reordered the routing ru
 _add("POST", "/web-chat/sites", "web_chat_changed", "Added a website for the chat widget", CONFIG)
 _add("PUT", "/web-chat/sites/{site_id}", "web_chat_changed", "Changed the website chat", CONFIG)
 _add("DELETE", "/web-chat/sites/{site_id}", "web_chat_changed", "Removed a website from the chat widget", CONFIG)
+_add("POST", "/web-chat/sites/{site_id}/logo", "web_chat_changed", "Changed the website chat logo", CONFIG)
+_add("DELETE", "/web-chat/sites/{site_id}/logo", "web_chat_changed", "Removed the website chat logo", CONFIG)
 _add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
 _add("POST", "/conversations/{customer_id}/resolve", "conversation_resolved", "Marked a chat resolved (or opened it again)", WORK)
 _add("POST", "/conversations/{customer_id}/private", "conversation_privacy_changed", "Marked a chat private (or not)", SECURITY)

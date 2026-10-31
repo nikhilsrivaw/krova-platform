@@ -91,6 +91,9 @@ ASK_CONTACT = ("when_needed", "before_chat")
 LANGUAGES = ("en", "hi")
 THEMES = ("dark", "light")
 MAX_STARTERS = 4
+MOBILE_MODES = ("full", "button", "hidden")
+MAX_HIDE_PATHS = 10
+MAX_OFFSET = 300
 # The install check: a page that loaded the widget this recently counts as "working on your site".
 LOADED_RECENTLY = timedelta(days=2)
 _LOADED_WRITE_EVERY = timedelta(minutes=5)
@@ -109,6 +112,28 @@ def clean_starters(raw: list | None) -> list[str]:
         if text and text not in out:
             out.append(text)
     return out[:MAX_STARTERS]
+
+
+def clean_offset(value: int | None) -> int | None:
+    """Pixels from the bottom, within reason. None = the widget's default."""
+    if value is None:
+        return None
+    return max(0, min(MAX_OFFSET, int(value)))
+
+
+def clean_paths(raw: list | None) -> list[str]:
+    """Page addresses to stay off, as path starts: "checkout" or "https://shop.in/checkout?x" -> "/checkout"."""
+    out: list[str] = []
+    for item in raw or []:
+        text = str(item).strip()
+        if not text:
+            continue
+        path = urlparse(text).path if "://" in text else text.split("?")[0].split("#")[0]
+        path = "/" + path.strip().lstrip("/")
+        path = path[:200]
+        if path != "/" and path not in out:
+            out.append(path)
+    return out[:MAX_HIDE_PATHS]
 
 
 def clean_page(url: str | None) -> str | None:

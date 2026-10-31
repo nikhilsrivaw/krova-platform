@@ -277,6 +277,7 @@ def _widget_db(config, business, session=None):
 
 def _config(**kw):
     base = dict(id=uuid.uuid4(), business_id=BIZ, active=True, title=None, greeting=None, accent=None, position=None,
+                logo_url=None, status_text=None, offset_bottom=None, mobile_mode=None, hide_paths=[],
                 launcher_text=None, teaser=None, starters=[], ask_contact=None, language=None, theme=None,
                 whatsapp_button=False, last_loaded_at=None, rate_limit_window_started_at=None, rate_limit_count=0)
     base.update(kw)
@@ -363,3 +364,73 @@ def test_a_question_asked_again_with_a_number_is_not_stored_twice():
     session = SimpleNamespace(customer_id=uuid.uuid4(), created_at=datetime.now(timezone.utc))
     assert asyncio.run(web_reply.earlier_question(Db(), session, "talk to a person ")) == msg.id
     assert asyncio.run(web_reply.earlier_question(Db(), session, "something else")) is None
+
+
+# ── logo, status line, button height, phones, pages to stay off ────────────
+
+def test_button_height_and_hidden_pages_are_cleaned():
+    assert sites.clean_offset(None) is None and sites.clean_offset(-5) == 0 and sites.clean_offset(999) == 300
+    assert sites.clean_paths(["checkout", "/cart/", "https://shop.in/pay?x=1", "/", "", "checkout"]) == ["/checkout", "/cart/", "/pay"]
+    assert len(sites.clean_paths([f"/p{i}" for i in range(30)])) == sites.MAX_HIDE_PATHS
+
+
+def test_the_new_settings_are_saved_and_sent_to_the_widget(monkeypatch):
+    from services.api.routers import web_chat
+
+    site = SimpleNamespace()
+    web_chat._look(site, web_chat.SiteIn(domain="shop.in", status_text=" Usually replies in 5 min ", offset_bottom=90,
+                                         mobile_mode="button", hide_paths=["checkout"]))
+    assert site.status_text == "Usually replies in 5 min" and site.offset_bottom == 90
+    assert site.mobile_mode == "button" and site.hide_paths == ["/checkout"]
+    web_chat._look(site, web_chat.SiteIn(domain="shop.in", mobile_mode="tablet"))
+    assert site.mobile_mode is None
+
+    widget = _no_plan_block(monkeypatch)
+    config = _config(logo_url="https://cdn/logo.png", status_text="Usually replies in 5 min", offset_bottom=90,
+                     mobile_mode="hidden", hide_paths=["/checkout"])
+    look = asyncio.run(widget.widget_config("KEY", _widget_db(config, SimpleNamespace(id=BIZ, is_active=True))))
+    assert (look.logo_url, look.status_text, look.offset_bottom, look.mobile_mode, look.hide_paths) == (
+        "https://cdn/logo.png", "Usually replies in 5 min", 90, "hidden", ["/checkout"])
+
+
+def test_a_logo_must_be_a_small_image(monkeypatch):
+    from services.api.routers import web_chat
+
+    site = _config(allowed_domain="shop.in", site_key="K", logo_url=None, created_at=None)
+
+    class Db:
+        async def get(self, model, key):
+            return site
+
+        async def flush(self):
+            return None
+
+    class Upload:
+        def __init__(self, content_type):
+            self.content_type = content_type
+
+        async def read(self):
+            return b"x" * 10
+
+    seen = {}
+
+    async def store(content, content_type, **kw):
+        seen.update(kw)
+        if content_type not in kw["allowed_content_types"]:
+            raise web_chat.MediaStorageError("Unsupported file type")
+        return "https://cdn/web-chat/logos/a.png"
+
+    monkeypatch.setattr(web_chat.media_storage, "upload_media", store)
+    user = SimpleNamespace(business=BIZ)
+    out = asyncio.run(web_chat.upload_logo(site.id, user, Db(), Upload("image/png")))
+    assert out.logo_url == "https://cdn/web-chat/logos/a.png" and seen["max_bytes"] == 2 * 1024 * 1024
+    with pytest.raises(HTTPException):
+        asyncio.run(web_chat.upload_logo(site.id, user, Db(), Upload("application/pdf")))
+    assert asyncio.run(web_chat.remove_logo(site.id, user, Db())).logo_url is None
+
+
+def test_the_widget_script_handles_phones_and_hidden_pages():
+    from services.api.routers.widget_asset import _WIDGET_JS
+
+    for part in ("100dvh", "safe-area-inset-bottom", "font-size:16px", "visualViewport", "hidePaths", "mobileMode"):
+        assert part in _WIDGET_JS

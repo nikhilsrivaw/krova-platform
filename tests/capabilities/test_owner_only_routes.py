@@ -88,6 +88,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/routing/rules"), ("PUT", "/routing/rules/{rule_id}"), ("DELETE", "/routing/rules/{rule_id}"),
     ("PUT", "/routing/rules-order"),
     ("POST", "/web-chat/sites"), ("PUT", "/web-chat/sites/{site_id}"), ("DELETE", "/web-chat/sites/{site_id}"),
+    ("POST", "/web-chat/sites/{site_id}/logo"), ("DELETE", "/web-chat/sites/{site_id}/logo"),
     ("PUT", "/voice-onboarding/keypad-menu"), ("PATCH", "/team/members/{user_id}/phone"),
     # spends money (a TTS or AI call per tap) or links a channel to the business
     # how much the AI does on its own, which features are on, and the owner's money assistant

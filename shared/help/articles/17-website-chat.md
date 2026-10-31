@@ -10,18 +10,24 @@ Setting it up:
 - Chat is on: switch it off to hide the chat button on your website without removing the code. Remove website stops the code working at once; past website conversations stay in the Inbox.
 
 What you can change (Edit website):
-- Chat title, first message and colour, with a preview.
-- Button side (right or left), theme (dark or light), and an optional label beside the button such as "Need help? Chat with us".
+- Chat title, first message and colour, with a preview. Text on your colour turns white or dark by itself so it can always be read.
+- Logo: upload a PNG or JPG (up to 2 MB, square looks best) after the website is saved - it shows in the chat header instead of your name's first letter.
+- Line under the name: what visitors read under your name, such as "Usually replies in 5 min". Empty means "Replies in seconds".
+- Button side (right or left), theme (light or dark - light for new websites), and an optional label beside the button such as "Need help? Chat with us".
 - Pop-up message: a short line that shows next to the button a few seconds after a visitor arrives, once a day, for visitors who have not chatted yet.
 - Ready questions: up to four buttons ("What are your prices?", "Book an appointment") shown before the visitor types.
 - Chat window language: English or Hindi for the buttons and notices. The AI answers in whatever language the visitor writes.
 - Name and phone number: "Only when needed" (the AI asks when a person or a booking needs it) or "Ask before the chat starts" (every visitor who chats becomes a lead in your Inbox; some visitors leave instead).
 - WhatsApp button: a button in the chat header that opens a WhatsApp chat with your connected WhatsApp number.
+- Height from the bottom: raise the chat button if your website already has its own WhatsApp or call button in that corner, so they do not sit on each other.
+- On phones: Everything (default), Button only (no label or pop-up on phones), or Don't show (no chat on phones).
+- Pages where the chat stays off: one address start per line, such as /checkout - it also covers /checkout/pay. Works on websites that change pages without reloading too.
 
 What visitors get:
 - A short notice first ("This chat is answered by an AI assistant...") and a Start chat button - nothing they type is read before they press it.
 - The AI answers from your Knowledge and can book appointments and tokens when Bookings or Queue are on. Links in a reply (a payment link, a map) can be tapped. A typing dot shows while the AI is answering.
-- The chat stays as they move between pages of your website or reload the page. On a phone the chat opens full screen.
+- The chat stays as they move between pages of your website or reload the page.
+- On a phone the chat opens full screen, stays above the keyboard while typing, keeps clear of the notch and home bar, and the page behind it does not scroll. Typing does not zoom the page on iPhone.
 - When the AI cannot help, or the visitor asks for a person, it asks for their name and phone number. Without a number nobody can reply, so these chats do not appear in the Inbox - but you can still read them under Recent website chats.
 
 When a visitor leaves their number:

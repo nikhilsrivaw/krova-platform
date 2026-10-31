@@ -67,6 +67,16 @@ class WebWidgetConfig(UUIDMixin, TimestampMixin, Base):
     theme: Mapped[str | None] = mapped_column(String(5), nullable=True)
     # A "WhatsApp" button in the chat header, to the business's connected WhatsApp number.
     whatsapp_button: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The business's logo in the chat header (Website chat page upload), and its own line under the name
+    # ("Usually replies in 5 minutes"). None = the name's first letter and "Replies in seconds".
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status_text: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # How far up from the bottom the button sits (px) - room for a site's own WhatsApp or call button. None = 22.
+    offset_bottom: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # On phones: "full" (default), "button" (no label or pop-up), "hidden" (no chat at all).
+    mobile_mode: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    # Pages the chat stays off, by the start of their address ("/checkout").
+    hide_paths: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # When a page with the code last loaded the widget - "is it installed and working?" on the Website chat page.
     last_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

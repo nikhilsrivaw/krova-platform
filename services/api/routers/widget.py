@@ -131,9 +131,14 @@ class LookOut(BaseModel):
     starters: list[str] = []
     ask_contact: str = "when_needed"
     language: str = "en"
-    theme: str = "dark"
+    theme: str = "light"
     # Digits only, for a wa.me link - set when the business turned the WhatsApp button on and has WhatsApp connected.
     whatsapp: str | None = None
+    logo_url: str | None = None
+    status_text: str | None = None
+    offset_bottom: int | None = None
+    mobile_mode: str = "full"
+    hide_paths: list[str] = []
 
 
 class HistoryItem(BaseModel):
@@ -184,7 +189,9 @@ async def widget_config(site_key: str, db: DbDep) -> LookOut:
         greeting=config.greeting or (DEFAULT_GREETING_HI if language == "hi" else DEFAULT_GREETING),
         accent=config.accent, position=config.position or "right", launcher_text=config.launcher_text,
         teaser=config.teaser, starters=list(config.starters or []), ask_contact=config.ask_contact or "when_needed",
-        language=language, theme=config.theme or "dark", whatsapp=whatsapp,
+        language=language, theme=config.theme or "light", whatsapp=whatsapp,
+        logo_url=config.logo_url, status_text=config.status_text, offset_bottom=config.offset_bottom,
+        mobile_mode=config.mobile_mode or "full", hide_paths=list(config.hide_paths or []),
     )
 
 
