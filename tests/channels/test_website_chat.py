@@ -434,3 +434,14 @@ def test_the_widget_script_handles_phones_and_hidden_pages():
 
     for part in ("100dvh", "safe-area-inset-bottom", "font-size:16px", "visualViewport", "hidePaths", "mobileMode"):
         assert part in _WIDGET_JS
+
+
+def test_browsers_check_for_a_new_widget_on_every_page_load():
+    from services.api.routers import widget_asset
+
+    fresh = asyncio.run(widget_asset.widget_js(SimpleNamespace(headers={})))
+    assert fresh.status_code == 200 and fresh.headers["cache-control"] == "no-cache" and fresh.headers["etag"]
+    same = asyncio.run(widget_asset.widget_js(SimpleNamespace(headers={"if-none-match": fresh.headers["etag"]})))
+    assert same.status_code == 304 and not same.body
+    old = asyncio.run(widget_asset.widget_js(SimpleNamespace(headers={"if-none-match": '"old-version"'})))
+    assert old.status_code == 200

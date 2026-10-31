@@ -20,7 +20,9 @@ not subject to CORS the way the widget's own fetch() calls to
 /api/v1/widget/{site_key}/message are (see widget_cors.py for those).
 """
 
-from fastapi import APIRouter, Response
+import hashlib
+
+from fastapi import APIRouter, Request, Response
 
 router = APIRouter(tags=["widget-asset"])
 
@@ -723,7 +725,16 @@ _WIDGET_JS = r"""
 """
 
 
+# The file's fingerprint. Browsers check it on every page load ("no-cache" means "ask before reusing", not "never
+# store"): an unchanged widget costs a tiny 304, and a new version reaches every website at once - without this a
+# browser or a site's speed plugin could keep showing an old widget after an update.
+_ETAG = '"' + hashlib.sha256(_WIDGET_JS.encode("utf-8")).hexdigest()[:20] + '"'
+_CACHE_HEADERS = {"ETag": _ETAG, "Cache-Control": "no-cache"}
+
+
 @router.get("/widget.js")
-async def widget_js() -> Response:
+async def widget_js(request: Request) -> Response:
+    if _ETAG in (request.headers.get("if-none-match") or ""):
+        return Response(status_code=304, headers=_CACHE_HEADERS)
     # The charset matters: without it a browser reads the Hindi words and the close mark as Latin-1 on many sites.
-    return Response(content=_WIDGET_JS, media_type="application/javascript; charset=utf-8")
+    return Response(content=_WIDGET_JS, media_type="application/javascript; charset=utf-8", headers=_CACHE_HEADERS)
