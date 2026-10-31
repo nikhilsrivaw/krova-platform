@@ -29,7 +29,10 @@ from sqlalchemy import select
 from services.api.dependencies import DbDep
 from shared.billing.guards import plan_blocked
 from shared.channels.web import guardrails, reply as web_reply, sites
-from shared.db.models import Business, WebSession, WebWidgetConfig
+from shared.db.models import (
+    Business, Channel, ChannelConnection, ConnectionStatus, WebSession, WebWidgetConfig,
+)
+from shared.identity.normalise import InvalidIdentifier
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +48,9 @@ _CONSENT_PROMPT = (
 _UNAVAILABLE = "Sorry, this chat is not available right now. Please reach us on WhatsApp or by phone."
 DEFAULT_TITLE = "Chat with us"
 DEFAULT_GREETING = "Hi! How can I help you today?"
+DEFAULT_GREETING_HI = "नमस्ते! बताइए, मैं आपकी क्या मदद कर सकता हूँ?"
+_CONTACT_FIRST = "Before we start, please share your name and phone number so we can help you better."
+_CONTACT_FIRST_HI = "शुरू करने से पहले अपना नाम और फ़ोन नंबर बता दीजिए, ताकि हम आपकी बेहतर मदद कर सकें।"
 
 
 async def _config_and_business(site_key: str, db: DbDep) -> tuple[WebWidgetConfig, Business]:
@@ -81,6 +87,19 @@ class MessageIn(BaseModel):
     # SchedulingKit) found in research, not something stricter invented
     # for this.
     contact: ContactIn | None = None
+    # The page the visitor is on (no query string is kept) - shown to the business with the chat.
+    page_url: str | None = Field(default=None, max_length=2000)
+    # The visitor's last question sent again together with their details - it is already in the chat, so it is
+    # answered again but not stored twice.
+    retry: bool = False
+
+
+class ContactOnlyIn(BaseModel):
+    """The "ask name and number first" form, sent before the first message."""
+    session_token: str | None = None
+    consent: bool = False
+    contact: ContactIn
+    page_url: str | None = Field(default=None, max_length=2000)
 
 
 class MessageOut(BaseModel):
@@ -106,6 +125,32 @@ class LookOut(BaseModel):
     title: str
     greeting: str
     accent: str | None
+    position: str = "right"
+    launcher_text: str | None = None
+    teaser: str | None = None
+    starters: list[str] = []
+    ask_contact: str = "when_needed"
+    language: str = "en"
+    theme: str = "dark"
+    # Digits only, for a wa.me link - set when the business turned the WhatsApp button on and has WhatsApp connected.
+    whatsapp: str | None = None
+
+
+class HistoryItem(BaseModel):
+    role: str
+    text: str
+    at: str | None = None
+    id: str | None = None
+
+
+class HistoryOut(BaseModel):
+    messages: list[HistoryItem]
+    team_can_reply: bool
+
+
+class ContactOut(BaseModel):
+    session_token: str
+    team_can_reply: bool
 
 
 class TeamReply(BaseModel):
@@ -124,8 +169,86 @@ async def widget_config(site_key: str, db: DbDep) -> LookOut:
     config, business = await _config_and_business(site_key, db)
     if await plan_blocked(db, business.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Widget not found")
-    return LookOut(title=config.title or DEFAULT_TITLE, greeting=config.greeting or DEFAULT_GREETING,
-                   accent=config.accent)
+    if sites.note_loaded(config):
+        await db.flush()
+    language = config.language or "en"
+    whatsapp = None
+    if config.whatsapp_button:
+        handle = (await db.execute(select(ChannelConnection.external_handle).where(
+            ChannelConnection.business_id == business.id, ChannelConnection.channel == Channel.whatsapp,
+            ChannelConnection.status == ConnectionStatus.active).limit(1))).scalar_one_or_none()
+        digits = "".join(ch for ch in (handle or "") if ch.isdigit())
+        whatsapp = digits or None
+    return LookOut(
+        title=config.title or DEFAULT_TITLE,
+        greeting=config.greeting or (DEFAULT_GREETING_HI if language == "hi" else DEFAULT_GREETING),
+        accent=config.accent, position=config.position or "right", launcher_text=config.launcher_text,
+        teaser=config.teaser, starters=list(config.starters or []), ask_contact=config.ask_contact or "when_needed",
+        language=language, theme=config.theme or "dark", whatsapp=whatsapp,
+    )
+
+
+async def _session(db, business: Business, token: str | None) -> WebSession | None:
+    if not token:
+        return None
+    return (await db.execute(select(WebSession).where(
+        WebSession.session_token == token, WebSession.business_id == business.id))).scalars().first()
+
+
+async def _new_session(db, business: Business, config: WebWidgetConfig, now: datetime) -> WebSession:
+    session = WebSession(business_id=business.id, site_id=config.id, session_token=secrets.token_urlsafe(24),
+                         last_seen_at=now)
+    db.add(session)
+    await db.flush()
+    return session
+
+
+async def _promote(db, business: Business, session: WebSession, contact: ContactIn) -> None:
+    """Collect-and-trust, like the rest of the widget - a number that cannot be read is refused, not stored."""
+    try:
+        await web_reply.promote_session(
+            db, business=business, session=session, display_name=(contact.name or "").strip()[:80] or None,
+            phone=(contact.phone or "").strip() or None, email=(contact.email or "").strip() or None,
+        )
+    except (InvalidIdentifier, ValueError) as exc:
+        raise HTTPException(422, "Please enter a valid phone number.") from exc
+
+
+@router.get("/{site_key}/history", response_model=HistoryOut)
+async def widget_history(
+    site_key: str, db: DbDep, session_token: str = Query(min_length=8, max_length=64),
+) -> HistoryOut:
+    """This chat so far, so it is still there after a reload or on another page of the site."""
+    config, business = await _config_and_business(site_key, db)
+    session = await _session(db, business, session_token)
+    if session is None:
+        return HistoryOut(messages=[], team_can_reply=False)
+    items = await sites.history(db, session)
+    return HistoryOut(messages=[HistoryItem(**i) for i in items], team_can_reply=session.customer_id is not None)
+
+
+@router.post("/{site_key}/contact", response_model=ContactOut)
+async def widget_contact(site_key: str, body: ContactOnlyIn, db: DbDep) -> ContactOut:
+    """Name and number given before the first message (the site asks for them first)."""
+    config, business = await _config_and_business(site_key, db)
+    if await plan_blocked(db, business.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Widget not found")
+    if not guardrails.check_rate_limit(config):
+        await db.flush()
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests - please try again shortly")
+    if not body.consent:
+        raise HTTPException(422, "Please accept the notice first.")
+    if not (body.contact.phone or body.contact.email):
+        raise HTTPException(422, "Please enter your phone number.")
+    now = datetime.now(timezone.utc)
+    session = await _session(db, business, body.session_token) or await _new_session(db, business, config, now)
+    session.consent_given_at = session.consent_given_at or now
+    session.page_url = sites.clean_page(body.page_url) or session.page_url
+    session.last_seen_at = now
+    if session.customer_id is None:
+        await _promote(db, business, session, body.contact)
+    await db.flush()
+    return ContactOut(session_token=session.session_token, team_can_reply=session.customer_id is not None)
 
 
 @router.get("/{site_key}/updates", response_model=UpdatesOut)
@@ -161,25 +284,11 @@ async def widget_message(site_key: str, body: MessageIn, db: DbDep) -> MessageOu
         await db.flush()
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests - please try again shortly")
 
-    session: WebSession | None = None
-    if body.session_token:
-        result = await db.execute(
-            select(WebSession).where(
-                WebSession.session_token == body.session_token,
-                WebSession.business_id == business.id,
-            )
-        )
-        session = result.scalars().first()
-
     now = datetime.now(timezone.utc)
-    if session is None:
-        session = WebSession(
-            business_id=business.id,
-            session_token=secrets.token_urlsafe(24),
-            last_seen_at=now,
-        )
-        db.add(session)
-        await db.flush()
+    session = await _session(db, business, body.session_token) or await _new_session(db, business, config, now)
+    if session.site_id is None:
+        session.site_id = config.id
+    session.page_url = sites.clean_page(body.page_url) or session.page_url
 
     # DPDP: a notice before the conversation starts, not just before
     # contact info is collected - nothing about this message's actual
@@ -201,18 +310,25 @@ async def widget_message(site_key: str, body: MessageIn, db: DbDep) -> MessageOu
             booked=False, needs_contact=False, needs_consent=False,
         )
 
+    asked_again = None
     if body.contact and session.customer_id is None and (body.contact.phone or body.contact.email):
-        await web_reply.promote_session(
-            db,
-            business=business,
-            session=session,
-            display_name=body.contact.name,
-            phone=body.contact.phone,
-            email=body.contact.email,
+        await _promote(db, business, session, body.contact)
+        if body.retry:
+            asked_again = await web_reply.earlier_question(db, session, body.text)
+
+    # The site asks for a name and number first - nothing goes to the AI until it has them.
+    if config.ask_contact == "before_chat" and session.customer_id is None:
+        session.last_seen_at = now
+        await db.flush()
+        return MessageOut(
+            session_token=session.session_token,
+            reply_text=_CONTACT_FIRST_HI if config.language == "hi" else _CONTACT_FIRST,
+            booked=False, needs_contact=True, needs_consent=False,
         )
 
     guardrails.record_turn(session)
-    outcome = await web_reply.generate_reply(db, business=business, session=session, text=body.text)
+    outcome = await web_reply.generate_reply(db, business=business, session=session, text=body.text,
+                                             already_stored=asked_again)
     session.last_seen_at = now
     await db.flush()
 

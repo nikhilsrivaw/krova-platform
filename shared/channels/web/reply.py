@@ -198,18 +198,38 @@ async def _tell_person(db: AsyncSession, *, business: Business, customer: Custom
         logger.exception("web chat ping failed business=%s", business.id)
 
 
+async def earlier_question(db: AsyncSession, session: WebSession, text: str) -> uuid.UUID | None:
+    """The visitor's latest stored message in this chat, when it is this same text (asked again with their details)."""
+    from sqlalchemy import select
+
+    from shared.db.models import Message
+
+    if session.customer_id is None:
+        return None
+    latest = (await db.execute(
+        select(Message).where(
+            Message.customer_id == session.customer_id, Message.channel == Channel.web,
+            Message.direction == Direction.inbound, Message.occurred_at >= session.created_at,
+        ).order_by(Message.occurred_at.desc()).limit(1)
+    )).scalars().first()
+    return latest.id if latest is not None and (latest.content or "").strip() == text.strip() else None
+
+
 async def generate_reply(
     db: AsyncSession, *, business: Business, session: WebSession, text: str,
+    already_stored: uuid.UUID | None = None,
 ) -> ReplyOutcome:
+    """`already_stored`: this question is already a stored message (asked again with the visitor's details)."""
     customer = await db.get(Customer, session.customer_id) if session.customer_id else None
     inbound_message_id: uuid.UUID | None = None
 
     # Record the inbound turn first, so it's part of the context the model
     # actually reads - same ordering voice's _store_turn-then-build uses.
     if customer is not None:
-        inbound_message_id = await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.inbound, text=text)
+        inbound_message_id = already_stored or await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.inbound, text=text)
         # A person has taken this conversation - they answer, not the AI, so the visitor never gets two replies.
         if await web_sites.person_replied_recently(db, customer.id):
+            session.needed_person_at = session.needed_person_at or _now()
             await _tell_person(db, business=business, customer=customer, text=text)
             return ReplyOutcome(reply_text="", booked=False, needs_contact=False, with_person=True)
         context = await agent_context.build(business.id, customer.id, db)
@@ -242,6 +262,7 @@ async def generate_reply(
         )
         if gap:
             await agent_module.record_gap(business.id, gap, db)
+        session.needed_person_at = session.needed_person_at or _now()
         if customer is None:
             _append_transcript(session, role="assistant", text=_NEEDS_PERSON_MESSAGE)
             return ReplyOutcome(reply_text=_NEEDS_PERSON_MESSAGE, booked=False, needs_contact=True)

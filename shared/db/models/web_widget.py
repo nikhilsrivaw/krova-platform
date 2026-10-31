@@ -53,6 +53,22 @@ class WebWidgetConfig(UUIDMixin, TimestampMixin, Base):
     title: Mapped[str | None] = mapped_column(String(60), nullable=True)
     greeting: Mapped[str | None] = mapped_column(String(300), nullable=True)
     accent: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    # Launcher: "right" (default) or "left", an optional label beside the button, and a short message that pops up
+    # once a visitor has been on the page a few seconds.
+    position: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    launcher_text: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    teaser: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # Up to four ready questions a visitor can tap to start.
+    starters: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # "when_needed" (default) - name and number only when a person or a booking needs them; "before_chat" - asked first.
+    ask_contact: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    # The widget's own words: "en" (default) or "hi". The AI answers in the visitor's language either way.
+    language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    theme: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    # A "WhatsApp" button in the chat header, to the business's connected WhatsApp number.
+    whatsapp_button: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # When a page with the code last loaded the widget - "is it installed and working?" on the Website chat page.
+    last_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # A crude but real sliding-window rate limit, business-wide (across
     # every visitor session): a scripted attacker hitting this endpoint
@@ -108,7 +124,14 @@ class WebSession(UUIDMixin, TimestampMixin, Base):
     # consent-bearing act inside an app they already agreed to terms on.
     consent_given_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Which site and page the visitor was on, and when the conversation first needed a person.
+    site_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("web_widget_configs.id", ondelete="SET NULL"), nullable=True
+    )
+    page_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    needed_person_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("idx_web_sessions_business", "business_id"),
+        Index("idx_web_sessions_business_created", "business_id", "created_at"),
     )

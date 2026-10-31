@@ -147,7 +147,7 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     # what the business's WhatsApp messages cost it
     ("GET", "/channels/whatsapp/usage"),
     # the website chat keys
-    ("GET", "/web-chat/sites"),
+    ("GET", "/web-chat/sites"), ("GET", "/web-chat/stats"), ("GET", "/web-chat/chats"), ("GET", "/web-chat/chats/{session_id}"),
 ]}
 
 # What staff do all day - one customer at a time - must stay open to them.

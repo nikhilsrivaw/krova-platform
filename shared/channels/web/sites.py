@@ -84,3 +84,77 @@ async def team_replies(db: AsyncSession, customer_id: uuid.UUID, after: datetime
         query = query.where(Message.occurred_at > after)
     rows = await db.execute(query.order_by(Message.occurred_at.asc()).limit(limit))
     return list(rows.scalars().all())
+
+
+POSITIONS = ("right", "left")
+ASK_CONTACT = ("when_needed", "before_chat")
+LANGUAGES = ("en", "hi")
+THEMES = ("dark", "light")
+MAX_STARTERS = 4
+# The install check: a page that loaded the widget this recently counts as "working on your site".
+LOADED_RECENTLY = timedelta(days=2)
+_LOADED_WRITE_EVERY = timedelta(minutes=5)
+
+
+def pick(value: str | None, allowed: tuple[str, ...]) -> str | None:
+    """A known choice, or None (the widget's default)."""
+    return value if value in allowed else None
+
+
+def clean_starters(raw: list | None) -> list[str]:
+    """Up to four short, distinct ready questions."""
+    out: list[str] = []
+    for item in raw or []:
+        text = str(item).strip()[:80]
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_STARTERS]
+
+
+def clean_page(url: str | None) -> str | None:
+    """The visitor's page, without the query string (it can carry their own details)."""
+    if not url:
+        return None
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    return f"{parsed.scheme}://{parsed.hostname}{parsed.path or '/'}"[:500]
+
+
+def note_loaded(site, now: datetime | None = None) -> bool:
+    """Record that a page loaded the widget - written at most every few minutes. True when written."""
+    now = now or datetime.now(timezone.utc)
+    last = site.last_loaded_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is not None and now - last < _LOADED_WRITE_EVERY:
+        return False
+    site.last_loaded_at = now
+    return True
+
+
+async def history(db: AsyncSession, session: WebSession, limit: int = 40) -> list[dict]:
+    """
+    What the visitor already said and was told, oldest first - so the chat survives a reload or a new page.
+
+    Only this chat's own messages: a visitor's number is taken on trust (no OTP), so anyone could type someone else's
+    number - they must never see that customer's earlier conversations.
+    """
+    if session.customer_id is None:
+        return [
+            {"role": "user" if e.get("role") == "user" else "bot", "text": e.get("text") or "", "at": e.get("at")}
+            for e in (session.transcript or []) if e.get("text")
+        ][-limit:]
+    rows = await db.execute(
+        select(Message).where(
+            Message.customer_id == session.customer_id, Message.channel == Channel.web,
+            Message.occurred_at >= session.created_at,
+        ).order_by(Message.occurred_at.desc()).limit(limit)
+    )
+    out = []
+    for m in reversed(list(rows.scalars().all())):
+        if not m.content:
+            continue
+        role = "user" if m.direction == Direction.inbound else ("team" if m.sent_by_user_id else "bot")
+        out.append({"role": role, "text": m.content, "at": m.occurred_at.isoformat(), "id": str(m.id)})
+    return out
