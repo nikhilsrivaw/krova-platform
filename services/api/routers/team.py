@@ -189,7 +189,7 @@ async def remove_member(user_id: uuid.UUID, current_user: OwnerOrAdminDep, db: D
 class TeamSettings(BaseModel):
     auto_assign_on_reply: bool = True
     agent_visibility: Literal["all", "assigned"] = "all"
-    routing: Literal["manual", "round_robin"] = "manual"
+    routing: Literal["manual", "round_robin"] = "round_robin"
     sla_minutes: int | None = Field(default=None, ge=1, le=1440)
     # What agents may see and do - shared/team/settings.py.
     agent_money: bool = False

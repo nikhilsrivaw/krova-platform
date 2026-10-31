@@ -340,9 +340,9 @@ def test_team_settings_default_and_round_trip():
 
     biz = SimpleNamespace(settings={})
     agents = {"agent_money": False, "agent_payments": True, "agent_phones": "shown", "agent_templates": True}
-    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all", "routing": "manual", "sla_minutes": None, **agents}
+    assert ts.read(biz) == {"auto_assign_on_reply": True, "agent_visibility": "all", "routing": "round_robin", "sla_minutes": None, **agents}
     ts.write(biz, auto_assign_on_reply=False, agent_visibility="assigned")
-    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned", "routing": "manual", "sla_minutes": None, **agents}
+    assert ts.read(biz) == {"auto_assign_on_reply": False, "agent_visibility": "assigned", "routing": "round_robin", "sla_minutes": None, **agents}
     with pytest.raises(ValueError):
         ts.write(biz, auto_assign_on_reply=True, agent_visibility="nobody")
     assert ts.read(SimpleNamespace(settings={"team": {"agent_visibility": "junk"}}))["agent_visibility"] == "all"
@@ -394,21 +394,21 @@ def test_settings_carry_routing_and_target():
     from shared.team import settings as ts
 
     biz = SimpleNamespace(settings={})
-    assert ts.read(biz)["routing"] == "manual" and ts.read(biz)["sla_minutes"] is None
-    ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", routing="round_robin", sla_minutes=15)
-    assert ts.read(biz)["routing"] == "round_robin" and ts.read(biz)["sla_minutes"] == 15
+    assert ts.read(biz)["routing"] == "round_robin" and ts.read(biz)["sla_minutes"] is None
+    ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", routing="manual", sla_minutes=15)
+    assert ts.read(biz)["routing"] == "manual" and ts.read(biz)["sla_minutes"] == 15
     with pytest.raises(ValueError):
         ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", routing="random")
     with pytest.raises(ValueError):
         ts.write(biz, auto_assign_on_reply=True, agent_visibility="all", sla_minutes=0)
 
 
-def test_routing_is_off_unless_the_business_turns_it_on(monkeypatch):
+def test_routing_is_off_when_the_business_assigns_by_hand(monkeypatch):
     from shared.team import routing
 
     class Db:
         async def get(self, model, key, **_):
-            return SimpleNamespace(settings={})
+            return SimpleNamespace(settings={"team": {"routing": "manual"}})
 
     async def boom(*_a, **_k):
         raise AssertionError("must not pick anyone")

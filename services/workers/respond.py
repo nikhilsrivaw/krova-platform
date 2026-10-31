@@ -536,6 +536,21 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                 draft.id, gate.reason if gate is not None else "unknown vertical",
             )
 
+    # AI first, a person when needed (shared/team/rules.py): the AI escalated, or its reply is still waiting for
+    # someone's OK - hand the chat to a person now if nobody has it (its team's way, else round-robin).
+    if proposal.action == "escalate" or draft.status == DraftStatus.pending:
+        try:
+            from shared.team import rules as team_rules
+
+            async with db.begin_nested():
+                await team_rules.hand_to_person(
+                    db, business_id=message.business_id, customer_id=message.customer_id,
+                    reason=(proposal.gap or "needs a person") if proposal.action == "escalate"
+                    else "AI reply waiting for your OK",
+                )
+        except Exception:
+            logger.exception("hand to person failed business=%s customer=%s", message.business_id, message.customer_id)
+
     logger.info(
         "drafted %s for business=%s customer=%s confidence=%.2f autonomy=%s status=%s",
         proposal.action,

@@ -66,16 +66,18 @@ def _rule(team_id, conditions, also_if_owned=False):
     return SimpleNamespace(id=uuid.uuid4(), team_id=team_id, conditions=conditions, also_if_owned=also_if_owned)
 
 
-def _route(monkeypatch, rule_rows, customer, text="", teams=None):
+def _route(monkeypatch, rule_rows, customer, text="", teams=None, assign_people=True, assigned=None):
     sent = []
 
-    async def fake_send(db, *, business_id, customer, team, what):
+    async def fake_send(db, *, business_id, customer, team, what, assign=True):
         sent.append(team.id)
+        if assigned is not None:
+            assigned.append(assign)
         customer.team_id = team.id
 
     monkeypatch.setattr(rules, "send_to_team", fake_send)
     taken = asyncio.run(rules.route(_Db(rule_rows, teams or {}), business_id=uuid.uuid4(), customer=customer,
-                                    text=text, channel="whatsapp"))
+                                    text=text, channel="whatsapp", assign_people=assign_people))
     return taken, sent
 
 
@@ -176,3 +178,118 @@ def test_the_free_members_query_compiles():
     db = _Db([], {})
     team = SimpleNamespace(id=uuid.uuid4(), business_id=uuid.uuid4())
     assert asyncio.run(rules.available_members(db, team)) == []
+
+
+# AI first, a person when needed.
+
+def test_the_ai_goes_first_when_it_sends_its_own_replies_or_answers_live():
+    assert rules.ai_first("act", "whatsapp") and rules.ai_first("conditional", "instagram")
+    assert rules.ai_first("draft", "voice") and rules.ai_first("observe", "web")
+    assert not rules.ai_first("draft", "whatsapp") and not rules.ai_first(None, "whatsapp")
+
+
+def test_ai_first_only_puts_the_chat_in_the_team_unless_the_rule_says_person_now(monkeypatch):
+    complaints = uuid.uuid4()
+    teams = {complaints: SimpleNamespace(id=complaints)}
+    assigned = []
+    _route(monkeypatch, [_rule(complaints, {})], _customer(), "hi", teams, assign_people=False, assigned=assigned)
+    _route(monkeypatch, [_rule(complaints, {"person_now": True})], _customer(), "hi", teams, assign_people=False,
+           assigned=assigned)
+    _route(monkeypatch, [_rule(complaints, {})], _customer(), "hi", teams, assign_people=True, assigned=assigned)
+    assert assigned == [False, True, True]
+
+
+def test_person_now_survives_cleaning_and_is_not_a_condition():
+    assert rules.clean_conditions({"words": ["refund"], "person_now": True}) == {"words": ["refund"], "person_now": True}
+    assert rules.clean_conditions({"person_now": "yes"}) == {}
+    assert m({"person_now": True}, "anything")  # the switch alone matches everything, like an empty rule
+
+
+def test_joining_a_team_without_assigning_tells_nobody_but_the_previous_owner(monkeypatch):
+    told = []
+
+    async def notify(db, *, business_id, user_id, title, body, url, kind):
+        told.append(user_id)
+
+    monkeypatch.setattr(rules.conflict, "notify", notify)
+    previous = uuid.uuid4()
+    team = SimpleNamespace(id=uuid.uuid4(), name="Complaints", sharing="round_robin", lead_user_id=uuid.uuid4())
+    customer = SimpleNamespace(id=uuid.uuid4(), assigned_to_user_id=previous, assigned_at=None, team_id=None, display_name="Ravi")
+    asyncio.run(rules.send_to_team(None, business_id=uuid.uuid4(), customer=customer, team=team, assign=False))
+    assert customer.team_id == team.id and customer.assigned_to_user_id is None and told == [previous]
+
+
+class _HandDb:
+    def __init__(self, customer, team=None):
+        self.customer, self.team = customer, team
+
+    async def get(self, model, key):
+        return self.customer if model is rules.Customer else self.team
+
+
+def _hand_customer(**kw):
+    base = dict(id=uuid.uuid4(), business_id=BIZ, is_private=False, assigned_to_user_id=None, assigned_at=None,
+                team_id=None, display_name="Ravi")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+BIZ = uuid.uuid4()
+
+
+def test_hand_to_person_leaves_an_owned_chat_with_its_owner(monkeypatch):
+    owner = uuid.uuid4()
+    calls = []
+
+    async def no(*a, **k):
+        calls.append(1)
+
+    monkeypatch.setattr(rules, "send_to_team", no)
+    got = asyncio.run(rules.hand_to_person(_HandDb(_hand_customer(assigned_to_user_id=owner)), business_id=BIZ,
+                                           customer_id=uuid.uuid4(), reason="x"))
+    assert got == owner and calls == []
+
+
+def test_hand_to_person_uses_the_chats_team_with_the_reason(monkeypatch):
+    member = uuid.uuid4()
+    seen = {}
+
+    async def fake_send(db, *, business_id, customer, team, reason=None, **k):
+        seen["reason"] = reason
+        customer.assigned_to_user_id = member
+
+    monkeypatch.setattr(rules, "send_to_team", fake_send)
+    team = SimpleNamespace(id=uuid.uuid4())
+    got = asyncio.run(rules.hand_to_person(_HandDb(_hand_customer(team_id=team.id), team), business_id=BIZ,
+                                           customer_id=uuid.uuid4(), reason="asked for a person"))
+    assert got == member and seen["reason"] == "asked for a person"
+
+
+def test_hand_to_person_with_no_team_goes_round_robin_to_any_agent(monkeypatch):
+    from shared.team import routing
+
+    agent = uuid.uuid4()
+    seen = {}
+
+    async def rr(db, *, business_id, customer_id, title, body):
+        seen.update(title=title, body=body)
+        return agent
+
+    monkeypatch.setattr(routing, "route_new_chat", rr)
+    got = asyncio.run(rules.hand_to_person(_HandDb(_hand_customer()), business_id=BIZ, customer_id=uuid.uuid4(),
+                                           reason="AI reply waiting for your OK"))
+    assert got == agent and seen["body"] == "Ravi - AI reply waiting for your OK"
+
+
+def test_hand_to_person_ignores_private_chats_and_other_businesses():
+    assert asyncio.run(rules.hand_to_person(_HandDb(_hand_customer(is_private=True)), business_id=BIZ,
+                                            customer_id=uuid.uuid4(), reason="x")) is None
+    assert asyncio.run(rules.hand_to_person(_HandDb(_hand_customer()), business_id=uuid.uuid4(),
+                                            customer_id=uuid.uuid4(), reason="x")) is None
+
+
+def test_chats_no_team_takes_go_round_robin_unless_the_business_assigns_by_hand():
+    from shared.team import settings as ts
+
+    assert ts.read(SimpleNamespace(settings={}))["routing"] == "round_robin"
+    assert ts.read(SimpleNamespace(settings={"team": {"routing": "manual"}}))["routing"] == "manual"

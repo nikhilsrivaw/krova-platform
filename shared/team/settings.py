@@ -2,8 +2,8 @@
 The team choices a business makes, kept in Business.settings["team"]:
 
   auto_assign_on_reply  the first agent to answer an unowned chat owns it (default on)
-  routing               "manual" (default) - or "round_robin": a new chat goes to the
-                        available agent who was handed one longest ago
+  routing               "round_robin" (default) - a chat no team rule catches goes to the
+                        available agent who was handed one longest ago; "manual" - nobody is assigned
   sla_minutes           first-reply target; None = no reminders
   agent_visibility      "all" - agents see every chat (default);
                         "assigned" - agents see their own chats and unowned ones
@@ -17,7 +17,7 @@ What agents (not the owner or admins) may see and do - docs/new/team-member-acce
 """
 
 DEFAULTS = {
-    "auto_assign_on_reply": True, "agent_visibility": "all", "routing": "manual", "sla_minutes": None,
+    "auto_assign_on_reply": True, "agent_visibility": "all", "routing": "round_robin", "sla_minutes": None,
     "agent_money": False, "agent_payments": True, "agent_phones": "shown", "agent_templates": True,
 }
 ROUTING = ("manual", "round_robin")
@@ -47,7 +47,7 @@ def read(business) -> dict:
 
 def write(
     business, *, auto_assign_on_reply: bool, agent_visibility: str,
-    routing: str = "manual", sla_minutes: int | None = None,
+    routing: str = DEFAULTS["routing"], sla_minutes: int | None = None,
     agent_money: bool = DEFAULTS["agent_money"], agent_payments: bool = DEFAULTS["agent_payments"],
     agent_phones: str = DEFAULTS["agent_phones"], agent_templates: bool = DEFAULTS["agent_templates"],
 ) -> dict:

@@ -14,6 +14,12 @@ Runs on an inbound message for a chat with no owner, and for an owned chat only 
 "also_if_owned" (a complaint from a sales person's customer). A chat already in the rule's team is left alone, so a
 team's chat is not re-routed on every message. When no rule matches, the business-wide behaviour applies as before
 (round-robin or first reply - shared/team/routing.py), except for a chat already waiting in a team's queue.
+
+AI first, a person when one is needed. When the AI replies on its own (Act or Conditional autonomy, and always on calls
+and the website chat), a message only marks which team the chat belongs to; a person is handed it later by
+hand_to_person() - when the AI escalates, when its reply waits for someone's OK, or when the customer has waited past
+the reply target. In Draft and Observe every reply needs a person, so a person is handed the chat at once, as before.
+A rule marked "person_now" (e.g. complaints) always hands the chat to a person at once.
 """
 
 import uuid
@@ -31,6 +37,13 @@ logger = get_logger(__name__)
 CONDITION_KEYS = ("words", "languages", "channels", "numbers", "lead_sources", "tags")
 CHANNELS = ("whatsapp", "instagram", "voice", "web")
 SHARING = ("round_robin", "queue")
+# Not a condition: a rule switch kept in the same JSON (no column) - hand the chat to a person at once.
+PERSON_NOW = "person_now"
+
+
+def ai_first(autonomy: str | None, channel: str | None) -> bool:
+    """Whether the AI answers before any person: it sends its own replies, or the channel is answered live by it."""
+    return channel in ("voice", "web") or (autonomy or "").lower() in ("act", "conditional")
 
 
 def clean_conditions(raw: dict | None) -> dict:
@@ -47,6 +60,8 @@ def clean_conditions(raw: dict | None) -> dict:
             cleaned = [v for v in cleaned if v in lang.LANGUAGES]
         if cleaned:
             out[key] = cleaned
+    if (raw or {}).get(PERSON_NOW) is True:
+        out[PERSON_NOW] = True
     return out
 
 
@@ -82,10 +97,12 @@ async def _tags(db: AsyncSession, customer_id: uuid.UUID) -> set[str]:
 async def route(
     db: AsyncSession, *, business_id: uuid.UUID, customer: Customer, text: str | None, channel: str | None,
     connection_id: uuid.UUID | None = None, lead_source: str | None = None, what: str = "chat",
+    assign_people: bool = True,
 ) -> bool:
     """
     Apply the first matching rule. True when the conversation is now a team's (routed now, or already there), so the
-    caller must not hand it out business-wide as well.
+    caller must not hand it out business-wide as well. Without assign_people the chat only joins the team (AI first);
+    a rule marked person_now still hands it to a person.
     """
     rules = (await db.execute(
         select(RoutingRule).where(RoutingRule.business_id == business_id, RoutingRule.active == True)  # noqa: E712
@@ -110,7 +127,8 @@ async def route(
         team = await db.get(Team, rule.team_id)
         if team is None:
             continue
-        await send_to_team(db, business_id=business_id, customer=customer, team=team, what=what)
+        await send_to_team(db, business_id=business_id, customer=customer, team=team, what=what,
+                           assign=assign_people or (rule.conditions or {}).get(PERSON_NOW) is True)
         logger.info("routed business=%s customer=%s rule=%s team=%s", business_id, customer.id, rule.id, team.id)
         return True
     # No rule: a chat already waiting in a team's queue stays there.
@@ -129,34 +147,68 @@ async def available_members(db: AsyncSession, team: Team) -> list[TeamMember]:
     return list(rows.scalars().all())
 
 
-async def send_to_team(db: AsyncSession, *, business_id: uuid.UUID, customer: Customer, team: Team, what: str = "chat") -> None:
+async def send_to_team(
+    db: AsyncSession, *, business_id: uuid.UUID, customer: Customer, team: Team, what: str = "chat",
+    assign: bool = True, reason: str | None = None,
+) -> None:
+    """
+    Put the chat in the team. With assign, hand it to a person now, the team's way; without, it only joins the team
+    and the AI keeps answering until hand_to_person(). `reason` (why a person is needed) goes in the push.
+    """
     previous = customer.assigned_to_user_id
     now = datetime.now(timezone.utc)
     customer.team_id = team.id
     name = customer.display_name or "A customer"
+    who = f"{name} - {reason}" if reason else name
     url = f"/app/inbox/{customer.id}"
     label = "lead" if what == "lead" else "chat"
-    if team.sharing == "round_robin":
+    if not assign:
+        customer.assigned_to_user_id, customer.assigned_at = None, None
+    elif team.sharing == "round_robin":
         free = await available_members(db, team)
         if free:
             member = free[0]
             member.last_routed_at = now
             customer.assigned_to_user_id, customer.assigned_at = member.user_id, now
             await conflict.notify(db, business_id=business_id, user_id=member.user_id,
-                                  title=f"New {label} for you - {team.name}", body=name, url=url, kind="new_chat")
+                                  title=f"New {label} for you - {team.name}", body=who, url=url, kind="new_chat")
         else:
             customer.assigned_to_user_id, customer.assigned_at = None, None
             await conflict.notify(db, business_id=business_id, user_id=team.lead_user_id,
-                                  title=f"Nobody free in {team.name}", body=f"{name} is waiting - nobody in the team is available",
+                                  title=f"Nobody free in {team.name}", body=f"{who} - nobody in the team is available",
                                   url=url, kind="new_chat")
     else:
         customer.assigned_to_user_id, customer.assigned_at = None, None
         members = (await db.execute(select(TeamMember.user_id).where(TeamMember.team_id == team.id))).scalars().all()
         for user_id in members:
             await conflict.notify(db, business_id=business_id, user_id=user_id,
-                                  title=f"New {label} in {team.name}", body=f"{name} - reply first to take it", url=url,
+                                  title=f"New {label} in {team.name}", body=f"{who} - reply first to take it", url=url,
                                   kind="new_chat")
     if previous is not None and previous != customer.assigned_to_user_id:
         await conflict.notify(db, business_id=business_id, user_id=previous,
                               title=f"A chat moved to {team.name}", body=f"{name} now goes to the {team.name} team", url=url,
                               kind="new_chat")
+
+
+async def hand_to_person(db: AsyncSession, *, business_id: uuid.UUID, customer_id: uuid.UUID, reason: str) -> uuid.UUID | None:
+    """
+    A person is needed now - the AI escalated, its reply waits for an OK, or the customer has waited too long. A chat
+    somebody already has stays theirs (the caller tells them). Otherwise the chat's team hands it out its own way; a chat
+    in no team goes round-robin to the next available agent (shared/team/routing.py), unless the business assigns chats
+    by hand. Returns who has the chat now, or None.
+    """
+    from shared.team import routing
+
+    customer = await db.get(Customer, customer_id)
+    if customer is None or customer.business_id != business_id or customer.is_private:
+        return None
+    if customer.assigned_to_user_id is not None:
+        return customer.assigned_to_user_id
+    team = await db.get(Team, customer.team_id) if customer.team_id else None
+    if team is not None:
+        await send_to_team(db, business_id=business_id, customer=customer, team=team, reason=reason)
+        return customer.assigned_to_user_id
+    return await routing.route_new_chat(
+        db, business_id=business_id, customer_id=customer.id, title="A customer needs you",
+        body=f"{customer.display_name or 'A customer'} - {reason}",
+    )

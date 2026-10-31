@@ -3,7 +3,8 @@ Reply-time reminders: a customer's latest message has sat unanswered past the
 business's first-reply target (Business.settings["team"]["sla_minutes"]).
 
 Two steps, each sent once per waiting message:
-  1. at the target: the chat's owner is pinged (everyone, if nobody owns it), and the team lead too when the chat
+  1. at the target: a chat nobody owns is first handed to a person (its team, else round-robin - shared/team/rules.py
+     hand_to_person); the chat's owner is pinged (everyone, if still nobody), and the team lead too when the chat
      belongs to a team (shared/team/rules.py);
   2. at twice the target: the owner and admins are pinged too.
 
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.care import post_call_actions
 from shared.db.models import Business, BusinessMember, BusinessRole, Channel, Customer, Direction, Message, Team
 from shared.integrations import web_push
-from shared.team import settings as team_settings
+from shared.team import rules as team_rules, settings as team_settings
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -107,6 +108,17 @@ async def check_reply_times(db: AsyncSession) -> int:
                         )
                     except Exception:
                         logger.exception("reply.overdue automations failed business=%s", business.id)
+                    # AI first left it with nobody (shared/team/rules.py) - a person takes it now.
+                    if customer.assigned_to_user_id is None:
+                        try:
+                            async with db.begin_nested():
+                                got = await team_rules.hand_to_person(
+                                    db, business_id=business.id, customer_id=customer.id,
+                                    reason=f"waited {target}+ min for a reply")
+                            if got:
+                                customer.assigned_to_user_id = got
+                        except Exception:
+                            logger.exception("reply-time hand-off failed business=%s", business.id)
                     if team is not None:
                         payload["body"] += f" ({team.name} team)"
                         people = {u for u in (customer.assigned_to_user_id, team.lead_user_id) if u}

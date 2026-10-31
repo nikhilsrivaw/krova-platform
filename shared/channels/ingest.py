@@ -25,6 +25,7 @@ from shared.billing import usage
 from shared.integrations import webhooks
 from shared.db import queue
 from shared.db.models import (
+    Business,
     Channel,
     ChannelConnection,
     Customer,
@@ -184,17 +185,21 @@ async def ingest(
 
     # Routing, inside a savepoint so a routing problem can never lose the message: the business's own team rules
     # first (shared/team/rules.py - "complaints to the Complaints team"), then, for a chat no rule took and nobody
-    # owns, business-wide round-robin if the business turned it on.
+    # owns, business-wide round-robin unless the business assigns by hand. AI first: when the AI answers on its own,
+    # the chat only joins its team here, and a person is brought in when needed (rules.hand_to_person).
     if direction == Direction.inbound:
         try:
             from shared.team import routing, rules as team_rules
 
+            channel_name = channel.value if hasattr(channel, "value") else str(channel)
+            business = await db.get(Business, business_id)
+            assign_now = not team_rules.ai_first(getattr(business, "autonomy", None), channel_name)
             async with db.begin_nested():
                 taken = await team_rules.route(
                     db, business_id=business_id, customer=customer, text=text,
-                    channel=channel.value if hasattr(channel, "value") else str(channel), connection_id=connection_id,
+                    channel=channel_name, connection_id=connection_id, assign_people=assign_now,
                 )
-                if not taken and customer.assigned_to_user_id is None:
+                if assign_now and not taken and customer.assigned_to_user_id is None:
                     await routing.route_new_chat(db, business_id=business_id, customer_id=customer.id)
             await db.refresh(customer)
         except Exception:
