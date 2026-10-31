@@ -22,12 +22,13 @@ session turn cap.
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import DbDep
-from shared.channels.web import guardrails, reply as web_reply
+from shared.billing.guards import plan_blocked
+from shared.channels.web import guardrails, reply as web_reply, sites
 from shared.db.models import Business, WebSession, WebWidgetConfig
 from shared.utils.logging import get_logger
 
@@ -41,6 +42,9 @@ _CONSENT_PROMPT = (
     "you choose to book something, your contact details) with them. Reply "
     "to continue."
 )
+_UNAVAILABLE = "Sorry, this chat is not available right now. Please reach us on WhatsApp or by phone."
+DEFAULT_TITLE = "Chat with us"
+DEFAULT_GREETING = "Hi! How can I help you today?"
 
 
 async def _config_and_business(site_key: str, db: DbDep) -> tuple[WebWidgetConfig, Business]:
@@ -91,11 +95,67 @@ class MessageOut(BaseModel):
     # the widget's own UI should show that notice and resend the same
     # text with consent=true, rather than treat this as a real reply.
     needs_consent: bool
+    # True once the visitor has given a number, so a person can reply from the Inbox - the widget then
+    # asks /updates every few seconds for those replies.
+    team_can_reply: bool = False
+    # The AI stayed quiet because a person is talking to this visitor; the message reached them.
+    with_person: bool = False
+
+
+class LookOut(BaseModel):
+    title: str
+    greeting: str
+    accent: str | None
+
+
+class TeamReply(BaseModel):
+    id: str
+    text: str
+    at: str
+
+
+class UpdatesOut(BaseModel):
+    replies: list[TeamReply]
+
+
+@router.get("/{site_key}/config", response_model=LookOut)
+async def widget_config(site_key: str, db: DbDep) -> LookOut:
+    """How the widget looks. 404 hides the widget (switched off, or the business's plan is paused)."""
+    config, business = await _config_and_business(site_key, db)
+    if await plan_blocked(db, business.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Widget not found")
+    return LookOut(title=config.title or DEFAULT_TITLE, greeting=config.greeting or DEFAULT_GREETING,
+                   accent=config.accent)
+
+
+@router.get("/{site_key}/updates", response_model=UpdatesOut)
+async def widget_updates(
+    site_key: str, db: DbDep, session_token: str = Query(min_length=8, max_length=64),
+    after: datetime | None = None,
+) -> UpdatesOut:
+    """A person's replies from the Inbox since `after` - asked by the open widget every few seconds."""
+    config, business = await _config_and_business(site_key, db)
+    session = (await db.execute(select(WebSession).where(
+        WebSession.session_token == session_token, WebSession.business_id == business.id))).scalars().first()
+    if session is None or session.customer_id is None:
+        return UpdatesOut(replies=[])
+    since = after or session.consent_given_at or session.created_at
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    session.last_seen_at = datetime.now(timezone.utc)
+    rows = await sites.team_replies(db, session.customer_id, since)
+    await db.flush()
+    return UpdatesOut(replies=[
+        TeamReply(id=str(m.id), text=m.content or "", at=m.occurred_at.isoformat()) for m in rows if m.content
+    ])
 
 
 @router.post("/{site_key}/message", response_model=MessageOut)
 async def widget_message(site_key: str, body: MessageIn, db: DbDep) -> MessageOut:
     config, business = await _config_and_business(site_key, db)
+    if await plan_blocked(db, business.id):
+        return MessageOut(session_token=body.session_token or "", reply_text=_UNAVAILABLE,
+                          booked=False, needs_contact=False, needs_consent=False)
 
     if not guardrails.check_rate_limit(config):
         await db.flush()
@@ -167,4 +227,6 @@ async def widget_message(site_key: str, body: MessageIn, db: DbDep) -> MessageOu
         booked=outcome.booked,
         needs_contact=outcome.needs_contact,
         needs_consent=False,
+        team_can_reply=session.customer_id is not None,
+        with_person=outcome.with_person,
     )

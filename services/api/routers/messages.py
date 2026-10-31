@@ -1119,3 +1119,63 @@ async def publish_instagram_photo(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return PublishPhotoOut(media_id=result.media_id, image_url=image_url)
+
+
+class SendWebText(BaseModel):
+    customer_id: uuid.UUID
+    body: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/web/text", response_model=SendResult)
+async def send_web_text(body: SendWebText, current_user: CurrentUserDep, db: DbDep) -> SendResult:
+    """
+    A person's reply to a website chat visitor. It shows in their chat window - at once while it is open, or when
+    they next open it (shared/channels/web/sites.py). While a person is replying, the AI does not answer them.
+    """
+    from shared.billing.guards import require_active_plan
+    from shared.channels.web import sites
+
+    await require_active_plan(db, current_user.business)
+    customer = await db.get(Customer, body.customer_id)
+    if customer is None or customer.business_id != current_user.business:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    await access.check_id(db, current_user, customer.id)
+    try:
+        await conflict.guard_reply(db, business_id=current_user.business, customer_id=customer.id,
+                                   actor_id=current_user.id, actor_role=current_user.role)
+    except conflict.AssignedToOther as exc:
+        raise conflict.to_http(exc) from exc
+    activity.note(customer=str(customer.id), channel="web")
+
+    session = await sites.latest_session(db, current_user.business, customer.id)
+    now = datetime.now(timezone.utc)
+    seen = session.last_seen_at if session is not None else None
+    if seen is not None and seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    if seen is None or now - seen > sites.REPLY_WINDOW:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This visitor has not been on your website chat for over 7 days - reach them on WhatsApp instead.",
+        )
+    identities = (await db.execute(select(CustomerIdentity).where(
+        CustomerIdentity.customer_id == customer.id).limit(1))).scalars().all()
+    if not identities:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This visitor did not leave a number or email.")
+
+    stored = await ingest.ingest(
+        business_id=current_user.business,
+        channel=Channel.web,
+        direction=Direction.outbound,
+        identity_kind=identities[0].kind,
+        identity_value=identities[0].value,
+        external_id=None,
+        text=body.body,
+        occurred_at=now,
+        enqueue_analysis=False,
+        sent_by_user_id=current_user.id,
+        db=db,
+    )
+    return SendResult(
+        sent=True, message_id=str(stored.message.id) if stored.message else "", channel="web",
+        used_template=False, window_open=True,
+    )

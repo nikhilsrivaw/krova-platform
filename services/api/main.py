@@ -77,6 +77,7 @@ from services.api.routers import (
     admin,
     voice_provisioning,
     webhooks,
+    web_chat,
     widget,
     widget_asset,
 )
@@ -209,6 +210,7 @@ app.include_router(receivables.router, prefix=API_PREFIX)
 app.include_router(export.router, prefix=API_PREFIX)
 app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(trust.router, prefix=API_PREFIX)
+app.include_router(web_chat.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)
 app.include_router(routing_rules.router, prefix=API_PREFIX)

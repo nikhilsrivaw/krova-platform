@@ -31,7 +31,8 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 MAX_AGE = timedelta(hours=23)
-TEXT_CHANNELS = (Channel.whatsapp, Channel.instagram)
+# Website chat too: a visitor waiting for a person (the AI stays quiet while one is talking to them).
+TEXT_CHANNELS = (Channel.whatsapp, Channel.instagram, Channel.web)
 
 
 def stage_for(waited: timedelta, target_minutes: int, alerted_at, escalated_at, inbound_at) -> str | None:

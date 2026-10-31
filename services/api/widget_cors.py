@@ -57,8 +57,13 @@ async def _matching_origin(site_key: str, origin: str | None) -> str | None:
     if not allowed_domain:
         return None
 
-    origin_host = urlparse(origin).hostname
-    return origin if origin_host == allowed_domain else None
+    from shared.channels.web.sites import host_allowed
+    from shared.config.settings import settings
+
+    # KROVA's own app too, so a business can try its widget on the Website chat page before pasting it.
+    if origin.rstrip("/") in {o.rstrip("/") for o in settings.cors_allowed_origins}:
+        return origin
+    return origin if host_allowed(urlparse(origin).hostname, allowed_domain) else None
 
 
 class WidgetCORSMiddleware(BaseHTTPMiddleware):
@@ -79,7 +84,7 @@ class WidgetCORSMiddleware(BaseHTTPMiddleware):
             headers = (
                 {
                     "Access-Control-Allow-Origin": allowed,
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type",
                     "Access-Control-Max-Age": "600",
                 }

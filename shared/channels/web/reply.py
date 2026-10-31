@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.ai import agent as agent_module
 from shared.ai import context as agent_context
 from shared.channels import ingest as ingest_module
+from shared.channels.web import sites as web_sites
 from shared.db.models import (
     Business,
     Channel,
@@ -46,6 +47,13 @@ logger = get_logger(__name__)
 # for the model to stay coherent, small enough to keep the prompt cheap.
 _MAX_TRANSCRIPT_TURNS = 20
 
+# The AI cannot answer and the visitor is still anonymous: a person can only reply once there is a number to
+# file the conversation under (shared/channels/web/sites.py).
+_NEEDS_PERSON_MESSAGE = (
+    "Someone from our team can help with this. Please share your name and phone number, and they will reply "
+    "right here."
+)
+
 _NEEDS_CONTACT_MESSAGE = (
     "I'd love to help you book that - could you share your phone number or "
     "email first so I can confirm it for you?"
@@ -60,6 +68,8 @@ class ReplyOutcome:
     # resolved identity yet - the widget's own UI should show a contact
     # form next, not treat this as a normal answered/escalated turn.
     needs_contact: bool
+    # A person is talking to this visitor, so the AI stayed quiet and the message went to them.
+    with_person: bool = False
 
 
 def _now() -> datetime:
@@ -160,6 +170,34 @@ async def _do_ingest(
     return result.message.id if result.message else None
 
 
+async def _hand_to_person(db: AsyncSession, *, business: Business, customer: Customer, reason: str) -> None:
+    """The AI first, a person when needed (shared/team/rules.py): this visitor now needs one."""
+    from shared.team import rules as team_rules
+
+    try:
+        async with db.begin_nested():
+            await team_rules.hand_to_person(db, business_id=business.id, customer_id=customer.id, reason=reason)
+    except Exception:
+        logger.exception("web hand to person failed business=%s customer=%s", business.id, customer.id)
+
+
+async def _tell_person(db: AsyncSession, *, business: Business, customer: Customer, text: str) -> None:
+    """A new website message in a conversation a person is handling - ping whoever has it (or hand it out)."""
+    from shared.team import conflict
+
+    if customer.assigned_to_user_id is None:
+        await _hand_to_person(db, business=business, customer=customer, reason="new website message")
+        return
+    try:
+        await conflict.notify(
+            db, business_id=business.id, user_id=customer.assigned_to_user_id,
+            title="Website chat", body=f"{customer.display_name or 'A visitor'}: {text[:120]}",
+            url=f"/app/inbox/{customer.id}", kind="new_chat",
+        )
+    except Exception:
+        logger.exception("web chat ping failed business=%s", business.id)
+
+
 async def generate_reply(
     db: AsyncSession, *, business: Business, session: WebSession, text: str,
 ) -> ReplyOutcome:
@@ -170,6 +208,10 @@ async def generate_reply(
     # actually reads - same ordering voice's _store_turn-then-build uses.
     if customer is not None:
         inbound_message_id = await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.inbound, text=text)
+        # A person has taken this conversation - they answer, not the AI, so the visitor never gets two replies.
+        if await web_sites.person_replied_recently(db, customer.id):
+            await _tell_person(db, business=business, customer=customer, text=text)
+            return ReplyOutcome(reply_text="", booked=False, needs_contact=False, with_person=True)
         context = await agent_context.build(business.id, customer.id, db)
     else:
         _append_transcript(session, role="user", text=text)
@@ -200,10 +242,14 @@ async def generate_reply(
         )
         if gap:
             await agent_module.record_gap(business.id, gap, db)
+        if customer is None:
+            _append_transcript(session, role="assistant", text=_NEEDS_PERSON_MESSAGE)
+            return ReplyOutcome(reply_text=_NEEDS_PERSON_MESSAGE, booked=False, needs_contact=True)
+        await _hand_to_person(db, business=business, customer=customer, reason=gap or "needs a person")
         reply = (
-            f"I don't have {gap} on hand right now, but I'll make sure someone follows up with you."
+            f"I don't have {gap} on hand right now - someone from our team will reply right here shortly."
             if gap
-            else "I don't have enough to answer that properly, but I'll make sure someone follows up with you."
+            else "Let me get someone from our team - they will reply right here shortly."
         )
         if customer is not None:
             await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=reply)

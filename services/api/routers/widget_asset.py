@@ -40,6 +40,32 @@ _WIDGET_JS = r"""
 
   var STORAGE_KEY = "krova_widget_session_" + siteKey;
   var CONSENT_KEY = "krova_widget_consent_" + siteKey;
+  var TEAM_KEY = "krova_widget_team_" + siteKey;
+  var AFTER_KEY = "krova_widget_after_" + siteKey;
+  var widgetBase = apiBase + "/api/v1/widget/" + encodeURIComponent(siteKey);
+
+  function getItem(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function setItem(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (e) { /* private browsing - fine to lose it */ }
+  }
+
+  // How the widget looks comes from the business's Website chat page. A 404 means it is switched off: show nothing.
+  fetch(widgetBase + "/config")
+    .then(function (res) { return res.ok ? res.json() : null; })
+    .then(function (look) { if (look) start(look); })
+    .catch(function () { /* the site keeps working without the chat */ });
+
+  function start(look) {
+  if (!document.body) {
+    document.addEventListener("DOMContentLoaded", function () { start(look); });
+    return;
+  }
+  if (document.getElementById("krova-widget-host")) return;  // already on this page
+  if (look.accent) accent = look.accent;
+  var title = look.title || "Chat with us";
+  var greeting = look.greeting || "Hi! How can I help you today?";
 
   function getSessionToken() {
     try { return window.localStorage.getItem(STORAGE_KEY); } catch (e) { return null; }
@@ -76,6 +102,10 @@ _WIDGET_JS = r"""
     ".msg{max-width:85%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;}",
     ".msg.user{align-self:flex-end;background:" + accent + ";color:#14151F;}",
     ".msg.bot{align-self:flex-start;background:rgba(255,255,255,.08);color:#f4f4f5;}",
+    ".msg.team{align-self:flex-start;background:rgba(255,255,255,.14);color:#f4f4f5;border-left:3px solid " + accent + ";}",
+    ".msg.team b{display:block;font-size:10px;opacity:.7;margin-bottom:2px;}",
+    ".dot{position:absolute;top:2px;right:2px;width:12px;height:12px;border-radius:50%;background:#ef4444;display:none;}",
+    ".dot.on{display:block;}",
     ".contact{padding:10px 12px;background:rgba(255,255,255,.04);border-top:1px solid rgba(255,255,255,.08);display:none;gap:6px;flex-direction:column;}",
     ".contact.open{display:flex;}",
     ".contact input{padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.15);",
@@ -104,7 +134,7 @@ _WIDGET_JS = r"""
   var panel = document.createElement("div");
   panel.className = "panel";
   panel.innerHTML =
-    '<div class="head">Chat with us</div>' +
+    '<div class="head"></div>' +
     '<div class="consentScreen">' +
       '<p>This chat is answered by an AI assistant using this business\'s own information. ' +
       'By continuing, you agree to share your messages (and, if you choose to book something, ' +
@@ -122,6 +152,10 @@ _WIDGET_JS = r"""
       '<button class="sendBtn">Send</button>' +
     '</div>';
   root.appendChild(panel);
+  panel.querySelector(".head").textContent = title;
+  var dot = document.createElement("span");
+  dot.className = "dot";
+  bubble.appendChild(dot);
 
   var consentScreenEl = panel.querySelector(".consentScreen");
   var consentBtn = panel.querySelector(".consentBtn");
@@ -153,29 +187,75 @@ _WIDGET_JS = r"""
   consentBtn.addEventListener("click", function () {
     setConsented();
     showChat();
-    addMessage("bot", "Hi! How can I help you today?");
+    addMessage("bot", greeting);
   });
 
   bubble.addEventListener("click", function () {
     isOpen = !isOpen;
     panel.classList.toggle("open", isOpen);
     if (!isOpen) return;
+    dot.classList.remove("on");
     if (!hasConsented()) {
       showConsentGate();
     } else if (messagesEl.children.length === 0) {
       showChat();
-      addMessage("bot", "Hi! How can I help you today?");
+      addMessage("bot", greeting);
     }
+    poll();
   });
 
   function addMessage(role, text) {
     if (!text) return;
     var div = document.createElement("div");
-    div.className = "msg " + (role === "user" ? "user" : "bot");
-    div.textContent = text;
+    div.className = "msg " + (role === "user" ? "user" : role === "team" ? "team" : "bot");
+    if (role === "team") {
+      var who = document.createElement("b");
+      who.textContent = "Team";
+      div.appendChild(who);
+      div.appendChild(document.createTextNode(text));
+    } else {
+      div.textContent = text;
+    }
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+
+  // A person's replies from the business's Inbox. Asked for only once the visitor has left a number (before
+  // that nobody can reply), every few seconds while the chat is open and now and then while it is closed.
+  var shownReplies = {};
+  var polling = false;
+  function poll() {
+    var token = getSessionToken();
+    if (polling || !token || getItem(TEAM_KEY) !== "1") return;
+    polling = true;
+    var url = widgetBase + "/updates?session_token=" + encodeURIComponent(token);
+    var after = getItem(AFTER_KEY);
+    if (after) url += "&after=" + encodeURIComponent(after);
+    fetch(url)
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || !data.replies) return;
+        data.replies.forEach(function (r) {
+          if (shownReplies[r.id]) return;
+          shownReplies[r.id] = true;
+          if (!hasConsented()) return;
+          if (messagesEl.children.length === 0) showChat();
+          addMessage("team", r.text);
+          setItem(AFTER_KEY, r.at);
+          if (!isOpen) dot.classList.add("on");
+        });
+      })
+      .catch(function () { /* try again on the next tick */ })
+      .finally(function () { polling = false; });
+  }
+  var ticks = 0;
+  setInterval(function () {
+    ticks += 1;
+    if (isOpen || ticks % 6 === 0) poll();
+  }, 5000);
+  poll();
+
+  var toldWithPerson = false;
 
   function setLoading(loading) {
     sendBtn.disabled = loading;
@@ -184,7 +264,7 @@ _WIDGET_JS = r"""
 
   function send(text, contact) {
     setLoading(true);
-    return fetch(apiBase + "/api/v1/widget/" + encodeURIComponent(siteKey) + "/message", {
+    return fetch(widgetBase + "/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -212,7 +292,15 @@ _WIDGET_JS = r"""
           showConsentGate();
           return data;
         }
+        if (data.team_can_reply) setItem(TEAM_KEY, "1");
         if (data.reply_text) addMessage("bot", data.reply_text);
+        if (data.with_person && !toldWithPerson) {
+          toldWithPerson = true;
+          var note = document.createElement("div");
+          note.className = "dim";
+          note.textContent = "Sent to our team - they will reply here.";
+          messagesEl.appendChild(note);
+        }
         if (data.needs_contact) {
           contactEl.classList.add("open");
         } else {
@@ -257,6 +345,7 @@ _WIDGET_JS = r"""
     if (lastUserMsg) send(lastUserMsg, pendingContact);
     pendingContact = null;
   });
+  }
 })();
 """
 

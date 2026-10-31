@@ -98,6 +98,7 @@ for _path, _what in [
     ("/messages/products", "products on WhatsApp"),
     ("/messages/catalog", "the catalogue on WhatsApp"),
     ("/messages/instagram/text", "an Instagram message"),
+    ("/messages/web/text", "a website chat message"),
 ]:
     _add("POST", _path, "message_sent", f"Sent {_what}", WORK)
 _add("POST", "/messages/instagram/carousel", "carousel_sent", "Sent an Instagram carousel", WORK)
@@ -124,6 +125,9 @@ _add("POST", "/routing/rules", "routing_changed", "Added a routing rule", CONFIG
 _add("PUT", "/routing/rules/{rule_id}", "routing_changed", "Changed a routing rule", CONFIG)
 _add("DELETE", "/routing/rules/{rule_id}", "routing_changed", "Removed a routing rule", CONFIG)
 _add("PUT", "/routing/rules-order", "routing_changed", "Reordered the routing rules", CONFIG)
+_add("POST", "/web-chat/sites", "web_chat_changed", "Added a website for the chat widget", CONFIG)
+_add("PUT", "/web-chat/sites/{site_id}", "web_chat_changed", "Changed the website chat", CONFIG)
+_add("DELETE", "/web-chat/sites/{site_id}", "web_chat_changed", "Removed a website from the chat widget", CONFIG)
 _add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
 _add("POST", "/conversations/{customer_id}/resolve", "conversation_resolved", "Marked a chat resolved (or opened it again)", WORK)
 _add("POST", "/conversations/{customer_id}/private", "conversation_privacy_changed", "Marked a chat private (or not)", SECURITY)

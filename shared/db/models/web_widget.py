@@ -49,6 +49,10 @@ class WebWidgetConfig(UUIDMixin, TimestampMixin, Base):
     # this exists for is a single indexed equality check, not a scan.
     allowed_domain: Mapped[str] = mapped_column(String(255), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # How the widget looks to visitors (Website chat page). None = the widget's own default.
+    title: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    greeting: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    accent: Mapped[str | None] = mapped_column(String(7), nullable=True)
 
     # A crude but real sliding-window rate limit, business-wide (across
     # every visitor session): a scripted attacker hitting this endpoint
