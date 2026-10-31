@@ -7,6 +7,7 @@ from shared.db.models.activity import ActivityLog
 from shared.db.models.invoice import Invoice, InvoiceCounter
 from shared.db.models.payments import Payment, Subscription, Wallet, WalletEntry
 from shared.db.models.presence import ConversationRead, ThreadPresence
+from shared.db.models.routing import RoutingRule, Team, TeamMember
 from shared.db.models.command_audit import CommandAudit
 from shared.db.models.canned_response import CannedResponse
 from shared.db.models.case import Case, CaseStatus
@@ -230,6 +231,9 @@ __all__ = [
     "WalletEntry",
     "ThreadPresence",
     "ConversationRead",
+    "RoutingRule",
+    "Team",
+    "TeamMember",
     "CommandAudit",
     "User",
     "VoiceProvisioning",

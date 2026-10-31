@@ -68,6 +68,7 @@ from services.api.routers import (
     scheduling,
     signals,
     team,
+    routing_rules,
     billing,
     team_activity,
     templates,
@@ -210,6 +211,7 @@ app.include_router(kiosk.router, prefix=API_PREFIX)
 app.include_router(trust.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)
+app.include_router(routing_rules.router, prefix=API_PREFIX)
 app.include_router(team_activity.router, prefix=API_PREFIX)
 app.include_router(gmail_channel.router, prefix=API_PREFIX)
 app.include_router(flows.router, prefix=API_PREFIX)

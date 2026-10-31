@@ -295,6 +295,10 @@ class Customer(UUIDMixin, TimestampMixin, Base):
     resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # The team a routing rule sent this customer's conversation to (shared/team/rules.py), or None.
+    team_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
+    )
 
     # A business's own funnel step ("New", "Qualified", "Won"), free text and
     # set by hand. Unlike everything in customer_tags this is never inferred -

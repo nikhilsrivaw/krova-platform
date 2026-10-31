@@ -182,14 +182,20 @@ async def ingest(
     if customer.last_contact_at is None or occurred_at > customer.last_contact_at:
         customer.last_contact_at = occurred_at
 
-    # Round-robin routing (a business opt-in): a chat nobody owns goes to the next
-    # available agent. Inside a savepoint so a routing problem can never lose the message.
-    if direction == Direction.inbound and customer.assigned_to_user_id is None:
+    # Routing, inside a savepoint so a routing problem can never lose the message: the business's own team rules
+    # first (shared/team/rules.py - "complaints to the Complaints team"), then, for a chat no rule took and nobody
+    # owns, business-wide round-robin if the business turned it on.
+    if direction == Direction.inbound:
         try:
-            from shared.team import routing
+            from shared.team import routing, rules as team_rules
 
             async with db.begin_nested():
-                await routing.route_new_chat(db, business_id=business_id, customer_id=customer.id)
+                taken = await team_rules.route(
+                    db, business_id=business_id, customer=customer, text=text,
+                    channel=channel.value if hasattr(channel, "value") else str(channel), connection_id=connection_id,
+                )
+                if not taken and customer.assigned_to_user_id is None:
+                    await routing.route_new_chat(db, business_id=business_id, customer_id=customer.id)
             await db.refresh(customer)
         except Exception:
             logger.exception("routing failed business=%s customer=%s", business_id, customer.id)

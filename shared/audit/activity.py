@@ -117,6 +117,13 @@ _add("POST", "/billing/topup", "wallet_topup_started", "Started adding money to 
 _add("POST", "/billing/cancel", "plan_cancelled", "Cancelled the plan", SECURITY)
 _add("POST", "/billing/resume", "plan_resumed", "Resumed the plan", SECURITY)
 _add("PUT", "/team/settings", "team_settings_changed", "Changed team settings", CONFIG)
+_add("POST", "/routing/teams", "routing_changed", "Made a team", CONFIG)
+_add("PUT", "/routing/teams/{team_id}", "routing_changed", "Changed a team", CONFIG)
+_add("DELETE", "/routing/teams/{team_id}", "routing_changed", "Removed a team", CONFIG)
+_add("POST", "/routing/rules", "routing_changed", "Added a routing rule", CONFIG)
+_add("PUT", "/routing/rules/{rule_id}", "routing_changed", "Changed a routing rule", CONFIG)
+_add("DELETE", "/routing/rules/{rule_id}", "routing_changed", "Removed a routing rule", CONFIG)
+_add("PUT", "/routing/rules-order", "routing_changed", "Reordered the routing rules", CONFIG)
 _add("POST", "/conversations/{customer_id}/take-over", "conversation_taken_over", "Took over a conversation", WORK)
 _add("POST", "/conversations/{customer_id}/resolve", "conversation_resolved", "Marked a chat resolved (or opened it again)", WORK)
 _add("POST", "/conversations/{customer_id}/private", "conversation_privacy_changed", "Marked a chat private (or not)", SECURITY)
@@ -282,7 +289,7 @@ NOT_ACTIVITY = {
     ("POST", API + "/post-call-rules/test"), ("POST", API + "/templates/sync"),
     ("POST", API + "/post-call-rules/ai-draft"), ("POST", API + "/help/ask"), ("POST", API + "/templates/draft"),
     ("POST", API + "/templates/carousel/draft"), ("POST", API + "/commands/understand"),
-    ("POST", API + "/owner/ask"), ("POST", API + "/voice-onboarding/preview-voice"),
+    ("POST", API + "/owner/ask"), ("POST", API + "/voice-onboarding/preview-voice"), ("POST", API + "/routing/test"),
     # Heartbeat of an open thread, every few seconds - not a decision anyone made.
     ("POST", API + "/conversations/{customer_id}/presence"), ("POST", API + "/conversations/{customer_id}/read"),
     # PayU calling us - no signed-in person behind these.

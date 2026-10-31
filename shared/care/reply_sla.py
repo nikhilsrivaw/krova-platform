@@ -3,8 +3,11 @@ Reply-time reminders: a customer's latest message has sat unanswered past the
 business's first-reply target (Business.settings["team"]["sla_minutes"]).
 
 Two steps, each sent once per waiting message:
-  1. at the target: the chat's owner is pinged (everyone, if nobody owns it);
+  1. at the target: the chat's owner is pinged (everyone, if nobody owns it), and the team lead too when the chat
+     belongs to a team (shared/team/rules.py);
   2. at twice the target: the owner and admins are pinged too.
+
+A chat in a team uses the team's own reply target when it has one, else the business's.
 
 A chat counts as waiting when its newest message is inbound on a text channel
 (WhatsApp / Instagram) and is under a day old - older than that the 24-hour
@@ -19,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.care import post_call_actions
-from shared.db.models import Business, BusinessMember, BusinessRole, Channel, Customer, Direction, Message
+from shared.db.models import Business, BusinessMember, BusinessRole, Channel, Customer, Direction, Message, Team
 from shared.integrations import web_push
 from shared.team import settings as team_settings
 from shared.utils.logging import get_logger
@@ -56,8 +59,9 @@ async def check_reply_times(db: AsyncSession) -> int:
     sent = 0
     businesses = (await db.execute(select(Business).where(Business.is_active == True))).scalars().all()  # noqa: E712
     for business in businesses:
-        target = team_settings.read(business)["sla_minutes"]
-        if not target:
+        business_target = team_settings.read(business)["sla_minutes"]
+        teams = {t.id: t for t in (await db.execute(select(Team).where(Team.business_id == business.id))).scalars().all()}
+        if not business_target and not any(t.reply_target_minutes for t in teams.values()):
             continue
         # The newest message of each recently-active chat.
         customers = (await db.execute(
@@ -73,6 +77,10 @@ async def check_reply_times(db: AsyncSession) -> int:
                 .order_by(Message.occurred_at.desc()).limit(1)
             )).scalars().first()
             if latest is None or latest.direction != Direction.inbound or latest.channel not in TEXT_CHANNELS:
+                continue
+            team = teams.get(customer.team_id) if customer.team_id else None
+            target = (team.reply_target_minutes if team and team.reply_target_minutes else None) or business_target
+            if not target:
                 continue
             inbound_at = latest.occurred_at if latest.occurred_at.tzinfo else latest.occurred_at.replace(tzinfo=timezone.utc)
             stage = stage_for(
@@ -99,7 +107,15 @@ async def check_reply_times(db: AsyncSession) -> int:
                         )
                     except Exception:
                         logger.exception("reply.overdue automations failed business=%s", business.id)
-                    if customer.assigned_to_user_id:
+                    if team is not None:
+                        payload["body"] += f" ({team.name} team)"
+                        people = {u for u in (customer.assigned_to_user_id, team.lead_user_id) if u}
+                        if people:
+                            await web_push.send_to_users(
+                                db, business_id=business.id, user_ids=list(people), payload=payload, kind="slow_reply")
+                        else:
+                            await web_push.send_to_business(db, business_id=business.id, payload=payload, kind="slow_reply")
+                    elif customer.assigned_to_user_id:
                         await web_push.send_to_users(
                             db, business_id=business.id, user_ids=[customer.assigned_to_user_id], payload=payload,
                             kind="slow_reply")
@@ -111,6 +127,8 @@ async def check_reply_times(db: AsyncSession) -> int:
                     ids = set(await _supervisors(db, business.id))
                     if customer.assigned_to_user_id:
                         ids.add(customer.assigned_to_user_id)
+                    if team is not None and team.lead_user_id:
+                        ids.add(team.lead_user_id)
                     await web_push.send_to_users(
                         db, business_id=business.id, user_ids=list(ids), payload=payload, kind="slow_reply")
                 sent += 1

@@ -65,6 +65,8 @@ class ConversationSummary(BaseModel):
     resolved: bool = False
     # Customer messages this person has not read yet (0 once anyone has replied).
     unread: int = 0
+    # The team a routing rule sent this chat to (Team page), or None.
+    team_id: str | None = None
 
 
 class ThreadMessage(BaseModel):
@@ -92,6 +94,7 @@ class Thread(BaseModel):
     wait_target_minutes: int | None = None
     resolved: bool = False
     resolved_at: str | None = None
+    team_id: str | None = None
 
 
 def _value(v) -> str:
@@ -279,6 +282,7 @@ async def list_conversations(
                 wait_target_minutes=target,
                 resolved=resolved,
                 unread=unread,
+                team_id=str(customer.team_id) if customer.team_id else None,
             )
         )
 
@@ -448,6 +452,7 @@ async def get_thread(
         wait_target_minutes=await _wait_target(db, current_user.business),
         resolved=resolved,
         resolved_at=customer.resolved_at.isoformat() if customer.resolved_at else None,
+        team_id=str(customer.team_id) if customer.team_id else None,
         messages=[
             ThreadMessage(
                 id=str(m.id),

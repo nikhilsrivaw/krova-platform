@@ -116,21 +116,26 @@ async def ingest_parsed(
         # apply_rules needs one (see its own docstring), and a lead with no
         # phone has nothing for a WhatsApp-follow-up or tag-the-customer
         # action to act on anyway.
-        # With round-robin on (Team page), a new lead gets its owner now - the person who should call them first -
-        # rather than only when the customer messages. A lead already somebody's stays theirs. Inside a savepoint so
-        # a routing problem can never lose the lead.
-        if resolution.customer.assigned_to_user_id is None:
-            try:
-                from shared.team import routing
+        # A new lead gets its owner now - the person who should call them first - rather than only when the
+        # customer messages: the business's team rules first (a lead source can name a team), then business-wide
+        # round-robin if it is on. A lead already somebody's stays theirs unless a rule says otherwise. Inside a
+        # savepoint so a routing problem can never lose the lead.
+        try:
+            from shared.team import routing, rules as team_rules
 
-                label = PLATFORM_LABELS.get(source, source)
-                async with db.begin_nested():
+            label = PLATFORM_LABELS.get(source, source)
+            async with db.begin_nested():
+                taken = await team_rules.route(
+                    db, business_id=business.id, customer=resolution.customer, text=parsed.query, channel=None,
+                    lead_source=source, what="lead",
+                )
+                if not taken and resolution.customer.assigned_to_user_id is None:
                     await routing.route_new_chat(
                         db, business_id=business.id, customer_id=resolution.customer.id, title="New lead for you",
                         body=f"{parsed.name or phone} - {label}" + (f": {parsed.query[:80]}" if parsed.query else ""),
                     )
-            except Exception:  # noqa: BLE001
-                logger.exception("lead routing failed business=%s", business.id)
+        except Exception:  # noqa: BLE001
+            logger.exception("lead routing failed business=%s", business.id)
         await post_call_actions.apply_rules(
             db, business_id=business.id, trigger_type="lead.received",
             customer_id=resolution.customer.id, channel=None,

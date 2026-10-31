@@ -18,6 +18,18 @@ Reset password, mark Away (gets no new round-robin chats), make owner, remove. A
 - Reply-time target: if a customer waits this long, the chat's owner is pinged; at double, admins too.
 - What agents can see: every chat, or only their own and unowned chats. This applies everywhere a customer shows up - Inbox, Customers, Ledger, Approvals, Escalations, Leads and payment links - not only the Inbox. Owners and admins always see every chat. Private chats are never shown to agents.
 
+## Teams and routing (complaints to one team, leads to another)
+Team page → Teams and routing (owner and admins).
+- Teams: make teams such as Complaints, Sales, Accounts or a branch. Pick the members (a person can be in several), an optional team lead, the team's own reply-time target (or use the business one), and how chats are shared inside it: Round-robin (straight to the next member who is not Away) or Team queue (it waits in the team, everyone in it is told, whoever replies first takes it).
+- Routing rules: "When a conversation ... send it to team ...". A rule can check words in the message (Hindi or English, comma separated), the language the customer writes in (English, Hinglish, Hindi/Marathi, Tamil, Telugu, Bengali, Gujarati, Kannada, Malayalam, Punjabi, Odia - for example English speakers to a team whose people write good English), the channel (WhatsApp, Instagram, calls, website chat), which of your numbers it came to, which lead source a lead came from (Justdial, IndiaMART, portals, forms), and a tag on the customer. Leave a box empty to not check it; a rule with nothing filled catches everything. Rules are checked top to bottom and the first match wins - use the arrows to reorder.
+- "Start with a complaints rule" fills a rule with common complaint words (complaint, shikayat, refund, kharab, not received...). Edit the words for your business.
+- "Move it even if someone already has the chat": for complaints, so a complaint from a customer who belongs to a sales person still reaches the Complaints team; that person is told.
+- Rules run on a new message in a chat nobody owns (or with that switch on, any chat), and on every new lead. A chat already in the rule's team is not moved again. If nobody in the team is available, the chat waits in the team and the team lead is told. A chat that matches no rule is handled as set above (round-robin or first reply).
+- Test a message: type a sample message to see which rule would catch it and which language it reads as. Nothing is sent or moved.
+- Language: Indian scripts are read exactly. English and Hinglish (Hindi typed in English letters) are told apart by common Hindi words, so a very short message such as "ok thanks" counts as English. On calls, the language heard on the call is used. The language is judged when the conversation is routed - a chat already in a team is not moved because the customer switched language.
+- Late replies: when a team chat passes the team's reply target, the person who has it and the team lead are pinged; at double, the owner and admins too.
+- In the phone app, the chat shows its team, and the Inbox has a "My team" filter for people in a team.
+
 ## What agents can also do (Team page, owner and admins set it)
 - See business money - off by default. When off, agents don't see what you are owed in total, overdue totals, deal values or call costs. Each customer's own amount due stays visible so they can collect it.
 - Take payments - on by default. Record a payment and send a payment link.

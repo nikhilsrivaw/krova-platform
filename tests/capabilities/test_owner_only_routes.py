@@ -84,6 +84,9 @@ LOCKED = {(m, _P + path) for m, path in [
     ("POST", "/email-leads/token"), ("POST", "/zoho/sync"), ("DELETE", "/zoho/connection"),
     # who is on the team (the finer owner-vs-admin rules are in shared/team/members.py)
     ("PUT", "/team/settings"), ("POST", "/team/transfer-ownership"),
+    ("POST", "/routing/teams"), ("PUT", "/routing/teams/{team_id}"), ("DELETE", "/routing/teams/{team_id}"),
+    ("POST", "/routing/rules"), ("PUT", "/routing/rules/{rule_id}"), ("DELETE", "/routing/rules/{rule_id}"),
+    ("PUT", "/routing/rules-order"),
     ("PUT", "/voice-onboarding/keypad-menu"), ("PATCH", "/team/members/{user_id}/phone"),
     # spends money (a TTS or AI call per tap) or links a channel to the business
     # how much the AI does on its own, which features are on, and the owner's money assistant
@@ -156,7 +159,7 @@ OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/leads/manual"),
     ("POST", "/templates/sync"),
     ("POST", "/queue/check-in"),
-    ("GET", "/conversations"), ("GET", "/ledger/commitments"), ("GET", "/team"),
+    ("GET", "/conversations"), ("GET", "/ledger/commitments"), ("GET", "/team"), ("GET", "/routing/teams"),
     ("GET", "/escalations"), ("GET", "/voice-onboarding/logs"),
     # working a shared inbox as a team
     ("POST", "/conversations/{customer_id}/take-over"), ("POST", "/conversations/{customer_id}/presence"),
