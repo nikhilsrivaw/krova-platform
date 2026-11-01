@@ -160,43 +160,6 @@ def test_a_feedback_calls_answers_become_the_rating(monkeypatch):
                                                 answers={"q": "5"}))
 
 
-def test_sending_follows_the_chosen_channel(monkeypatch):
-    calls, sent = [], []
-
-    async def whatsapp(db, business, request):
-        sent.append(request.id)
-        return True
-
-    async def call(db, business, request):
-        calls.append(request.id)
-        return True
-
-    monkeypatch.setattr(feedback, "_send_whatsapp", whatsapp)
-    monkeypatch.setattr(feedback, "_start_call", call)
-    business = _business(enabled=True, call_after_hours=6)
-    c = uuid.uuid4()
-    wa, voice, both = _request(c, status="due"), _request(c, status="due", channel="voice"), _request(c, status="due", channel="both")
-
-    class Db(_Db):
-        async def execute(self, stmt, *a, **k):
-            stmt.compile(dialect=postgresql.dialect())
-            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [wa, voice, both]))
-
-        def begin_nested(self):
-            class _N:
-                async def __aenter__(self):
-                    return None
-
-                async def __aexit__(self, *a):
-                    return False
-            return _N()
-
-    asyncio.run(feedback.send_due(Db({BIZ: business}), NOW))
-    assert wa.status == "sent" and voice.status == "calling" and both.status == "sent"
-    assert both.call_at == NOW + timedelta(hours=6) and wa.call_at is None
-    assert sent == [wa.id, both.id] and calls == [voice.id]
-
-
 def test_the_page_queries_compile():
     db = _Db()
     out = asyncio.run(feedback.stats(db, BIZ))

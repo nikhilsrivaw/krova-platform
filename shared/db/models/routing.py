@@ -150,9 +150,17 @@ class FeedbackRequest(UUIDMixin, TimestampMixin, Base):
     awaiting_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     review_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Rounds: how many times they have been asked so far, and when the next round (or giving up) is due.
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "auto" (KROVA saw it finish), "upload" / "paste" / "form" (added by hand), "api".
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="auto")
+    # When the thing itself happened - the trip, the visit - for a request added by hand.
+    happened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("business_id", "trigger", "ref", name="uq_feedback_request_ref"),
+        Index("idx_feedback_requests_next", "status", "next_at"),
         Index("idx_feedback_requests_due", "status", "send_at"),
         Index("idx_feedback_requests_business", "business_id", "created_at"),
         Index("idx_feedback_requests_customer", "customer_id"),

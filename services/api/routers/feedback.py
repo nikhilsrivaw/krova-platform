@@ -9,7 +9,7 @@ the team.
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -25,14 +25,24 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 
 
+class RoundIn(BaseModel):
+    channel: str
+    # Hours after the round before (ignored for the first).
+    wait_hours: int = Field(default=0, ge=0, le=168)
+
+
 class SettingsIn(BaseModel):
     enabled: bool
     triggers: list[str] = Field(default_factory=list, max_length=10)
     delay_minutes: int = Field(ge=0, le=7 * 24 * 60)
-    channel: str
-    call_after_hours: int = Field(ge=1, le=72)
+    channel: str = "whatsapp"
+    call_after_hours: int = Field(default=24, ge=1, le=72)
     cooldown_days: int = Field(ge=0, le=90)
     ask_review: bool = True
+    rounds: list[RoundIn] = Field(default_factory=list, max_length=feedback.MAX_ROUNDS)
+    ask_from: int = Field(default=9, ge=0, le=23)
+    ask_until: int = Field(default=20, ge=1, le=24)
+    review_link: str | None = Field(default=None, max_length=500)
 
 
 class SettingsOut(SettingsIn):
@@ -40,6 +50,8 @@ class SettingsOut(SettingsIn):
     # "approved" | "pending" | "rejected" | "missing" - the WhatsApp template's state at Meta.
     template_state: str
     template_reason: str | None
+    # The review link template sent after a happy feedback call.
+    review_template_state: str
     review_link_set: bool
     # False for a type that may not ask for reviews (healthcare).
     review_allowed: bool
@@ -48,6 +60,7 @@ class SettingsOut(SettingsIn):
 class StatsOut(BaseModel):
     days: int
     asked: int
+    waiting: int = 0
     answered: int
     average: float | None
     happy: int
@@ -69,6 +82,36 @@ class ResponseOut(BaseModel):
     answered_at: datetime | None
     created_at: datetime
     note: str | None
+    round: int = 0
+    source: str = "auto"
+    happened_at: datetime | None = None
+    next_at: datetime | None = None
+
+
+class AddIn(BaseModel):
+    """One customer, from the form."""
+    name: str | None = Field(default=None, max_length=120)
+    phone: str = Field(min_length=6, max_length=32)
+    about: str | None = Field(default=None, max_length=120)
+    date: str | None = Field(default=None, max_length=40)
+    time: str | None = Field(default=None, max_length=20)
+    ref: str | None = Field(default=None, max_length=60)
+
+
+class PasteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500_000)
+
+
+class SkippedRow(BaseModel):
+    row: int
+    reason: str
+
+
+class AddedOut(BaseModel):
+    added: int
+    skipped: list[SkippedRow]
+    # Feedback is switched off - they wait until it is switched on.
+    waiting_for_switch: bool
 
 
 class TemplateOut(BaseModel):
@@ -78,9 +121,11 @@ class TemplateOut(BaseModel):
 
 
 async def _settings_out(db, business: Business) -> SettingsOut:
-    state, reason = (await required_templates.statuses(db, business.id)).get(feedback.TEMPLATE, ("missing", None))
+    states = await required_templates.statuses(db, business.id)
+    state, reason = states.get(feedback.TEMPLATE, ("missing", None))
     return SettingsOut(
         **feedback.read(business), trigger_labels=feedback.TRIGGERS, template_state=state, template_reason=reason,
+        review_template_state=states.get("feedback_review_link", ("missing", None))[0],
         review_link_set=bool((business.settings or {}).get("google_review_url")),
         review_allowed=type_allows_reviews(business),
     )
@@ -95,11 +140,20 @@ async def get_settings(current_user: OwnerOrAdminDep, db: DbDep) -> SettingsOut:
 async def put_settings(body: SettingsIn, current_user: OwnerOrAdminDep, db: DbDep) -> SettingsOut:
     if body.channel not in feedback.CHANNELS:
         raise HTTPException(422, "Ask on WhatsApp, by call, or both.")
+    if any(r.channel not in feedback.ROUND_CHANNELS for r in body.rounds):
+        raise HTTPException(422, "Each round is WhatsApp or a call.")
+    if body.ask_until <= body.ask_from:
+        raise HTTPException(422, "The asking hours must end after they start.")
+    if body.review_link and not body.review_link.startswith(("https://", "http://")):
+        raise HTTPException(422, "The review link must start with https://")
     unknown = set(body.triggers) - set(feedback.TRIGGERS)
     if unknown:
         raise HTTPException(422, f"Unknown moment: {', '.join(sorted(unknown))}")
     business = await db.get(Business, current_user.business)
-    feedback.write(business, body.model_dump())
+    values = body.model_dump()
+    if not body.rounds:
+        values.pop("rounds")  # keep what is saved
+    feedback.write(business, values)
     await db.flush()
     return await _settings_out(db, business)
 
@@ -122,7 +176,7 @@ async def get_stats(current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(
 @router.get("/responses", response_model=list[ResponseOut])
 async def list_responses(
     current_user: OwnerOrAdminDep, db: DbDep,
-    show: str = Query(default="answered", pattern="^(answered|unhappy|happy|comments|all)$"),
+    show: str = Query(default="answered", pattern="^(answered|unhappy|happy|comments|waiting|all)$"),
     days: int = Query(default=30, ge=1, le=365), limit: int = Query(default=100, ge=1, le=300),
 ) -> list[ResponseOut]:
     since = datetime.now(timezone.utc) - timedelta(days=days)
@@ -138,6 +192,8 @@ async def list_responses(
         query = query.where(FeedbackRequest.rating >= 4)
     elif show == "comments":
         query = query.where(FeedbackRequest.comment.is_not(None))
+    elif show == "waiting":
+        query = query.where(FeedbackRequest.status.in_(("due", "sent", "calling")))
     rows = (await db.execute(
         query.order_by(FeedbackRequest.answered_at.desc().nullslast(), FeedbackRequest.created_at.desc()).limit(limit)
     )).all()
@@ -145,7 +201,47 @@ async def list_responses(
         ResponseOut(
             id=str(r.id), customer_id=str(r.customer_id), customer_name=name, trigger=r.trigger, about=r.about,
             channel=r.channel, status=r.status, rating=r.rating, comment=r.comment, answered_via=r.answered_via,
-            answered_at=r.answered_at, created_at=r.created_at, note=r.note,
+            answered_at=r.answered_at, created_at=r.created_at, note=r.note, round=r.round, source=r.source,
+            happened_at=r.happened_at, next_at=r.next_at,
         )
         for r, name in rows
     ]
+
+
+# ── customers added by hand: things that happened outside KROVA ──────────────
+
+async def _add(db, business_id, rows: list[dict], source: str) -> AddedOut:
+    business = await db.get(Business, business_id)
+    try:
+        report = await feedback.add_external(db, business, rows, source=source)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return AddedOut(added=report["added"], skipped=[SkippedRow(**s) for s in report["skipped"]],
+                    waiting_for_switch=not feedback.read(business)["enabled"])
+
+
+@router.post("/upload", response_model=AddedOut)
+async def upload_list(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile = File(...)) -> AddedOut:
+    """A list from a file: CSV or Excel (.xlsx) - columns name, phone, what, date (any order, common names)."""
+    content = await file.read()
+    try:
+        rows = feedback.parse_file(file.filename or "", content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return await _add(db, current_user.business, rows, "upload")
+
+
+@router.post("/paste", response_model=AddedOut)
+async def paste_list(body: PasteIn, current_user: OwnerOrAdminDep, db: DbDep) -> AddedOut:
+    """A list copied from Excel or Google Sheets (or typed): one customer per line."""
+    try:
+        rows = feedback.parse_text(body.text)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return await _add(db, current_user.business, rows, "paste")
+
+
+@router.post("/add", response_model=AddedOut)
+async def add_one(body: AddIn, current_user: OwnerOrAdminDep, db: DbDep) -> AddedOut:
+    """One customer from the form."""
+    return await _add(db, current_user.business, [body.model_dump()], "form")

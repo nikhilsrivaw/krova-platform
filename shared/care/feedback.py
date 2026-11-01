@@ -1,24 +1,35 @@
 """
-Feedback: asking customers how it went - after a visit, a walk-in token, a delivered order or a resolved chat - and
-keeping what they say.
+Feedback: asking customers how it went, and keeping what they say.
 
-The business chooses on the Feedback page: whether it is on, after what, how long after, and how - WhatsApp (an
-approved template with three buttons: Great / Okay / Not good), a short survey call, or WhatsApp first and a call if
-they have not answered in a few hours. One customer is asked at most once every `cooldown_days`.
+What gets asked about:
+  - things KROVA saw finish (the business ticks which): a visit or appointment, a walk-in token, a delivered order, a
+    resolved chat - from the last LOOKBACK days, `delay_minutes` after they finished;
+  - things that happened outside KROVA (a bus ticket sold on another app, a sale at the counter) that the business adds
+    itself - an uploaded file (CSV or Excel), a pasted list, a form, or the API. Each row says who (name, phone), what
+    ("Delhi to Jaipur trip") and when; it is asked about `delay_minutes` after that time.
 
-WhatsApp: the buttons carry "fb:<request id>:<5|3|1>" (notify._send's button payloads), so a tap is matched to exactly
-the right request. After "Okay" or "Not good" they are asked what went wrong and their next message is the comment.
+How - rounds: the business lists up to MAX_ROUNDS attempts, each WhatsApp or a call, each a number of hours after the
+one before ("WhatsApp right away; if no answer, call after 24 hours; if still nothing, call again after 48"). They stop
+the moment the customer answers. Nobody is asked outside the business's own asking hours (9 AM to 8 PM by default),
+and one customer at most once every `cooldown_days`.
+
+WhatsApp: an approved template naming the visit or trip, with three buttons (Great / Okay / Not good) whose payloads
+"fb:<request id>:<5|3|1>" match a tap to its request; after Okay or Not good they are asked what went wrong and their
+next message is the comment. Filed UTILITY because it names the specific visit or order (Meta's rule; a generic
+survey is MARKETING) - no offer may ever be added to it.
 Call: a survey CallScript run through the business's automatic "Feedback calls" campaign; the call's answers
 (call_script_extract, relay.py) come back through record_call().
 
-Afterwards: a rating of 1 or 2 goes to Talk to team ("unhappy customer") so whoever is free calls them; 4 or 5 is sent
-the Google review link when the business set one and its type allows asking for reviews. The template is filed as
-UTILITY because it names the specific visit or order - Meta's rule for feedback (a generic survey is MARKETING).
+Afterwards: a rating of 1 or 2 goes to Talk to team ("unhappy customer") so whoever is free calls them. 4 or 5 gets the
+review link (the business's own link, or its Google review link) when its type may ask for reviews - straight away on
+WhatsApp after a tap, or as the feedback_review_link template after a call.
 """
 
+import csv
+import hashlib
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, select
@@ -37,14 +48,22 @@ TRIGGERS = {
     "order": "After an order is delivered",
     "chat": "After a chat is marked resolved",
 }
+# Requests added by hand or by the API - always asked about, whatever is ticked above.
+EXTERNAL = "external"
 CHANNELS = ("whatsapp", "voice", "both")
+ROUND_CHANNELS = ("whatsapp", "voice")
+MAX_ROUNDS = 5
 BUTTONS = ((5, "Great"), (3, "Okay"), (1, "Not good"))
 DEFAULTS = {
     "enabled": False, "triggers": ["visit", "token", "order"], "delay_minutes": 120, "channel": "whatsapp",
-    "call_after_hours": 24, "cooldown_days": 7, "ask_review": True,
+    "call_after_hours": 24, "cooldown_days": 7, "ask_review": True, "rounds": None, "ask_from": 9, "ask_until": 20,
+    "review_link": None,
 }
-# Older than this, a visit or order is not worth asking about any more.
+# Older than this, a visit or order KROVA saw is not worth asking about; one added by hand may be a little older.
 LOOKBACK = timedelta(days=3)
+MANUAL_LOOKBACK = timedelta(days=30)
+# After the last round: how long to wait for an answer before calling it "no reply".
+LAST_WAIT = {"whatsapp": timedelta(hours=48), "voice": timedelta(hours=3)}
 # A tap on an old message still counts; typing a comment must come soon after.
 COMMENT_FOR = timedelta(hours=24)
 CALL_QUESTIONS = [
@@ -52,9 +71,36 @@ CALL_QUESTIONS = [
     "Is there anything we could do better?",
 ]
 SCRIPT_NAME = "Feedback (automatic)"
+MAX_ROWS = 2000
+MAX_FILE_BYTES = 2 * 1024 * 1024
 
 
 # ── settings ────────────────────────────────────────────────────────────────
+
+def _rounds_from(raw: dict) -> list[dict]:
+    """The rounds as saved, cleaned - or, for settings saved before rounds existed, made from the old channel choice."""
+    rounds = raw.get("rounds")
+    out: list[dict] = []
+    if isinstance(rounds, list):
+        for i, r in enumerate(rounds[:MAX_ROUNDS]):
+            if not isinstance(r, dict) or r.get("channel") not in ROUND_CHANNELS:
+                continue
+            wait = r.get("wait_hours")
+            wait = wait if isinstance(wait, int) and 1 <= wait <= 168 else 24
+            out.append({"channel": r["channel"], "wait_hours": 0 if not out else wait})
+    if out:
+        return out
+    channel = raw.get("channel") if raw.get("channel") in CHANNELS else "whatsapp"
+    after = raw.get("call_after_hours") if isinstance(raw.get("call_after_hours"), int) else 24
+    if channel == "both":
+        return [{"channel": "whatsapp", "wait_hours": 0}, {"channel": "voice", "wait_hours": max(1, min(168, after))}]
+    return [{"channel": channel, "wait_hours": 0}]
+
+
+def _summary(rounds: list[dict]) -> str:
+    kinds = {r["channel"] for r in rounds}
+    return "both" if len(kinds) > 1 else rounds[0]["channel"]
+
 
 def read(business) -> dict:
     raw = ((getattr(business, "settings", None) or {}).get("feedback") or {})
@@ -64,19 +110,33 @@ def read(business) -> dict:
         return value if isinstance(value, int) and low <= value <= high else DEFAULTS[key]
 
     triggers = raw.get("triggers")
+    rounds = _rounds_from(raw)
+    ask_from, ask_until = num("ask_from", 0, 23), num("ask_until", 1, 24)
+    if ask_until <= ask_from:
+        ask_from, ask_until = DEFAULTS["ask_from"], DEFAULTS["ask_until"]
+    link = raw.get("review_link")
     return {
         "enabled": bool(raw.get("enabled", DEFAULTS["enabled"])),
         "triggers": [t for t in TRIGGERS if t in triggers] if isinstance(triggers, list) else list(DEFAULTS["triggers"]),
         "delay_minutes": num("delay_minutes", 0, 7 * 24 * 60),
-        "channel": raw.get("channel") if raw.get("channel") in CHANNELS else DEFAULTS["channel"],
+        "channel": _summary(rounds),
         "call_after_hours": num("call_after_hours", 1, 72),
         "cooldown_days": num("cooldown_days", 0, 90),
         "ask_review": bool(raw.get("ask_review", DEFAULTS["ask_review"])),
+        "rounds": rounds,
+        "ask_from": ask_from,
+        "ask_until": ask_until,
+        "review_link": link if isinstance(link, str) and link.startswith(("https://", "http://")) else None,
     }
 
 
 def write(business, values: dict) -> dict:
-    merged = {**read(business), **{k: v for k, v in values.items() if k in DEFAULTS}}
+    current = ((business.settings or {}).get("feedback") or {})
+    merged = {**current, **{k: v for k, v in values.items() if k in DEFAULTS}}
+    if "rounds" in values:
+        merged["rounds"] = _rounds_from({"rounds": values.get("rounds")})
+    if isinstance(merged.get("review_link"), str):
+        merged["review_link"] = merged["review_link"].strip()[:500] or None
     settings = dict(business.settings or {})
     settings["feedback"] = merged
     business.settings = settings
@@ -84,18 +144,28 @@ def write(business, values: dict) -> dict:
 
 
 def review_url(business) -> str | None:
-    """The Google review link - only when set and the business type allows asking for reviews."""
+    """The business's own review link (any site), else its Google review link - when its type may ask for reviews."""
     from shared.scheduling.recall import type_allows_reviews
 
-    url = (business.settings or {}).get("google_review_url")
+    url = read(business)["review_link"] or (business.settings or {}).get("google_review_url")
     return url if url and type_allows_reviews(business) else None
+
+
+def _tz(business) -> ZoneInfo:
+    return ZoneInfo(getattr(business, "timezone", None) or "Asia/Kolkata")
+
+
+def asking_hours(business, now: datetime) -> bool:
+    """Inside the business's own asking hours (its time zone)."""
+    s = read(business)
+    hour = now.astimezone(_tz(business)).hour
+    return s["ask_from"] <= hour < s["ask_until"]
 
 
 # ── finding who to ask ──────────────────────────────────────────────────────
 
 def _day(business, at: datetime) -> str:
-    tz = ZoneInfo(getattr(business, "timezone", None) or "Asia/Kolkata")
-    return at.astimezone(tz).strftime("%d %b").lstrip("0")
+    return at.astimezone(_tz(business)).strftime("%d %b").lstrip("0")
 
 
 async def _candidates(db: AsyncSession, business: Business, trigger: str, now: datetime, delay: timedelta) -> list[tuple]:
@@ -144,7 +214,7 @@ async def _recently_asked(db: AsyncSession, customer_id: uuid.UUID, since: datet
 
 
 async def plan_requests(db: AsyncSession, business: Business, now: datetime | None = None) -> int:
-    """File a request for everything that finished and was not asked about yet. Returns how many."""
+    """File a request for everything KROVA saw finish that was not asked about yet. Returns how many."""
     now = now or datetime.now(timezone.utc)
     s = read(business)
     if not s["enabled"]:
@@ -152,7 +222,7 @@ async def plan_requests(db: AsyncSession, business: Business, now: datetime | No
     delay = timedelta(minutes=s["delay_minutes"])
     made = 0
     for trigger in s["triggers"]:
-        for customer_id, ref, about, _at in await _candidates(db, business, trigger, now, delay):
+        for customer_id, ref, about, at in await _candidates(db, business, trigger, now, delay):
             customer = await db.get(Customer, customer_id)
             if customer is None or customer.is_private:
                 continue
@@ -162,13 +232,197 @@ async def plan_requests(db: AsyncSession, business: Business, now: datetime | No
                 async with db.begin_nested():
                     db.add(FeedbackRequest(
                         business_id=business.id, customer_id=customer_id, trigger=trigger, ref=ref[:64],
-                        about=about[:200], channel=s["channel"], status="due", send_at=now,
+                        about=about[:200], channel=s["channel"], status="due", send_at=now, next_at=now,
+                        source="auto", happened_at=at,
                     ))
                     await db.flush()
                 made += 1
             except IntegrityError:
                 pass  # asked about this one already
     return made
+
+
+# ── things that happened outside KROVA: a file, a pasted list, a form, the API ─
+
+_COLUMNS = {
+    "name": ("name", "customer", "customer name", "passenger", "passenger name", "full name", "naam", "client", "guest"),
+    "phone": ("phone", "mobile", "mobile number", "phone number", "mobile no", "phone no", "contact", "contact number",
+              "whatsapp", "whatsapp number", "number", "mob", "cell"),
+    "about": ("about", "service", "trip", "route", "journey", "product", "order", "item", "visit", "what", "details",
+              "description", "booking", "package", "course", "treatment"),
+    "date": ("date", "travel date", "journey date", "visit date", "service date", "date of travel", "delivered on",
+             "completed on", "when", "datetime", "date time", "booking date", "check out", "checkout"),
+    "time": ("time", "departure time", "arrival time", "visit time", "slot"),
+    "ref": ("ref", "reference", "booking id", "pnr", "ticket", "ticket no", "ticket number", "order id", "invoice",
+            "invoice no", "id"),
+}
+
+
+def _header_key(header: str) -> str | None:
+    text = " ".join(re.sub(r"[^a-z0-9 ]", " ", (header or "").lower()).split())
+    for key, names in _COLUMNS.items():
+        if text in names:
+            return key
+    for key, names in _COLUMNS.items():  # "Passenger Mobile", "Travel Date (dd/mm)"
+        if any(name in text for name in names if len(name) > 3):
+            return key
+    return None
+
+
+def _looks_like_phone(value: str) -> bool:
+    return len(re.sub(r"\D", "", value or "")) >= 10
+
+
+def _rows_from_table(headers: list[str], records: list[list]) -> list[dict]:
+    """Map a table's columns to name / phone / about / date / time / ref. A table with no header row is read as
+    name, phone, what, date - the order the page shows."""
+    keys = [_header_key(h) for h in headers]
+    if "phone" not in keys:
+        if any(_looks_like_phone(str(h)) for h in headers):  # no header row - the first line is data
+            records = [headers, *records]
+            keys = ["name", "phone", "about", "date", "time", "ref"][: len(headers)]
+        else:
+            raise ValueError("No phone number column. Name one column Phone (or Mobile), or paste without a header "
+                             "in this order: name, phone, what, date.")
+    out = []
+    for values in records:
+        row: dict = {}
+        for key, value in zip(keys, values):
+            if key and key not in row and value not in (None, ""):
+                row[key] = value
+        if any(v not in (None, "") for v in values):
+            out.append(row)
+    return out
+
+
+def _decode(content: bytes) -> str:
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Could not read this file as text.")
+
+
+def _split_text(text: str) -> list[list[str]]:
+    """A pasted list or CSV text: tab (copied from Excel or Google Sheets), comma or semicolon - whichever it uses."""
+    lines = [line for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
+    if not lines:
+        return []
+    sample = "\n".join(lines[:5])
+    delimiter = "\t" if "\t" in sample else max((",", ";", "|"), key=sample.count)
+    return [[cell.strip() for cell in row] for row in csv.reader(lines, delimiter=delimiter)]
+
+
+def parse_file(filename: str, content: bytes) -> list[dict]:
+    """CSV, Excel (.xlsx) or a text list. Raises ValueError with a message for the owner."""
+    name = (filename or "").lower()
+    if len(content) > MAX_FILE_BYTES:
+        raise ValueError("The file is over 2 MB. Split it into smaller files.")
+    if name.endswith(".xls"):
+        raise ValueError("Old Excel files (.xls) can't be read. Open it and save it as .xlsx or CSV.")
+    if name.endswith(".xlsx"):
+        from shared.integrations.receivables import _read_xlsx
+
+        headers, records = _read_xlsx(content)
+        return _rows_from_table(headers, [[r.get(h) for h in headers] for r in records])
+    table = _split_text(_decode(content))
+    if not table:
+        raise ValueError("The file is empty.")
+    return _rows_from_table(table[0], table[1:])
+
+
+def parse_text(text: str) -> list[dict]:
+    table = _split_text(text or "")
+    if not table:
+        raise ValueError("Paste at least one line: name, phone, what, date.")
+    return _rows_from_table(table[0], table[1:])
+
+
+def _when(business, date_value, time_value=None) -> datetime | None:
+    """A date (and time) as people write it - 02/11/2026, 2 Nov 2026, 2026-11-02 18:30, or an Excel date cell."""
+    from dateutil import parser as dateparser
+
+    tz = _tz(business)
+    if isinstance(date_value, datetime):
+        at = date_value
+    elif hasattr(date_value, "year") and hasattr(date_value, "month"):
+        at = datetime.combine(date_value, time(12, 0))
+    else:
+        text = str(date_value or "").strip()
+        if not text:
+            return None
+        try:
+            at = dateparser.parse(text, dayfirst=not re.match(r"^\d{4}-", text))
+        except (ValueError, OverflowError):
+            return None
+    if time_value not in (None, ""):
+        try:
+            clock = time_value if isinstance(time_value, time) else dateparser.parse(str(time_value)).time()
+            at = datetime.combine(at.date(), clock)
+        except (ValueError, OverflowError):
+            pass
+    return at if at.tzinfo else at.replace(tzinfo=tz)
+
+
+async def add_external(db: AsyncSession, business: Business, rows: list[dict], *, source: str,
+                       now: datetime | None = None) -> dict:
+    """
+    Ask these customers about something that happened outside KROVA. Each row: name, phone, about (what), date (when
+    it happened, optional - now if missing), time and ref (optional). Returns {added, skipped: [{row, reason}]}.
+    """
+    from shared.db.models import IdentityKind
+    from shared.identity import resolver
+    from shared.identity.normalise import InvalidIdentifier, normalise_phone
+
+    now = now or datetime.now(timezone.utc)
+    s = read(business)
+    if len(rows) > MAX_ROWS:
+        raise ValueError(f"Up to {MAX_ROWS} customers at a time.")
+    delay = timedelta(minutes=s["delay_minutes"])
+    added, skipped = 0, []
+    for number, row in enumerate(rows, start=1):
+        try:
+            phone = normalise_phone(str(row.get("phone") or ""))
+        except InvalidIdentifier:
+            skipped.append({"row": number, "reason": f"Phone number not readable: {row.get('phone') or '(empty)'}"})
+            continue
+        happened = _when(business, row.get("date"), row.get("time")) if row.get("date") not in (None, "") else None
+        if row.get("date") not in (None, "") and happened is None:
+            skipped.append({"row": number, "reason": f"Date not readable: {row.get('date')}"})
+            continue
+        happened = happened or now
+        if happened < now - MANUAL_LOOKBACK:
+            skipped.append({"row": number, "reason": "Happened more than 30 days ago"})
+            continue
+        what = " ".join(str(row.get("about") or "").split())[:120] or "visit"
+        # Meta treats feedback as a utility message only when it names the specific visit or trip - so it carries a date.
+        about = what if re.search(r"\d", what) else f"{what} on {_day(business, happened)}"
+        name = " ".join(str(row.get("name") or "").split())[:120] or None
+        resolution = await resolver.resolve(business.id, IdentityKind.phone, phone, db, display_name=name)
+        customer = resolution.customer
+        if customer.is_private:
+            skipped.append({"row": number, "reason": "This customer is marked private"})
+            continue
+        if s["cooldown_days"] and await _recently_asked(db, customer.id, now - timedelta(days=s["cooldown_days"])):
+            skipped.append({"row": number, "reason": f"Already asked in the last {s['cooldown_days']} days"})
+            continue
+        key = str(row.get("ref") or "").strip() or (
+            f"{phone}:{happened:%Y%m%d%H%M}:{hashlib.sha1(what.lower().encode()).hexdigest()[:10]}")
+        due = max(now, happened + delay)
+        try:
+            async with db.begin_nested():
+                db.add(FeedbackRequest(
+                    business_id=business.id, customer_id=customer.id, trigger=EXTERNAL, ref=f"ext:{key}"[:64],
+                    about=about[:200], channel=s["channel"], status="due", send_at=due, next_at=due,
+                    source=source, happened_at=happened,
+                ))
+                await db.flush()
+            added += 1
+        except IntegrityError:
+            skipped.append({"row": number, "reason": "Already added"})
+    logger.info("feedback list business=%s source=%s added=%s skipped=%s", business.id, source, added, len(skipped))
+    return {"added": added, "skipped": skipped}
 
 
 # ── asking ──────────────────────────────────────────────────────────────────
@@ -227,51 +481,64 @@ async def _start_call(db: AsyncSession, business: Business, request: FeedbackReq
     return True
 
 
+async def _next_round(db: AsyncSession, business: Business, request: FeedbackRequest, now: datetime) -> None:
+    """Ask once more - the next round on the business's list - or, after the last, call it 'no reply'."""
+    rounds = read(business)["rounds"]
+    if request.round >= len(rounds):
+        request.status, request.next_at = "no_reply", None
+        return
+    step = rounds[request.round]
+    request.round += 1
+    if step["channel"] == "voice":
+        done = await _start_call(db, business, request)
+        status = "calling"
+    else:
+        done = await _send_whatsapp(db, business, request)
+        status = "sent"
+        if not done:
+            request.note = "The feedback template is not approved yet, or WhatsApp is not connected"
+    if done:
+        request.status = status
+        request.sent_at = request.sent_at or now
+    if request.round < len(rounds):
+        # the next round after its gap - or straight away when this one could not go out
+        request.next_at = now + timedelta(hours=rounds[request.round]["wait_hours"]) if done else now
+    elif done:
+        request.next_at = now + LAST_WAIT[step["channel"]]  # time to answer the last ask
+    else:
+        request.status = "no_reply" if request.sent_at else "skipped"
+        request.next_at = None
+
+
 async def send_due(db: AsyncSession, now: datetime | None = None) -> int:
-    """Send what is due: WhatsApp, a call, or the follow-up call for "both" when WhatsApp got no answer."""
+    """Every round that is due: the first ask, an ask again after no answer, or giving up after the last."""
     now = now or datetime.now(timezone.utc)
     rows = (await db.execute(select(FeedbackRequest).where(
-        (FeedbackRequest.status == "due") & (FeedbackRequest.send_at <= now)
-        | (FeedbackRequest.status == "sent") & FeedbackRequest.call_at.is_not(None) & (FeedbackRequest.call_at <= now)
-    ).limit(200))).scalars().all()
+        FeedbackRequest.status.in_(("due", "sent", "calling")), FeedbackRequest.rating.is_(None),
+        FeedbackRequest.next_at.is_not(None), FeedbackRequest.next_at <= now,
+    ).order_by(FeedbackRequest.next_at).limit(200))).scalars().all()
     done = 0
+    businesses: dict = {}
     for request in rows:
-        business = await db.get(Business, request.business_id)
+        business = businesses.get(request.business_id) or await db.get(Business, request.business_id)
+        businesses[request.business_id] = business
         if business is None or not read(business)["enabled"]:
-            request.status, request.note = "skipped", "Feedback is switched off"
-            continue
+            continue  # waits until feedback is switched on again
+        last_round_over = request.round >= len(read(business)["rounds"])
+        if not last_round_over and not asking_hours(business, now):
+            continue  # closing as "no reply" sends nothing, so it is not held to the asking hours
         try:
             async with db.begin_nested():
-                if request.status == "sent":  # "both": no answer on WhatsApp - call now
-                    request.call_at = None
-                    if await _start_call(db, business, request):
-                        request.status = "calling"
-                    else:
-                        request.status = "no_reply"
-                elif request.channel == "voice":
-                    request.status = "calling" if await _start_call(db, business, request) else "skipped"
-                else:
-                    sent = await _send_whatsapp(db, business, request)
-                    if sent:
-                        request.status, request.sent_at = "sent", now
-                        if request.channel == "both":
-                            request.call_at = now + timedelta(hours=read(business)["call_after_hours"])
-                    elif request.channel == "both" and await _start_call(db, business, request):
-                        request.status = "calling"
-                    else:
-                        request.status = "skipped"
-                        request.note = request.note or "The feedback template is not approved yet, or WhatsApp is not connected"
-                if request.status == "calling":
-                    request.sent_at = request.sent_at or now
+                await _next_round(db, business, request, now)
             done += 1
         except Exception:
-            logger.exception("feedback send failed request=%s", request.id)
+            logger.exception("feedback round failed request=%s", request.id)
     await db.flush()
     return done
 
 
 async def sweep(db: AsyncSession) -> int:
-    """Every few minutes: file new requests for businesses that switched feedback on, then send what is due."""
+    """Every few minutes: file new requests for businesses that switched feedback on, then run the rounds due."""
     businesses = (await db.execute(select(Business).where(Business.is_active == True))).scalars().all()  # noqa: E712
     for business in businesses:
         if read(business)["enabled"]:
@@ -328,9 +595,14 @@ async def _after_rating(db: AsyncSession, business: Business, request: FeedbackR
 
 def _thanks(rating: int, link: str | None) -> str:
     if rating >= 4:
-        return (f"Thank you! We're glad it went well. If you have a minute, a Google review helps us a lot: {link}"
+        return (f"Thank you! We're glad it went well. If you have a minute, a review helps us a lot: {link}"
                 if link else "Thank you! We're glad it went well.")
     return "Sorry it wasn't better. What went wrong? Just type it here - it goes straight to our team."
+
+
+def _answered(request: FeedbackRequest, rating: int | None, via: str, now: datetime) -> None:
+    request.rating, request.answered_via, request.answered_at = rating, via, now
+    request.status, request.next_at = "answered", None
 
 
 async def handle_reply(db: AsyncSession, *, business: Business, customer: Customer, text: str | None,
@@ -352,8 +624,7 @@ async def handle_reply(db: AsyncSession, *, business: Business, customer: Custom
             return None
         if request.rating is not None:
             return "Thanks - we already have your feedback for this one."
-        request.rating, request.answered_via, request.answered_at, request.status = rating, "whatsapp", now, "answered"
-        request.call_at = None
+        _answered(request, rating, "whatsapp", now)
         request.awaiting_comment = rating <= 3
         link = review_url(business) if rating >= 4 and read(business)["ask_review"] else None
         request.review_sent = bool(link)
@@ -387,13 +658,23 @@ async def record_call(db: AsyncSession, *, script_id: uuid.UUID, customer_id: uu
     if request is None:
         return False
     values = [str(v) for v in (answers or {}).values() if v]
-    request.rating = rating_from(values[0]) if values else None
-    request.comment = (values[1] if len(values) > 1 else None) or request.comment
-    request.answered_via, request.answered_at = "voice", datetime.now(timezone.utc)
-    request.status = "answered" if request.rating is not None or request.comment else "no_reply"
+    rating = rating_from(values[0]) if values else None
+    comment = (values[1] if len(values) > 1 else None) or request.comment
+    if rating is None and not comment:
+        return True  # picked up but did not answer - the next round (if any) still runs
+    _answered(request, rating, "voice", datetime.now(timezone.utc))
+    request.comment = comment
     business = await db.get(Business, request.business_id)
     if business is not None:
         await _after_rating(db, business, request)
+        link = review_url(business) if (rating or 0) >= 4 and read(business)["ask_review"] else None
+        customer = await db.get(Customer, customer_id) if link else None
+        if link and customer is not None:
+            from shared.scheduling import notify
+
+            request.review_sent = await notify.send_feedback_review_link(
+                db, business=business, customer=customer, about=request.about, review_url=link,
+            )
     await db.flush()
     return True
 
@@ -405,13 +686,15 @@ async def stats(db: AsyncSession, business_id: uuid.UUID, days: int = 30) -> dic
     base = and_(FeedbackRequest.business_id == business_id, FeedbackRequest.created_at >= since)
     asked = (await db.execute(select(func.count(FeedbackRequest.id)).where(
         base, FeedbackRequest.status.in_(("sent", "calling", "answered", "no_reply"))))).scalar() or 0
+    waiting = (await db.execute(select(func.count(FeedbackRequest.id)).where(
+        base, FeedbackRequest.status.in_(("due", "sent", "calling"))))).scalar() or 0
     rows = (await db.execute(select(FeedbackRequest.rating, func.count(FeedbackRequest.id)).where(
         base, FeedbackRequest.rating.is_not(None)).group_by(FeedbackRequest.rating))).all()
     spread = {r: int(n) for r, n in rows}
     answered = sum(spread.values())
     average = round(sum(r * n for r, n in spread.items()) / answered, 2) if answered else None
     return {
-        "days": days, "asked": int(asked), "answered": answered, "average": average,
+        "days": days, "asked": int(asked), "answered": answered, "average": average, "waiting": int(waiting),
         "happy": sum(n for r, n in spread.items() if r >= 4), "unhappy": sum(n for r, n in spread.items() if r <= 2),
         "spread": {str(r): spread.get(r, 0) for r in range(1, 6)},
     }

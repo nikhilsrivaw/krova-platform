@@ -296,3 +296,37 @@ async def place_voice_call(body: VoiceCallIn, business: ApiKeyBusinessDep, db: D
         business.id, resolution.customer.id, placed,
     )
     return VoiceCallOut(placed=placed, customer_id=str(resolution.customer.id))
+
+
+# ── Feedback: customers to ask about something that happened outside KROVA ──
+
+class FeedbackCustomerIn(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    phone: str = Field(min_length=6, max_length=32)
+    # What to ask about, e.g. "Delhi to Jaipur trip" - KROVA adds the date when it has none.
+    about: str | None = Field(default=None, max_length=120)
+    # When it happened ("2026-11-02 18:30", "02/11/2026"); now when left out.
+    date: str | None = Field(default=None, max_length=40)
+    # Your own id for it (booking id, PNR) - the same id twice is asked about once.
+    ref: str | None = Field(default=None, max_length=60)
+
+
+class FeedbackIn(BaseModel):
+    customers: list[FeedbackCustomerIn] = Field(min_length=1, max_length=2000)
+
+
+class FeedbackOut(BaseModel):
+    added: int
+    skipped: list[dict]
+
+
+@router.post("/feedback", response_model=FeedbackOut, status_code=status.HTTP_201_CREATED)
+async def add_feedback_customers(body: FeedbackIn, business: ApiKeyBusinessDep, db: DbDep) -> FeedbackOut:
+    """Ask these customers for feedback, on the business's own Feedback rules (shared/care/feedback.py)."""
+    from shared.care import feedback
+
+    try:
+        report = await feedback.add_external(db, business, [c.model_dump() for c in body.customers], source="api")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return FeedbackOut(added=report["added"], skipped=report["skipped"])

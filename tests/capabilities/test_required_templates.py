@@ -49,7 +49,8 @@ def test_every_one_click_template_builds_valid_meta_components(t):
 
 def test_only_real_promotions_are_filed_as_marketing():
     marketing = {t.name for t in rt.CATALOGUE if t.category == "MARKETING"}
-    assert marketing == {"abandoned_cart_recovery", "repeat_purchase_nudge", "onboarding_nudge", "expansion_nudge"}
+    assert marketing == {"abandoned_cart_recovery", "repeat_purchase_nudge", "onboarding_nudge", "expansion_nudge",
+                         "feedback_review_link"}
 
 
 def test_names_are_unique_and_are_ones_the_senders_really_look_for():
@@ -114,6 +115,7 @@ def test_every_template_has_the_variable_count_its_sender_passes(monkeypatch):
         await notify.send_payment_failed_reminder(None, business=biz, customer=cust, invoice_url="https://x/pay")
         await notify.send_post_call_followup(None, business=biz, customer=cust, message="See you on Monday")
         await notify.send_feedback_request(None, business=biz, customer=cust, about="visit on 2 Nov", request_id=uuid.uuid4())
+        await notify.send_feedback_review_link(None, business=biz, customer=cust, about="trip on 2 Nov", review_url="https://x/r")
 
     asyncio.run(run())
 

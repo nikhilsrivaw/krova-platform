@@ -97,6 +97,8 @@ POST_CALL_FOLLOWUP_TEMPLATE_NAME = "post_call_followup"
 # Feedback (shared/care/feedback.py): "How was your {{1}} with {{2}}?" and three quick-reply buttons whose payloads
 # ("fb:<request id>:<rating>") match a tap to its request.
 FEEDBACK_TEMPLATE_NAME = "feedback_request"
+# After a happy feedback call: the review link (a call has no chat window to send it in as plain text).
+FEEDBACK_REVIEW_TEMPLATE_NAME = "feedback_review_link"
 
 
 async def _send(
@@ -706,6 +708,19 @@ async def send_feedback_request(
         body_params=[about, business.name],
         plain_text=f"How was your {about} with {business.name}?",
         button_payloads=[f"fb:{request_id}:{rating}" for rating in ratings],
+    )
+
+
+async def send_feedback_review_link(
+    db: AsyncSession, *, business: Business, customer: Customer, about: str, review_url: str,
+) -> bool:
+    """The review link for a customer who rated a call 4 or 5."""
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=FEEDBACK_REVIEW_TEMPLATE_NAME,
+        body_params=[about, business.name, review_url],
+        plain_text=f"Thank you for rating your {about} with {business.name} so highly! If you have a minute, "
+                   f"please leave us a review here: {review_url} - it really helps.",
     )
 
 

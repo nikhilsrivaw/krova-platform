@@ -108,6 +108,16 @@ CATALOGUE: tuple[RequiredTemplate, ...] = (
         "Sent by Feedback to ask how a visit, order or chat went.",
         buttons=("Great", "Okay", "Not good"),
     ),
+    # Asking for a public review promotes the business, so it is filed MARKETING (Meta charges more for it) - and it
+    # only goes to customers who rated a feedback call 4 or 5.
+    RequiredTemplate(
+        "feedback_review_link", "feedback", "MARKETING",
+        "Thank you for rating your {{1}} with {{2}} so highly! If you have a minute, please leave us a review here: "
+        "{{3}} - it really helps.",
+        ("What it was about", "Business name", "Review link"),
+        ("Delhi to Jaipur trip on 2 Nov", "Sharma Travels", "https://g.page/r/sharma-travels/review"),
+        "Sent by Feedback to happy customers after a feedback call, with your review link.",
+    ),
     # ── walk-in queue ───────────────────────────────────────────────────────
     RequiredTemplate(
         "queue_checkin_confirmation", "opd_queue", "UTILITY",
