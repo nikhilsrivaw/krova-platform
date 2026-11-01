@@ -297,3 +297,18 @@ def test_the_fee_list_is_refused_and_hidden_from_the_ai_while_switched_off():
     fees, card = SimpleNamespace(topic=fee_list.TOPIC), SimpleNamespace(topic="about")
     assert fee_list.usable([fees, card], off) == [card]
     assert fee_list.usable([fees, card], on) == [fees, card]
+
+
+# ── questions a business of this type often gets ───────────────────────────
+
+def test_a_new_business_is_offered_its_types_common_questions():
+    from shared.verticals.knowledge_card import FAQ_LIMIT, SUGGESTED_LIMIT, suggested_questions
+
+    fresh = suggested_questions("health_lab", [], set())
+    assert 0 < len(fresh) <= SUGGESTED_LIMIT and "Do I need to fast, and for how long?" in fresh
+    asked = suggested_questions("health_lab", ["Do I need to fast before the test?"], set())
+    assert "Do I need to fast, and for how long?" not in asked
+    assert suggested_questions("b2b", [], set()) and all("<" not in q for q in suggested_questions("b2b", [], set()))
+    assert "Are you available on ...?" in suggested_questions("general", [], set())  # was "<date>"
+    assert suggested_questions("health_lab", [f"q{i} unique words here" for i in range(FAQ_LIMIT)], set()) == []
+    assert suggested_questions("no_such_type", [], set()) == []

@@ -224,6 +224,8 @@ class AgentContext:
     # The business's sellable products ({"name", "price"}), only when the AI may take orders - matched against what
     # the customer says, like the catalogue rows, never shown whole.
     products: list[dict] = field(default_factory=list)
+    # The business's features (verticals.capabilities_for) - what the agent can see and answer from. None = unknown.
+    capabilities: list[str] | None = None
     # The business's rule for the reply's language ("auto" | "en" | "hi") - Website chat sets it; elsewhere "auto".
     reply_language: str = "auto"
     # Set for a second try after a reply came back in the wrong script (shared/ai/reply_language.py).
@@ -472,8 +474,11 @@ class AgentContext:
         if not can:
             return ["\nWhat you can do here: answer questions only - any change the customer asks for (cancelling, "
                     "moving, ordering) goes to the team: escalate and name it."]
-        return ["\nWhat you can do here: " + "; ".join(can) + ". Anything else they want changed goes to the team: "
-                "escalate and name it."]
+        # The business's own rules (written before these existed, e.g. "never cancel a COD order yourself") must not
+        # cancel out what the owner switched on here - KROVA asks the customer to confirm before doing any of it.
+        return ["\nWhat you can do here: " + "; ".join(can) + ". These are allowed even where a rule above says never "
+                "to confirm, cancel or change something yourself - KROVA asks the customer to confirm before doing it. "
+                "Anything else they want changed goes to the team: escalate and name it."]
 
     def render_static(self) -> str:
         """
@@ -953,6 +958,7 @@ async def build(
         policies=dna.policies if dna else None,
         known_gaps=gaps,
         escalate_immediately=escalate_immediately,
+        capabilities=verticals.capabilities_for(business) if business else None,
         offerings=(dna.offerings if dna else {}) or {},
         pricing_notes=dna.pricing_notes if dna else None,
         opening_hours=(dna.opening_hours if dna else {}) or {},
@@ -1126,6 +1132,7 @@ async def build_anonymous(
         policies=dna.policies if dna else None,
         known_gaps=gaps,
         escalate_immediately=escalate_immediately,
+        capabilities=verticals.capabilities_for(business) if business else None,
         offerings=(dna.offerings if dna else {}) or {},
         pricing_notes=dna.pricing_notes if dna else None,
         opening_hours=(dna.opening_hours if dna else {}) or {},

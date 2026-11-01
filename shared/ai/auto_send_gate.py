@@ -85,27 +85,57 @@ UNIVERSAL_ESCALATE_KEYWORDS: tuple[str, ...] = (
 )
 
 
-# Questions about an order, a booking or a payment the agent cannot see, and
-# medical reactions. Nothing in the business details answers these, so a
-# reply is always a guess. Over-matching is intended: a false match is a
-# draft for a human, never a sent message.
-ESCALATE_RECORD_KEYWORDS: tuple[str, ...] = (
+# Questions about a booking, an order or a payment the agent may not be able to see, and medical reactions. Split by
+# what would let the agent answer: a business with Bookings or the walk-in queue shows the agent its calendar and the
+# customer's bookings (and may let it cancel or move one - shared/ai/actions.py), one with Orders shows their orders.
+# Holding "kal ka slot hai kya" back for a person on such a business stopped booking altogether - the floor ran
+# before the change step, on every channel. So each group applies only while the agent has nothing to answer from.
+# Over-matching is still intended within a group: a false match is a draft for a human, never a sent message.
+BOOKING_RECORD_KEYWORDS: tuple[str, ...] = (
+    "booking cancel", "appointment cancel", "reschedule", "reschedul", "time badal", "time change", "slot", "slots",
+    "appointment confirm", "confirm hai", "mere naam se", "meri booking", "booking hai kya", "meeting",
+    "स्लॉट", "बुकिंग",
+)
+ORDER_RECORD_KEYWORDS: tuple[str, ...] = (
     "order status", "order kab", "order ka status", "mera order", "order ka", "order batao",
-    "kab aayega", "kab aayegi", "kab milega", "status batao", "status check",
-    "booking cancel", "appointment cancel", "cancel kar do", "cancel karo", "cancel karna",
-    "reschedule", "time badal", "time change", "slot", "slots", "appointment confirm",
-    "confirm hai", "mere naam se", "meri booking", "booking hai kya",
+    "kab aayega", "kab aayegi", "kab milega", "status batao", "status check", "ऑर्डर",
+)
+# "Cancel it" - a booking or an order, whichever the business has.
+CHANGE_RECORD_KEYWORDS: tuple[str, ...] = ("cancel kar do", "cancel karo", "cancel karna", "cancel", "cancellation")
+# Never visible to the agent, whatever the business has: a payment the customer says they made, a reaction, abuse.
+ALWAYS_RECORD_KEYWORDS: tuple[str, ...] = (
     "payment mil", "paisa mil", "paise mil", "transfer kiya", "transfer kiye",
     "transfer kar diya", "payment kiya", "pay kiya", "advance diya",
     "rash", "allergy", "allergic", "reaction", "bleeding", "pregnan", "jalan ho",
     "badtameez", "badtamiz", "rude", "gaali",
-    "meeting", "cancel", "reschedul", "cancellation",
-    "ऑर्डर", "स्लॉट", "बुकिंग",
 )
+ESCALATE_RECORD_KEYWORDS: tuple[str, ...] = (
+    *ORDER_RECORD_KEYWORDS, *BOOKING_RECORD_KEYWORDS, *CHANGE_RECORD_KEYWORDS, *ALWAYS_RECORD_KEYWORDS,
+)
+_BOOKINGS = ("scheduling", "opd_queue")
+_ORDERS = ("order_sync",)
 
 
-def must_escalate(text: str) -> str | None:
-    return _contains_any(text, (*UNIVERSAL_ESCALATE_KEYWORDS, *ESCALATE_RECORD_KEYWORDS))
+def floor_keywords(capabilities=None) -> tuple[str, ...]:
+    """
+    The phrases that always need a person for this business. `capabilities` is the business's feature list
+    (verticals.capabilities_for); None means unknown, and then every group applies, as before.
+    """
+    if capabilities is None:
+        return (*UNIVERSAL_ESCALATE_KEYWORDS, *ESCALATE_RECORD_KEYWORDS)
+    caps = set(capabilities)
+    has_bookings, has_orders = bool(caps & set(_BOOKINGS)), bool(caps & set(_ORDERS))
+    return (
+        *UNIVERSAL_ESCALATE_KEYWORDS,
+        *(() if has_bookings else BOOKING_RECORD_KEYWORDS),
+        *(() if has_orders else ORDER_RECORD_KEYWORDS),
+        *(() if has_bookings or has_orders else CHANGE_RECORD_KEYWORDS),
+        *ALWAYS_RECORD_KEYWORDS,
+    )
+
+
+def must_escalate(text: str, capabilities=None) -> str | None:
+    return _contains_any(text, floor_keywords(capabilities))
 
 
 def _normalise(text: str) -> str:

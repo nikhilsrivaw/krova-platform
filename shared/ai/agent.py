@@ -648,7 +648,7 @@ def _escalate_floor(text: str, agent_context: ctx.AgentContext) -> str:
     customer = next(
         (turn["text"] for turn in reversed(agent_context.recent) if turn["direction"] == "inbound"), ""
     )
-    hit = auto_send_gate.must_escalate(customer or "")
+    hit = auto_send_gate.must_escalate(customer or "", agent_context.capabilities)
     if hit and text.strip().upper().startswith("REPLY"):
         return f"ESCALATE\n\nneeds a person: {hit}"
     return text

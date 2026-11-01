@@ -159,6 +159,44 @@ def suggest_field(gap: str) -> str | None:
     return winners[0] if len(winners) == 1 else None
 
 
+SUGGESTED_LIMIT = 6
+
+
+_QUESTION_FILLER = {
+    "and", "for", "how", "the", "you", "your", "can", "what", "are", "does", "this", "that", "with", "any", "there",
+    "get", "have", "has", "will", "from", "when", "which", "who", "our", "much", "many", "long",
+}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]+", (text or "").lower()) if len(w) > 2 and w not in _QUESTION_FILLER}
+
+
+def suggested_questions(vertical: str, asked: list[str], answered_fields: set[str]) -> list[str]:
+    """
+    Questions customers of this type often ask (the template's common_questions), offered on Top questions so a new
+    business starts from them - the owner picks one and writes the answer. Left out: ones already on the list (most
+    of their words match), ones a filled card field already answers, and everything once the list is full.
+    """
+    if len(asked) >= FAQ_LIMIT:
+        return []
+    try:
+        pool = list(get(vertical).get("common_questions") or [])
+    except UnknownVertical:
+        return []
+    have = [_words(q) for q in asked]
+    out = []
+    for question in pool:
+        words = _words(question)
+        if any(words and len(words & h) >= max(2, len(words) // 2) for h in have):
+            continue
+        if suggest_field(question) in answered_fields:
+            continue
+        # "Do you deliver to <city>?" - the owner fills the blank in their own words.
+        out.append(re.sub(r"<[^>]+>", "...", question))
+    return out[:SUGGESTED_LIMIT]
+
+
 def render_team(card: dict[str, Any]) -> str:
     """The Team Card as the text the agent reads. Empty parts are left out."""
     lines: list[str] = []

@@ -3,7 +3,7 @@
 The AI answers customers only from what you give it here. If it gets something wrong or says it doesn't know, the fix is almost always on this page.
 
 ## Business card
-Knowledge & Gaps page → Business card. The key facts of your business (prices, hours, address, policies) and your top questions with short answers. The AI reads it on every message, so keep it short and correct. Changes are used from the next message.
+Knowledge & Gaps page → Business card. The key facts of your business (prices, hours, address, policies) and your top questions with short answers. The AI reads it on every message, so keep it short and correct. Changes are used from the next message. Under top questions KROVA shows a few questions businesses like yours often get (for a lab: "Do I need to fast?", "When will the report be ready?") - tap one, write your answer, press Add question. Ones you already have, or your card already answers, are not shown.
 
 ## Fill from a file
 Upload a price list, menu, brochure or FAQ (PDF, photo, text, CSV - up to 5 MB, 5 files a day). KROVA suggests what goes on your Business card; tick what is right, edit, and press Save. The file is not kept.

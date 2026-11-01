@@ -534,6 +534,8 @@ class CardOut(BaseModel):
     faqs: list[FaqOut]
     coverage: CardCoverage
     tokens: int  # what the cards cost the AI to read on every message, roughly
+    # Questions businesses of this type often get - offered on Top questions (knowledge_card.suggested_questions).
+    suggested_questions: list[str] = []
 
 
 async def _business_vertical(db, business_id: uuid.UUID) -> str:
@@ -596,6 +598,7 @@ async def card(current_user: OwnerOrAdminDep, db: DbDep) -> CardOut:
         faqs=[FaqOut(id=str(r.id), question=r.title, answer=r.content, active=r.active) for r in faqs],
         coverage=CardCoverage(**knowledge_card.coverage(fields, answered, team_item is not None, len(faqs))),
         tokens=tokens,
+        suggested_questions=knowledge_card.suggested_questions(vertical, [r.title for r in faqs], answered),
     )
 
 

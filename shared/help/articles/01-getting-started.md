@@ -6,7 +6,7 @@ KROVA answers your customers on WhatsApp, Instagram and phone calls with AI, and
 ## First steps after signing up
 1. Pick what kind of business you are (Settings → Business). This decides which modules you start with, how the AI talks and what it must never promise. You can change it later.
 2. Choose a plan on the Billing page. Until a plan is bought, you can look around (chats, customers, calendar), but WhatsApp, Instagram and the Voice Agent stay locked.
-3. Connect WhatsApp (WhatsApp page → Connect WhatsApp Number). It opens Meta's own signup window.
+3. Connect WhatsApp (WhatsApp page → Connect WhatsApp Number). It opens Meta's own signup window. The setup steps after signup show whether WhatsApp and voice are really connected and link to those pages; you can skip and do it later.
 4. Fill your Business card (Knowledge & Gaps page) - prices, hours, policies. The AI answers only from what you put there.
 5. Decide how much the AI may send on its own (Settings → Agent Autonomy Level). Start with Draft Mode.
 

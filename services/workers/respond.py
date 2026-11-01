@@ -424,7 +424,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
 
     # A model that answers a question its business details cannot answer is
     # overruled here, whatever the model chose. See auto_send_gate.must_escalate.
-    hit = auto_send_gate.must_escalate(message.content or "")
+    hit = auto_send_gate.must_escalate(message.content or "", verticals.capabilities_for(business))
     if hit and proposal.action == "reply":
         proposal = dataclasses.replace(
             proposal, action="escalate", message=None, gap=f"needs a person: {hit}"
