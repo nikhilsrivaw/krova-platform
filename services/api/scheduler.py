@@ -526,6 +526,21 @@ async def check_reply_times() -> None:
         logger.exception("reply-time sweep failed")
 
 
+async def run_feedback() -> None:
+    """Feedback: ask about finished visits, tokens, orders and chats, on WhatsApp or by call (shared/care/feedback.py)."""
+    from shared.care import feedback
+    from shared.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            done = await feedback.sweep(db)
+            await db.commit()
+            if done:
+                logger.info("sent %s feedback request(s)", done)
+    except Exception:
+        logger.exception("feedback sweep failed")
+
+
 async def remind_team_requests() -> None:
     """A customer's ask to talk to the team that nobody took for 15 minutes: the owner and admins hear once."""
     from shared.db.session import AsyncSessionLocal
@@ -838,6 +853,14 @@ def build() -> AsyncIOScheduler:
         id="check_reply_times",
         replace_existing=True,
         misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        run_feedback,
+        IntervalTrigger(minutes=10),
+        id="run_feedback",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     scheduler.add_job(

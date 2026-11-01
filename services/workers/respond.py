@@ -286,6 +286,19 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     if business is None or not business.is_active:
         return None
 
+    # A tap on a feedback button, or the comment typed after it, is answered here without the AI - it is the
+    # customer answering a question KROVA asked (shared/care/feedback.py), whatever the autonomy setting.
+    if (message.channel.value if hasattr(message.channel, "value") else message.channel) == "whatsapp":
+        from shared.care import feedback
+        from shared.scheduling.qr_token import _reply as send_whatsapp_text
+
+        thanks = await feedback.handle_reply(
+            db, business=business, customer=customer, text=message.content, media=message.media,
+        )
+        if thanks:
+            await send_whatsapp_text(db, business, customer, thanks)
+            return None
+
     # The reception QR's own message gets its token here, without the AI - see shared/scheduling/qr_token.py. Like the
     # COD button above, it is the patient's explicit request answered from a fixed rule, not a drafted reply, so it does
     # not wait on the autonomy setting; a paused plan still stops it.

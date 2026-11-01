@@ -133,6 +133,8 @@ _add("POST", "/team-requests/{request_id}/take", "team_request_taken", "Took a T
 _add("POST", "/team-requests/{request_id}/release", "team_request_released", "Put back a Talk to team request", WORK)
 _add("POST", "/team-requests/{request_id}/assign", "team_request_assigned", "Handed a Talk to team request to someone", WORK)
 _add("POST", "/team-requests/{request_id}/done", "team_request_done", "Closed a Talk to team request", WORK)
+_add("PUT", "/feedback/settings", "feedback_changed", "Changed when and how customers are asked for feedback", CONFIG)
+_add("POST", "/feedback/template", "template_created", "Sent the feedback template to Meta", CONFIG)
 _add("PUT", "/ai-actions", "ai_actions_changed", "Changed what the AI can do for customers", CONFIG)
 _add("POST", "/web-chat/sites/{site_id}/logo", "web_chat_changed", "Changed the website chat logo", CONFIG)
 _add("DELETE", "/web-chat/sites/{site_id}/logo", "web_chat_changed", "Removed the website chat logo", CONFIG)

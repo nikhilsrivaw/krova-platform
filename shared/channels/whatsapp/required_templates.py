@@ -96,6 +96,18 @@ CATALOGUE: tuple[RequiredTemplate, ...] = (
         ("Your appointment on 25 Oct has been cancelled. Reply to choose a new time.",),
         "Sent by every 'Send a WhatsApp follow-up' step in Automations.",
     ),
+    # ── feedback ────────────────────────────────────────────────────────────
+    # UTILITY because {{1}} names the specific visit or order - Meta's own rule: feedback on a specific transaction
+    # is utility, a generic survey is marketing. No offer or promotion may ever be added to it.
+    # The buttons' payloads ("fb:<request id>:<rating>") are given with each message by shared/care/feedback.py.
+    RequiredTemplate(
+        "feedback_request", "feedback", "UTILITY",
+        "Hi! How was your {{1}} with {{2}}? Tap a button below to tell us - it takes a second.",
+        ("What it was about, e.g. \"visit on 2 Nov\" or \"order #1042\"", "Business name"),
+        ("visit on 2 Nov", "Sharma Clinic"),
+        "Sent by Feedback to ask how a visit, order or chat went.",
+        buttons=("Great", "Okay", "Not good"),
+    ),
     # ── walk-in queue ───────────────────────────────────────────────────────
     RequiredTemplate(
         "queue_checkin_confirmation", "opd_queue", "UTILITY",

@@ -1294,6 +1294,17 @@ async def _analyze_call(
                             summary=extracted.summary,
                             created_at=datetime.now(timezone.utc),
                         ))
+                        # A feedback call's answers become the customer's rating (shared/care/feedback.py).
+                        try:
+                            from shared.care import feedback
+
+                            async with db.begin_nested():
+                                await feedback.record_call(
+                                    db, script_id=script.id, customer_id=call_row.customer_id,
+                                    answers=extracted.answers,
+                                )
+                        except Exception:
+                            logger.exception("feedback call answers not kept call=%s", call_row_id)
                         if business_id is not None and extracted.cost_paise:
                             usage.record(
                                 business_id=business_id,

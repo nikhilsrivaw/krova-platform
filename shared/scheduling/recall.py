@@ -98,7 +98,18 @@ async def send_due_recalls(db: AsyncSession) -> int:
 
 
 def _asks_for_reviews(business: Business) -> bool:
-    """False for a type whose template forbids asking customers for reviews (see send_review_requests)."""
+    """
+    False for a type whose template forbids asking customers for reviews (see send_review_requests) - and for a
+    business with Feedback on, which sends the review link itself to the customers who were happy, instead of this
+    blind ask after every visit.
+    """
+    if ((getattr(business, "settings", None) or {}).get("feedback") or {}).get("enabled"):
+        return False
+    return type_allows_reviews(business)
+
+
+def type_allows_reviews(business: Business) -> bool:
+    """False for a type whose template forbids asking for reviews (healthcare - the NMC's advertising rules)."""
     try:
         return verticals.get(business.vertical).get("review_requests", True) is not False
     except verticals.UnknownVertical:

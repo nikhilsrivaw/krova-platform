@@ -94,6 +94,9 @@ BUG_FIXED_TEMPLATE_NAME = "bug_fixed_notification"
 # WhatsApp text outside the 24h service window, a post-call followup is
 # exactly that case, and this codebase does not pretend otherwise.
 POST_CALL_FOLLOWUP_TEMPLATE_NAME = "post_call_followup"
+# Feedback (shared/care/feedback.py): "How was your {{1}} with {{2}}?" and three quick-reply buttons whose payloads
+# ("fb:<request id>:<rating>") match a tap to its request.
+FEEDBACK_TEMPLATE_NAME = "feedback_request"
 
 
 async def _send(
@@ -690,6 +693,19 @@ async def send_followup_template(
     return await _send(
         db, business=business, customer=customer, template_name=template_name,
         body_params=[message] if blanks else [], plain_text=plain or message or template_name,
+    )
+
+
+async def send_feedback_request(
+    db: AsyncSession, *, business: Business, customer: Customer, about: str, request_id, ratings: tuple[int, ...] = (5, 3, 1),
+) -> bool:
+    """Ask how `about` ("visit on 2 Nov") went - one button per rating, in the template's button order."""
+    return await _send(
+        db, business=business, customer=customer,
+        template_name=FEEDBACK_TEMPLATE_NAME,
+        body_params=[about, business.name],
+        plain_text=f"How was your {about} with {business.name}?",
+        button_payloads=[f"fb:{request_id}:{rating}" for rating in ratings],
     )
 
 

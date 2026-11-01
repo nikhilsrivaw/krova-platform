@@ -113,3 +113,47 @@ class TeamRequest(UUIDMixin, TimestampMixin, Base):
         Index("idx_team_requests_business_status", "business_id", "status"),
         Index("idx_team_requests_customer", "customer_id"),
     )
+
+
+class FeedbackRequest(UUIDMixin, TimestampMixin, Base):
+    """
+    Asking one customer how one visit, token, order or chat went - on WhatsApp (three buttons), by call (a short survey
+    call), or WhatsApp first and a call if they do not answer - and their answer. See shared/care/feedback.py.
+    """
+    __tablename__ = "feedback_requests"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False
+    )
+    # What it is about: "visit" (a booking), "token" (a walk-in), "order" (delivered), "chat" (resolved) - and the
+    # id of that thing, so one is never asked about twice.
+    trigger: Mapped[str] = mapped_column(String(20), nullable=False)
+    ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    # In words, for the message and the page: "visit on 2 Nov", "order #1042".
+    about: Mapped[str] = mapped_column(String(200), nullable=False)
+    # "whatsapp", "voice" or "both" (WhatsApp, then a call if no answer by call_at).
+    channel: Mapped[str] = mapped_column(String(10), nullable=False)
+    # "due" -> "sent" / "calling" -> "answered"; or "no_reply" / "skipped" (with `note` saying why).
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="due")
+    send_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    call_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 1 to 5. WhatsApp's buttons give 5 / 3 / 1; a call gives what the customer said.
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    answered_via: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # After "Okay" or "Not good" on WhatsApp the next message they type is kept as the comment.
+    awaiting_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    review_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "trigger", "ref", name="uq_feedback_request_ref"),
+        Index("idx_feedback_requests_due", "status", "send_at"),
+        Index("idx_feedback_requests_business", "business_id", "created_at"),
+        Index("idx_feedback_requests_customer", "customer_id"),
+    )

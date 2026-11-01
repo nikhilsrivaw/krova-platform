@@ -3,6 +3,17 @@
 ## Escalations
 Every time the AI couldn't answer something on its own. (A customer who asks to talk to a person goes to Talk to team instead.) Open ones alert whoever is on staff if nobody acknowledges them for 15 minutes. Press "I have got this", reply to the customer (WhatsApp, Instagram or call), then Resolve with a short note (only your team sees it). You can build an automation for escalations like one you are looking at.
 
+## Feedback (owner and admins)
+Sidebar → Feedback. KROVA asks customers how it went and keeps what they say.
+- Switch it on and choose when to ask: after a booking or appointment, after a walk-in token is done, after an order is delivered, after a chat is marked resolved. Choose how long after (30 minutes to the next day), and how often one customer may be asked (at most once in 3, 7, 14 or 30 days, or no limit). Only visits, orders and chats from the last 3 days are asked about.
+- How to ask: WhatsApp, a call, or WhatsApp first and a call if they have not answered in 2 hours to 2 days. Calls are paid from your voice wallet.
+- WhatsApp needs the "feedback_request" template approved by Meta. Press "Send the template to Meta for approval" on the Feedback page (usually a few minutes, at most a day). It names the visit or order ("How was your visit on 2 Nov with Sharma Clinic?"), which is what lets Meta treat it as a utility message (cheaper than marketing) - never add an offer to it. Until it is approved, WhatsApp feedback is skipped and shows "The feedback template is not approved yet".
+- On WhatsApp the customer taps Great, Okay or Not good (saved as 5, 3 or 1). After Okay or Not good they are asked what went wrong, and the next message they type is saved as their comment.
+- On a call the AI asks for a rating from 1 to 5 and whether anything could be better; the answers are saved after the call. These calls run through an automatic "Feedback calls (automatic)" call campaign and survey script on the Voice page - leave them as they are.
+- A rating of 1 or 2 goes to Talk to team as "Unhappy - rated 1/5 for their visit on 2 Nov", so whoever is free calls them; their comment is added to it.
+- Customers who tap Great get your Google review link, if you set one in Settings and your type of business may ask for reviews (healthcare may not). With Feedback on, the old review request after every visit stops - only happy customers are asked.
+- The page shows the last 30 days: average rating, how many answered, happy and unhappy counts, a 1-5 breakdown, and every answer with its comment (filter: all, unhappy, happy, with a comment).
+
 ## Signals
 What's worth knowing from conversations: complaints, churn risk, praise, competitor mentions, and depending on your business, feature requests, bugs, overdue follow-ups, uncollected reports, refunds owed, delivery risk. Dismiss, or "Create an automation" for signals like it.
 

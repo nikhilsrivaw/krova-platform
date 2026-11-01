@@ -34,8 +34,8 @@ def test_every_template_is_well_formed(t):
         "Meta refuses a body that starts or ends with a variable"
     )
     assert t.category in ("UTILITY", "MARKETING")
-    # every template belongs to a feature an owner can switch, or to Automations (offered on its own page)
-    assert t.capability in SWITCHABLE or t.capability == "automations"
+    # every template belongs to a feature an owner can switch, or to Automations or Feedback (each on its own page)
+    assert t.capability in SWITCHABLE or t.capability in ("automations", "feedback")
     assert t.purpose and (t.one_click or t.note), "a template KROVA cannot create must say why"
 
 
@@ -113,6 +113,7 @@ def test_every_template_has_the_variable_count_its_sender_passes(monkeypatch):
         await notify.send_expansion_nudge(None, business=biz, customer=cust)
         await notify.send_payment_failed_reminder(None, business=biz, customer=cust, invoice_url="https://x/pay")
         await notify.send_post_call_followup(None, business=biz, customer=cust, message="See you on Monday")
+        await notify.send_feedback_request(None, business=biz, customer=cust, about="visit on 2 Nov", request_id=uuid.uuid4())
 
     asyncio.run(run())
 

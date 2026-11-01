@@ -80,6 +80,7 @@ from services.api.routers import (
     web_chat,
     ai_actions,
     team_requests,
+    feedback,
     widget,
     widget_asset,
 )
@@ -215,6 +216,7 @@ app.include_router(trust.router, prefix=API_PREFIX)
 app.include_router(web_chat.router, prefix=API_PREFIX)
 app.include_router(ai_actions.router, prefix=API_PREFIX)
 app.include_router(team_requests.router, prefix=API_PREFIX)
+app.include_router(feedback.router, prefix=API_PREFIX)
 app.include_router(widget.router, prefix=API_PREFIX)
 app.include_router(team.router, prefix=API_PREFIX)
 app.include_router(routing_rules.router, prefix=API_PREFIX)
