@@ -89,6 +89,7 @@ LOCKED = {(m, _P + path) for m, path in [
     ("PUT", "/routing/rules-order"),
     ("POST", "/web-chat/sites"), ("PUT", "/web-chat/sites/{site_id}"), ("DELETE", "/web-chat/sites/{site_id}"),
     ("POST", "/web-chat/sites/{site_id}/logo"), ("DELETE", "/web-chat/sites/{site_id}/logo"),
+    ("PUT", "/ai-actions"),
     ("PUT", "/voice-onboarding/keypad-menu"), ("PATCH", "/team/members/{user_id}/phone"),
     # spends money (a TTS or AI call per tap) or links a channel to the business
     # how much the AI does on its own, which features are on, and the owner's money assistant
@@ -148,12 +149,16 @@ LOCKED_READS = {(m, _P + path) for m, path in [
     # what the business's WhatsApp messages cost it
     ("GET", "/channels/whatsapp/usage"),
     # the website chat keys
-    ("GET", "/web-chat/sites"), ("GET", "/web-chat/stats"), ("GET", "/web-chat/chats"), ("GET", "/web-chat/chats/{session_id}"),
+    ("GET", "/web-chat/sites"), ("GET", "/ai-actions"), ("GET", "/web-chat/stats"), ("GET", "/web-chat/chats"), ("GET", "/web-chat/chats/{session_id}"),
 ]}
 
 # What staff do all day - one customer at a time - must stay open to them.
 OPEN_TO_STAFF = {(m, _P + path) for m, path in [
     ("POST", "/messages/text"), ("POST", "/messages/template"), ("POST", "/messages/interactive-buttons"),
+    # Talk to team: picking up a customer who asked for a person is the day-to-day work
+    ("GET", "/team-requests"), ("GET", "/team-requests/count"), ("POST", "/team-requests"),
+    ("POST", "/team-requests/{request_id}/take"), ("POST", "/team-requests/{request_id}/release"),
+    ("POST", "/team-requests/{request_id}/done"),
     ("POST", "/messages/instagram/text"), ("POST", "/messages/instagram/carousel"),
     ("POST", "/messages/instagram/carousels/{carousel_id}/send"),
     ("POST", "/approvals/{draft_id}/approve"), ("POST", "/approvals/{draft_id}/reject"),

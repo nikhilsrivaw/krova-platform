@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared import verticals
+from shared.ai import actions as ai_actions
 from shared.ai import agent as agent_module
 from shared.ai import auto_send_gate, cache_policy
 from shared.ai import context as agent_context
@@ -104,20 +105,73 @@ async def _try_book(
     )
 
 
-async def _try_cancel(
-    proposal: agent_module.Draft, *, business: Business, customer: Customer, db: AsyncSession
-) -> Appointment | None:
-    """
-    Turn a model's cancel_appointment_at decision into a real cancellation.
+def _proposed_change(proposal: agent_module.Draft) -> ai_actions.Proposal | None:
+    """The one change the model asked for, if any - the first that applies."""
+    if proposal.reschedule_from and proposal.reschedule_to:
+        return ai_actions.Proposal("reschedule_booking", booking_at=proposal.reschedule_from, new_at=proposal.reschedule_to)
+    if proposal.cancel_appointment_at:
+        return ai_actions.Proposal("cancel_booking", booking_at=proposal.cancel_appointment_at)
+    if proposal.cancel_token:
+        return ai_actions.Proposal("cancel_token")
+    if proposal.cancel_order:
+        number = None if proposal.cancel_order.lower() == "latest" else proposal.cancel_order
+        return ai_actions.Proposal("cancel_order", order_number=number)
+    if proposal.order_items:
+        return ai_actions.Proposal("take_order", lines=list(proposal.order_items), payment=proposal.order_payment)
+    return None
 
-    Thin wrapper over shared/scheduling/booking.py's try_cancel_from_agent -
-    same shape as _try_book above, existing only to unpack a Draft.
+
+async def _last_confirmation(db: AsyncSession, customer_id: uuid.UUID) -> dict | None:
+    """The change KROVA last asked this customer to confirm, if that question was the last reply sent and still open."""
+    last = (await db.execute(
+        select(MessageDraft).where(MessageDraft.customer_id == customer_id, MessageDraft.status == DraftStatus.sent)
+        .order_by(MessageDraft.reviewed_at.desc().nullslast(), MessageDraft.created_at.desc()).limit(1)
+    )).scalars().first()
+    saved = (last.extra or {}).get("pending_action") if last is not None else None
+    return saved if ai_actions.still_open(saved) else None
+
+
+async def _changes(
+    proposal: agent_module.Draft, *, message: Message, business: Business, customer: Customer, channel: str,
+    db: AsyncSession,
+) -> tuple[agent_module.Draft, dict | None]:
     """
-    return await scheduling_booking.try_cancel_from_agent(
-        db,
-        cancel_appointment_at=proposal.cancel_appointment_at,
-        business=business,
-        customer=customer,
+    Confirm-then-do for every change. Returns the reply to send and, when it is a confirmation question, the change
+    to keep with it. A "yes" to an open question does the saved change and answers with what happened.
+    """
+    from shared.team import language as lang
+
+    no_change = dict(
+        cancel_appointment_at=None, reschedule_from=None, reschedule_to=None, cancel_token=False, order_items=[],
+        cancel_order=None,
+    )
+    saved = await _last_confirmation(db, customer.id)
+    if saved and ai_actions.affirmed(message.content):
+        done = await ai_actions.carry_out(db, business=business, customer=customer, saved=saved, channel=channel)
+        if not done.ok and done.problem:
+            await agent_module.notify_escalation(
+                business.id, reason=f"{saved.get('summary')}: {done.problem}", customer_id=customer.id,
+                channel=channel, db=db,
+            )
+        return dataclasses.replace(
+            proposal, action="reply", message=done.say, gap=None, book_slot=None, book_token=None, **no_change,
+        ), None
+
+    change = _proposed_change(proposal) if proposal.action == "reply" else None
+    if change is None:
+        return proposal, None
+    if not ai_actions.allowed(business, change.kind, channel):
+        return dataclasses.replace(
+            proposal, action="escalate", message=None, **no_change,
+            gap=f"Customer asked to {ai_actions.ACTIONS[change.kind][0].lower()} - not switched on for the AI here",
+        ), None
+    plan = await ai_actions.plan(db, business=business, customer=customer, proposal=change)
+    if not plan.ok:
+        logger.info("ai change %s not possible: %s", change.kind, plan.problem)
+        return dataclasses.replace(proposal, action="escalate", message=None, gap=plan.problem, **no_change), None
+    question = ai_actions.confirmation(plan, lang.detect(message.content))
+    return dataclasses.replace(proposal, message=question, book_slot=None, book_token=None, **no_change), (
+        ai_actions.pending(plan)
     )
 
 
@@ -241,6 +295,19 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     if not await plan_blocked(db, message.business_id) and await qr_token.handle(message, business, customer, db):
         return None
 
+    # "Team se baat karni hai" / "call me back": it goes to Talk to team for whoever is free - not an escalation, and
+    # filed whatever the autonomy setting, because the customer asked. The reply below is a fixed acknowledgement.
+    from shared.team import requests as team_requests
+
+    asked_for_person = team_requests.asks_for_person(message.content) and not await plan_blocked(db, message.business_id)
+    if asked_for_person:
+        async with db.begin_nested():
+            await team_requests.open_request(
+                db, business_id=business.id, customer=customer,
+                channel=message.channel.value if hasattr(message.channel, "value") else str(message.channel),
+                what=message.content or "",
+            )
+
     autonomy = (business.autonomy or "observe").lower()
     if autonomy == "observe":
         # Watching only. The business has not asked for drafts yet.
@@ -280,14 +347,24 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         stale.status = DraftStatus.superseded
 
     context = await agent_context.build(message.business_id, message.customer_id, db)
+    agent_context.allow_actions(context, business, channel)
 
-    try:
-        proposal = await agent_module.draft_reply(
-            context, cache=await cache_policy.business_recently_active(message.business_id, db)
+    if asked_for_person:
+        from shared.team import language as lang
+
+        proposal = agent_module.Draft(
+            action="reply", message=team_requests.acknowledgement(lang.detect(message.content)),
+            reasoning="Customer asked to talk to the team - filed on Talk to team.", gap=None, confidence=1.0,
+            cost_paise=0, context_message_ids=context.context_message_ids,
         )
-    except AIError:
-        # Let the queue retry with backoff rather than losing the reply.
-        raise
+    else:
+        try:
+            proposal = await agent_module.draft_reply(
+                context, cache=await cache_policy.business_recently_active(message.business_id, db)
+            )
+        except AIError:
+            # Let the queue retry with backoff rather than losing the reply.
+            raise
 
     # A model that answers a question its business details cannot answer is
     # overruled here, whatever the model chose. See auto_send_gate.must_escalate.
@@ -296,6 +373,12 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
         proposal = dataclasses.replace(
             proposal, action="escalate", message=None, gap=f"needs a person: {hit}"
         )
+
+    # A change the customer asked for (cancel, move, order...) is confirmed by KROVA itself and done only on the
+    # next "yes" - the saved change, not whatever the model says then. See shared/ai/actions.py.
+    proposal, pending_action = await _changes(
+        proposal, message=message, business=business, customer=customer, channel=channel, db=db,
+    )
 
     # Metered here, before the no_action early-return below: a no_action
     # decision is still one real Claude call that cost real tokens, even
@@ -316,6 +399,14 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     if proposal.action == "no_action":
         logger.debug("agent chose no_action for message %s", message_id)
         return None
+
+    if (proposal.book_slot or proposal.book_token) and not ai_actions.allowed(
+        business, "book" if proposal.book_slot else "book_token", channel,
+    ):
+        proposal = dataclasses.replace(
+            proposal, action="escalate", message=None, book_slot=None, book_token=None,
+            gap="Customer wants to book - the AI may not book on this channel (Settings)",
+        )
 
     if proposal.book_slot:
         appointment = await _try_book(proposal, business=business, customer=customer, message=message, db=db)
@@ -342,26 +433,6 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                 await payment_links.auto_link_after_booking(
                     db, business=business, kind="appointments", ref_id=appointment.id,
                 )
-
-    if proposal.cancel_appointment_at:
-        cancelled = await _try_cancel(proposal, business=business, customer=customer, db=db)
-        if cancelled is None:
-            # Same reasoning as the book_slot branch above: the drafted
-            # message may already say "done, cancelled" for a time that
-            # matched nothing real - escalate rather than send that as fact.
-            logger.info(
-                "cancel_appointment_at %s matched nothing, escalating instead",
-                proposal.cancel_appointment_at,
-            )
-            proposal.action = "escalate"
-            proposal.message = None
-            proposal.gap = (
-                f"Customer asked to cancel a booking at {proposal.cancel_appointment_at}, "
-                "but no upcoming booking of theirs matched it"
-            )
-        # On success: the agent's own reply confirms it, and cancel() already
-        # fired the appointment_cancelled automation trigger and calendar
-        # sync - no separate notify() call needed here.
 
     if proposal.book_token:
         queue_entry = await _try_book_token(proposal, business=business, customer=customer, message=message, db=db)
@@ -414,7 +485,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
             if proposal.action == "reply" and proposal.share_carousel
             and channel in ("whatsapp", "instagram")
             else {}
-        ),
+        ) | ({"pending_action": pending_action} if pending_action else {}),
     )
     db.add(draft)
     await db.flush()

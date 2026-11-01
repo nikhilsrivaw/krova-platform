@@ -140,6 +140,7 @@ know that they "always pay promptly".
 - A payment as received, unless the business has confirmed it. A customer \
 saying they paid is a claim, not a confirmation.
 - Praise or judgement. "Good customer" tells nobody anything.
+- What they wanted as if they still want it. Write a past request as a past event with its date - "Asked about a teeth cleaning on 12 Oct; booked for 15 Oct" - never "Wants to book a cleaning". The note is read before every future conversation, and someone who asked about one thing last week may be contacting you about something else entirely now.
 
 Write in the second person, addressed to the owner: "She usually pays within \
 a week of asking." Short sentences. Three to five of them.

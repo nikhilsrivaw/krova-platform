@@ -35,6 +35,7 @@ from urllib.parse import urlencode
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.ai import actions as ai_actions
 from shared.ai import agent as agent_module
 from shared.ai import voice_guard
 from shared.ai import context as agent_context
@@ -45,6 +46,7 @@ from shared.channels.voice import keypad_menu, line_profile, plivo_client
 from shared.care import post_call_actions
 from shared.identity import resolver
 from shared.team import briefing, call_routing, conflict
+from shared.team import requests as team_requests
 from shared.channels.voice.tenant import VoiceRoute
 from shared.config.settings import settings
 from shared.db.models import (
@@ -141,32 +143,11 @@ class _Speculation:
 _MULAW_BYTES_PER_SECOND = 8000
 _PLAYBACK_MARGIN_SECONDS = 0.5
 
-# A caller asking for a person: a person word AND a request in the same
-# utterance. A person word alone ("team size", "manager ka naam") or a bank
-# "transfer" never counts, so an ordinary question does not hand the call over.
-_PERSON_NOUN = (
-    r"(?:insaan\w*|human|real person|person|manager|owner|staff|team|agent|"
-    r"executive|representative|operator|sales|someone|somebody|koi|kisi)"
-)
-_PERSON_WANT = (
-    r"(?:baat (?:karn|karwa|krn|krwa|kar|karo|karao)\w*|talk to|speak to|speak with|"
-    r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa|to)|bulao|bulwa\w*|"
-    r"chahiye|karni hai|karna hai|want to)"
-)
-_PERSON_REQUEST = re.compile(
-    rf"\b(?=.*\b{_PERSON_NOUN}\b)(?=.*\b{_PERSON_WANT}\b)"
-    r"|\btransfer (?:kar|karo|kardo|kar do|karwa)\w*|\btransfer me\b",
-    re.IGNORECASE,
-)
-
-
-# "Contact the team" asks for a person, but "the sales team's contact number" asks
-# for a detail - the second must not hand the call over.
-_CONTACT_REQUEST = re.compile(
-    rf"\b(?=.*\b{_PERSON_NOUN}\b)(?=.*\b(?:contact|reach|sampark)\b)"
-    r"(?!.*\b(?:numbers?|nambar|e-?mail|mail|address|details?|info|hours|timings?)\b)",
-    re.IGNORECASE,
-)
+# A caller asking for a person - the same test every channel uses (shared/team/requests.py). A person word alone
+# ("team size", "manager ka naam") or a bank "transfer" never counts, so an ordinary question does not hand the
+# call over.
+_PERSON_REQUEST = team_requests.PERSON_REQUEST
+_CONTACT_REQUEST = team_requests.CONTACT_REQUEST
 
 # A listener's "hmm / haan / ok" while the agent talks is not an interruption.
 _BACKCHANNEL = frozenset({
@@ -189,6 +170,23 @@ def _is_backchannel(text: str) -> bool:
 async def _single_chunk(text: str):
     """Wrap one fixed string (the greeting) as the one-item stream speak() expects."""
     yield text
+
+
+def _voice_change(first) -> "ai_actions.Proposal | None":
+    """The change a call's reply header asked for, if any (SYSTEM_STREAM's CANCEL_BOOKING=, MOVE_FROM= ... lines)."""
+    if first.move_from and first.move_to:
+        return ai_actions.Proposal("reschedule_booking", booking_at=first.move_from, new_at=first.move_to)
+    if first.cancel_booking:
+        return ai_actions.Proposal("cancel_booking", booking_at=first.cancel_booking)
+    if first.cancel_token:
+        return ai_actions.Proposal("cancel_token")
+    if first.cancel_order:
+        return ai_actions.Proposal(
+            "cancel_order", order_number=None if first.cancel_order.lower() == "latest" else first.cancel_order,
+        )
+    if first.order_lines:
+        return ai_actions.Proposal("take_order", lines=list(first.order_lines), payment=first.pay)
+    return None
 
 
 @dataclass(slots=True)
@@ -283,6 +281,10 @@ class CallPipeline:
     # Built once per call, then reused with only its conversation half
     # refreshed - see _call_context.
     _context_cache: "agent_context.AgentContext | None" = field(default=None, repr=False)
+    # A change KROVA just asked the caller to confirm (shared/ai/actions.py) and the exact question it spoke - a
+    # "yes" as the very next thing they say does this saved change, never what the model says then.
+    _pending_change: dict | None = field(default=None, repr=False)
+    _pending_question: str | None = field(default=None, repr=False)
     # The caller's own turn, for source_message_ids on a booking made from
     # it - an AI-mediated booking must cite the conversation that
     # authorised it, the same rule book.py enforces for every channel.
@@ -536,6 +538,9 @@ class CallPipeline:
             ):
                 self._context_cache.customer_summary = None
             self._context_cache.line_note = self.line_note
+            agent_context.allow_actions(
+                self._context_cache, await self.db.get(Business, self.route.business_id), "voice",
+            )
         # The turns as this call has actually heard them, in the shape
         # AgentContext.recent already uses.
         self._context_cache.recent = [
@@ -716,6 +721,11 @@ class CallPipeline:
             return
 
         action = first.action if isinstance(first, agent_module.ReplyStart) else "escalate"
+
+        # A "yes" to a change KROVA just asked about is done here whatever the model chose; a new change it asked
+        # for is confirmed first (shared/ai/actions.py).
+        if await self._handle_change(first, events):
+            return
 
         if action == "no_action":
             async for _ in events:
@@ -1036,6 +1046,74 @@ class CallPipeline:
             db=self.db,
         )
 
+    async def _handle_change(self, first, events) -> bool:
+        """
+        Confirm-then-do for changes on a call (shared/ai/actions.py). True when this turn was handled here - the
+        model's own words for it are drained unspoken and KROVA says the fixed confirmation or what happened.
+        """
+        from shared.team import language as lang
+
+        last_caller = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
+        last_agent = next((t.text for t in reversed(self.turns) if t.role == "agent"), "")
+        saved, asked = self._pending_change, self._pending_question
+        self._pending_change = self._pending_question = None
+        business = await self.db.get(Business, self.route.business_id)
+        customer = await self.db.get(Customer, self.customer_id) if self.customer_id else None
+        if business is None or customer is None:
+            return False
+
+        if saved and asked and last_agent.strip() == asked.strip() and ai_actions.still_open(saved) \
+                and ai_actions.affirmed(last_caller):
+            async for _ in events:
+                pass
+            done = await ai_actions.carry_out(self.db, business=business, customer=customer, saved=saved, channel="voice")
+            if not done.ok and done.problem:
+                await self._mark_escalated(f"{saved.get('summary')}: {done.problem}")
+            await self._say_stream(_single_chunk(done.say), record=True)
+            return True
+
+        is_reply = isinstance(first, agent_module.ReplyStart) and first.action == "reply"
+        change = _voice_change(first) if is_reply else None
+        wants_booking = is_reply and bool(first.book_slot or first.book_token)
+        if change is None and not wants_booking:
+            return False
+        if change is None:
+            if ai_actions.allowed(business, "book" if first.book_slot else "book_token", "voice"):
+                return False
+            change_label, problem = "book", "Caller wants to book - the AI may not book on calls (Settings)"
+        elif not ai_actions.allowed(business, change.kind, "voice"):
+            change_label = change.kind
+            problem = f"Caller asked to {ai_actions.ACTIONS[change.kind][0].lower()} - not switched on for calls"
+        else:
+            plan = await ai_actions.plan(self.db, business=business, customer=customer, proposal=change)
+            async for _ in events:
+                pass
+            if plan.ok:
+                question = ai_actions.confirmation(plan, lang.detect(last_caller))
+                self._pending_change, self._pending_question = ai_actions.pending(plan), question
+                await self._say_stream(_single_chunk(question), record=True)
+                return True
+            await self._mark_escalated(plan.problem or "change not possible")
+            await self._say_stream(_single_chunk(plan.say or self._followup_line(None)), record=True)
+            return True
+        logger.info("voice change %s not allowed call=%s", change_label, self.provider_call_id)
+        async for _ in events:
+            pass
+        await self._mark_escalated(problem)
+        await self._say_stream(_single_chunk(self._followup_line(None)), record=True)
+        return True
+
+    async def _mark_escalated(self, reason: str) -> None:
+        if self.call_row_id is not None:
+            call_row = await self.db.get(Call, self.call_row_id)
+            if call_row is not None:
+                call_row.escalated = True
+                call_row.escalation_reason = reason[:500]
+        await agent_module.notify_escalation(
+            self.route.business_id, reason=reason, customer_id=self.customer_id, channel="voice", db=self.db,
+            request_summary=self._caller_summary(),
+        )
+
     def _followup_line(self, gap: str | None) -> str:
         """
         What to say when the agent cannot answer. The "someone will follow up" promise
@@ -1055,6 +1133,24 @@ class CallPipeline:
             return f"I don't have {topic} on hand right now, but I'll make sure someone follows up with you on that."
         return "I don't have enough to answer that properly, but I'll make sure someone follows up with you."
 
+    async def _file_team_request(self, reason: str) -> None:
+        """The caller wants a person and could not be put through - it goes to Talk to team (shared/team/requests.py)."""
+        customer = await self.db.get(Customer, self.customer_id) if self.customer_id else None
+        if customer is None:
+            await agent_module.notify_escalation(
+                self.route.business_id, reason=reason, customer_id=None, channel="voice", db=self.db,
+                request_summary=self._caller_summary(),
+            )
+            return
+        try:
+            async with self.db.begin_nested():
+                await team_requests.open_request(
+                    self.db, business_id=self.route.business_id, customer=customer, channel="voice",
+                    what=self._caller_summary() or reason,
+                )
+        except Exception:
+            logger.exception("team request failed call=%s", self.provider_call_id)
+
     async def _person_asked_without_transfer(self) -> None:
         """The caller wants a person and this business has no number to hand the call to."""
         reason = "Caller asked to reach a person"
@@ -1064,10 +1160,7 @@ class CallPipeline:
                 call_row.escalated = True
                 call_row.escalation_reason = reason
         if not self._person_ask_told:
-            await agent_module.notify_escalation(
-                self.route.business_id, reason=reason, customer_id=self.customer_id,
-                channel="voice", db=self.db, request_summary=self._caller_summary(),
-            )
+            await self._file_team_request(reason)
         line = (
             "That's noted - the team will call you back. Is there anything else I can help with?"
             if self._person_ask_told
@@ -1223,11 +1316,6 @@ class CallPipeline:
                 call_row.escalated = True
                 call_row.escalation_reason = reason or "Caller asked to reach a person"
 
-        await agent_module.notify_escalation(
-            self.route.business_id, reason=reason or "Caller asked to reach a person",
-            customer_id=self.customer_id, channel="voice", db=self.db,
-        )
-
         if number:  # a phone-menu key with a number of its own
             targets = [call_routing.Target(number, None, "the team")]
         elif targets is None:
@@ -1248,6 +1336,8 @@ class CallPipeline:
             if await self._try_transfer(targets):
                 return
 
+        # Nobody to put them through to: the ask waits on the Talk to team page for whoever is free.
+        await self._file_team_request(reason or "Caller asked to reach a person")
         await self._say_stream(
             _single_chunk(
                 "There's no one else available to transfer you to right now, "

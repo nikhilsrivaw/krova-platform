@@ -93,6 +93,18 @@ async def promise_callback(
                         ))
                 except IntegrityError:
                     logger.info("missed-call callback already filed ref=%s", ref)
+                # It also waits on Talk to team, so whoever is free calls back (shared/team/requests.py). The team
+                # hears about the missed call just below, so no second push here.
+                try:
+                    from shared.team import requests as team_requests
+
+                    async with db.begin_nested():
+                        await team_requests.open_request(
+                            db, business_id=business_id, customer=customer, channel="voice",
+                            what=f"Missed call on {line} - call back", source="missed_call", notify=False,
+                        )
+                except Exception:
+                    logger.exception("missed-call team request failed customer=%s", customer.id)
                 if recording_url:
                     db.add(CustomerNote(
                         business_id=business_id, customer_id=customer.id, author_user_id=None,

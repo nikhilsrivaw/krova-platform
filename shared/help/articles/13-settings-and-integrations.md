@@ -8,6 +8,13 @@ Settings has five tabs: Business, Channels, Calls & queue, Leads & payments, Int
 - Features: switch modules on or off (see the list of features below). Some need a one-time setup after switching on.
 - Price list & payments (off for every business until you switch it on): the Fees / Price list on the Knowledge page, ticking tests on tokens and bookings, taking an order in a chat, and the payment link for WhatsApp orders. Needs Razorpay connected (Leads & payments tab) to send links; Cash on delivery works without it. Razorpay keeps about 2% plus GST on that fee from each paid link, UPI included - check your own Razorpay plan.
 - Agent Autonomy Level: Observe, Draft (recommended), Conditional, Act.
+- What the AI can do for customers (owner and admins): tick, for Calls, WhatsApp and Instagram, where the AI may book an appointment, meeting or viewing; cancel a booking; move a booking to another time; give or cancel a walk-in queue token; take an order from the Catalogue; cancel an unpaid order. Booking, tokens, cancelling and moving are on everywhere by default; orders are off until you tick them. Each needs its module on in Features (Bookings, the walk-in queue, Orders and Price list & payments).
+  - Every change is confirmed first: the AI repeats it back ("Confirm: cancel your booking on Sun 2 Nov, 5:00 PM?") and does it only if the customer's next message is a clear yes. Then it says what happened.
+  - Only the customer's own booking, token or order can be changed. A booking can only be moved to a time that is really free. Orders are priced from your Catalogue page.
+  - "Last time a booking can be cancelled or moved": closer than this to the booking (1 hour to 2 days, or any time), the AI hands it to your team.
+  - You get a notification for every change the AI made (phone app: "Bookings or orders the AI changed"). An order the AI took shows "Taken by KROVA AI" in its note.
+  - Anything not ticked, or that cannot be done (a paid or dispatched order, a time that is not free), goes to your team as an escalation.
+  - Website chat only books; any change asked there goes to your team, because a visitor's number is not verified.
 - Phone Login: link a phone number to also sign in with a code read out on a call (no SMS).
 
 ## Channels tab

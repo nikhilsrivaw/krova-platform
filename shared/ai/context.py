@@ -217,6 +217,25 @@ class AgentContext:
     # Every message id the agent was shown, so a draft can cite its sources
     # the same way a commitment does.
     context_message_ids: list[uuid.UUID] = field(default_factory=list)
+    # Where this conversation is ("voice", "whatsapp", "instagram", "web") and what the AI may change for the
+    # customer there (shared/ai/actions.py) - set by the caller with allow_actions(), since build() serves every channel.
+    channel: str | None = None
+    actions: list[str] = field(default_factory=list)
+    # The business's sellable products ({"name", "price"}), only when the AI may take orders - matched against what
+    # the customer says, like the catalogue rows, never shown whole.
+    products: list[dict] = field(default_factory=list)
+
+    def asked_topics(self) -> set[str]:
+        """
+        What the customer has brought up just now - their last two messages. On a call KROVA placed, also what the
+        call is about (its opening line): the person did not raise it, but it is why the call happened.
+        """
+        from shared.ai import actions
+
+        inbound = [t["text"] for t in self.recent if t["direction"] == "inbound"][-2:]
+        if self.channel == "voice" and self.recent and self.recent[0]["direction"] == "outbound":
+            inbound.append(self.recent[0]["text"])
+        return actions.topics(inbound)
 
     def render(self) -> str:
         """Lay it out for the model, in the order a person would want it."""
@@ -297,13 +316,32 @@ class AgentContext:
                 "Escalate any booking request rather than guessing."
             )
 
-        if self.upcoming_bookings is not None:
+        lines.extend(self._action_lines())
+
+        # What they have on file is shown once they bring the subject up in this conversation - before that it is
+        # held back, so the AI answers what they ask now instead of steering back to last week (shared/ai/actions.py).
+        asked = self.asked_topics()
+        held: list[str] = []
+
+        def show(name: str, *subjects: str) -> bool:
+            if asked & set(subjects):
+                return True
+            held.append(name)
+            return False
+
+        def want(value: str | None, name: str, *subjects: str) -> bool:
+            """A record that exists is held back until asked about; "nothing on record" just stays quiet."""
+            if value is None:
+                return False
+            return show(name, *subjects) if value else bool(asked & set(subjects))
+
+        if want(self.upcoming_bookings, "bookings", "booking"):
             lines.append(
                 "\nTheir upcoming booking(s) - the only source of truth for "
-                f"cancel_appointment_at, matched verbatim:\n{self.upcoming_bookings}"
+                f"cancel_appointment_at, reschedule_from and CANCEL_BOOKING / MOVE_FROM, matched verbatim:\n{self.upcoming_bookings}"
                 if self.upcoming_bookings
                 else "\nNo upcoming booking on record for this customer. If they "
-                "ask to cancel one, escalate rather than guessing which."
+                "ask to cancel or move one, escalate rather than guessing which."
             )
 
         lines.append("\n---\n")
@@ -320,7 +358,7 @@ class AgentContext:
                 f"from here if they ask about it or it is directly relevant to what "
                 f"they just said.\n{self.customer_summary}"
             )
-        if self.cases is not None:
+        if want(self.cases, "cases", "case", "booking"):
             lines.append(
                 f"\nTheir case(s) with you - the only source of truth for status "
                 f"questions, never a guess, and never mention any case that is not "
@@ -329,7 +367,7 @@ class AgentContext:
                 else "\nNo case on record for this customer yet. Escalate rather "
                 "than guessing at a status."
             )
-        if self.orders is not None:
+        if want(self.orders, "orders", "order", "money"):
             lines.append(
                 f"\nTheir recent order(s) - the only source of truth for a "
                 f"'where is my order' question, never a guess:\n{self.orders}"
@@ -337,7 +375,7 @@ class AgentContext:
                 else "\nNo order on record for this customer yet. If they say "
                 "they placed one, escalate rather than guessing at a status."
             )
-        if self.properties is not None:
+        if want(self.properties, "property viewings", "case", "booking"):
             lines.append(
                 f"\nProperties they have viewed or have a viewing booked for - "
                 f"the only source of truth for these listings' price and status, "
@@ -346,7 +384,7 @@ class AgentContext:
                 if self.properties
                 else "\nNo viewing on record for this customer yet."
             )
-        if self.claims is not None:
+        if want(self.claims, "claims", "case", "money"):
             party_noun = self.claim_party_noun or "reviewer"
             lines.append(
                 f"\nTheir claim(s) - the only source of truth for status, never a "
@@ -366,25 +404,26 @@ class AgentContext:
                 "rather than promising one."
             )
 
-        if self.key_dates:
+        if self.key_dates and show("dates", "dates", "money", "booking"):
             lines.append("\nDates on file for this customer (set by the business):")
             lines.extend(f"- {d}" for d in self.key_dates)
 
-        if self.no_show_count >= 2:
+        if self.no_show_count >= 2 and "booking" in asked:
             lines.append(
                 f"\nThis customer has {self.no_show_count} past no-shows on record. "
                 "If a deposit policy is set up, mention it when confirming a new booking."
             )
 
-        if self.paid_by:
-            lines.append(f"\nPayments for this person are made by: {self.paid_by}")
-        if self.pays_for:
-            lines.append("\nThis person pays for:")
-            for p in self.pays_for:
-                owed = "; ".join(p["owed"]) if p["owed"] else "nothing outstanding on record"
-                lines.append(f"- {p['name'] or 'someone'} ({owed})")
+        if (self.paid_by or self.pays_for) and show("who pays for whom", "money"):
+            if self.paid_by:
+                lines.append(f"\nPayments for this person are made by: {self.paid_by}")
+            if self.pays_for:
+                lines.append("\nThis person pays for:")
+                for p in self.pays_for:
+                    owed = "; ".join(p["owed"]) if p["owed"] else "nothing outstanding on record"
+                    lines.append(f"- {p['name'] or 'someone'} ({owed})")
 
-        if self.open_commitments:
+        if self.open_commitments and show("payments and promises", "money", "order", "booking"):
             lines.append("\nOutstanding between you:")
             for c in self.open_commitments:
                 amount = (
@@ -394,7 +433,27 @@ class AgentContext:
                 side = "You owe them" if c["direction"] == "we_owe" else "They owe you"
                 lines.append(f"- {side}: {c['description']}{amount}{due}")
 
+        if held:
+            lines.append(
+                f"\nAlso on file, shown only once the customer brings it up: {', '.join(dict.fromkeys(held))}. "
+                "Do not mention these yourself. If they ask about one of them, ask them to say what they need about it "
+                "- never say there is nothing on record."
+            )
+
         return lines
+
+    def _action_lines(self) -> list[str]:
+        """What the AI may change for this customer on this channel - the owner's choice (Settings)."""
+        if not self.channel:
+            return []
+        from shared.ai import actions
+
+        can = [actions.ACTIONS[a][0] for a in self.actions if a in actions.ACTIONS]
+        if not can:
+            return ["\nWhat you can do here: answer questions only - any change the customer asks for (cancelling, "
+                    "moving, ordering) goes to the team: escalate and name it."]
+        return ["\nWhat you can do here: " + "; ".join(can) + ". Anything else they want changed goes to the team: "
+                "escalate and name it."]
 
     def render_static(self) -> str:
         """
@@ -434,7 +493,14 @@ class AgentContext:
         bank = [{"question": k["title"], "answer": k["content"]} for k in self.knowledge if k.get("card") == knowledge_lookup.BANK]
         found_rows = knowledge_lookup.match_catalogue(rows, asked)
         found_answers = knowledge_lookup.match_bank(bank, asked)
+        found_products = (
+            knowledge_lookup.match_catalogue(getattr(self, "products", []), asked)
+            if "take_order" in getattr(self, "actions", ()) else []
+        )
         lines: list[str] = []
+        if found_products:
+            lines.append("\nProducts matching the customer's words - for an order, use these names exactly:")
+            lines.extend(f"- {knowledge_lookup.row_line(p)}" for p in found_products)
         if found_rows:
             lines.append("\nFrom the catalogue, matching the customer's words (quote prices exactly):")
             lines.extend(f"- {knowledge_lookup.row_line(r)}" for r in found_rows)
@@ -746,13 +812,18 @@ async def build(
                 .limit(5)
             )
         ).scalars().all()
+        provider_names = {
+            row[0]: row[1] for row in (await db.execute(select(Doctor.id, Doctor.name).where(
+                Doctor.id.in_([a.doctor_id for a in upcoming])))).all()
+        } if upcoming else {}
         lines = []
         for appt in upcoming:
             # ISO, for the same reason availability_text above uses it - the
             # model must echo this back verbatim in cancel_appointment_at to
             # cancel the right one, never a human-friendly reformatting of it.
             note = " (deposit not yet paid)" if appt.status == AppointmentStatus.awaiting_deposit else ""
-            lines.append(f"- {appt.starts_at.isoformat()}{note}")
+            provider = provider_names.get(appt.doctor_id)
+            lines.append(f"- {appt.starts_at.isoformat()}{f' with {provider}' if provider else ''}{note}")
         upcoming_bookings_text = "\n".join(lines)
 
     cases_text: str | None = None
@@ -922,7 +993,36 @@ async def build(
         key_dates=key_dates,
         no_show_count=no_show_count,
         context_message_ids=[m.id for m in messages],
+        products=await _order_products(db, business),
     )
+
+
+async def _order_products(db: AsyncSession, business) -> list[dict]:
+    """The product list for taking orders - only when the owner let the AI take orders on some channel."""
+    from shared.ai import actions
+
+    if business is None or not any(actions.read(business)["actions"].get("take_order") or []):
+        return []
+    if not verticals.has_capability(business, "order_sync") or not fee_list.enabled(business):
+        return []
+    rows = await actions._products(db, business.id)
+    return [{"name": r["name"], "price": f"₹{r['price_paise'] / 100:,.0f}"} for r in rows]
+
+
+def allow_actions(context: "AgentContext", business, channel: str | None) -> "AgentContext":
+    """Say where this conversation is and what the AI may change here - only what this business can actually do."""
+    from shared.ai import actions
+
+    needs = {
+        "book": "scheduling", "cancel_booking": "scheduling", "reschedule_booking": "scheduling",
+        "book_token": "opd_queue", "cancel_token": "opd_queue", "take_order": "order_sync", "cancel_order": "order_sync",
+    }
+    context.channel = channel
+    context.actions = [
+        a for a in actions.allowed_on(business, channel)
+        if business is not None and verticals.has_capability(business, needs[a])
+    ]
+    return context
 
 
 async def build_anonymous(

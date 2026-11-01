@@ -1,7 +1,7 @@
 # Other pages
 
 ## Escalations
-Every time the AI couldn't handle something on its own and asked for a person. Open ones alert whoever is on staff if nobody acknowledges them for 15 minutes. Press "I have got this", reply to the customer (WhatsApp, Instagram or call), then Resolve with a short note (only your team sees it). You can build an automation for escalations like one you are looking at.
+Every time the AI couldn't answer something on its own. (A customer who asks to talk to a person goes to Talk to team instead.) Open ones alert whoever is on staff if nobody acknowledges them for 15 minutes. Press "I have got this", reply to the customer (WhatsApp, Instagram or call), then Resolve with a short note (only your team sees it). You can build an automation for escalations like one you are looking at.
 
 ## Signals
 What's worth knowing from conversations: complaints, churn risk, praise, competitor mentions, and depending on your business, feature requests, bugs, overdue follow-ups, uncollected reports, refunds owed, delivery risk. Dismiss, or "Create an automation" for signals like it.
@@ -11,6 +11,7 @@ Orders page (Orders & products feature): orders from your Shopify store, so the 
 Catalogue page: what you sell - import from your WhatsApp catalogue, upload a CSV, or add by hand.
 
 ## Taking an order in a chat
+The AI can also take an order itself on calls, WhatsApp or Instagram, or cancel an unpaid one, once you tick it in Settings → What the AI can do for customers. It names the products from your Catalogue page, repeats the order and total back, and places it only after the customer says yes - with a payment link on WhatsApp or as cash on delivery.
 Conversations → open a chat → "Take order" (also inside the customer panel, and in the phone app chat: "Take an order"). Needs two features on (Settings → Features): Orders & products, and Price list & payments - plus products with a price on the Catalogue page.
 - Find a product, press Add, set how many with - and +. The total shows as you go. Prices come from your Catalogue page; you can't type a different price.
 - Choose "Send payment link" or "Cash on delivery", add a note if you like (size, address, gift wrap), and place the order.

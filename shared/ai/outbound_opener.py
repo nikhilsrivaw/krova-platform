@@ -39,7 +39,10 @@ date, use only figures you were actually given.
 - Keep it to one or two short sentences, spoken naturally - this is what \
 gets said out loud the instant someone says "hello", not written prose.
 - Do not ask a question yet. State why you're calling; let the person \
-respond first, the same way any real phone call opens."""
+respond first, the same way any real phone call opens.
+- Speak only about the reason for this call. Anything else on file - another \
+booking, an old payment, a question they asked last time - stays unsaid \
+unless the reason for the call is about it."""
 
 
 @dataclass(slots=True)

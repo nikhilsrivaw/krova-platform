@@ -526,6 +526,21 @@ async def check_reply_times() -> None:
         logger.exception("reply-time sweep failed")
 
 
+async def remind_team_requests() -> None:
+    """A customer's ask to talk to the team that nobody took for 15 minutes: the owner and admins hear once."""
+    from shared.db.session import AsyncSessionLocal
+    from shared.team import requests as team_requests
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await team_requests.remind_waiting(db)
+            await db.commit()
+            if sent:
+                logger.info("reminded about %s waiting team request(s)", sent)
+    except Exception:
+        logger.exception("team request reminder sweep failed")
+
+
 async def run_billing_renewals() -> None:
     """Tell PayU a monthly charge is coming, charge it, retry failures for a week, settle pending payments."""
     from shared.billing import service as billing_service
@@ -821,6 +836,14 @@ def build() -> AsyncIOScheduler:
         check_reply_times,
         IntervalTrigger(minutes=2),
         id="check_reply_times",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+
+    scheduler.add_job(
+        remind_team_requests,
+        IntervalTrigger(minutes=5),
+        id="remind_team_requests",
         replace_existing=True,
         misfire_grace_time=300,
     )

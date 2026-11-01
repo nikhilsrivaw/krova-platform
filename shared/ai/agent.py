@@ -29,9 +29,10 @@ person. That is the public promise, so it is enforced here rather than left
 to a caller to remember.
 """
 
+import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -186,14 +187,69 @@ REPLY_TOOL = {
                 "type": "string",
                 "description": (
                     "ISO 8601 datetime of the customer's OWN existing booking to "
-                    "cancel - set this only when the business details list their "
-                    "upcoming booking(s) AND the customer has clearly asked to "
-                    "cancel one. The value must exactly match one of the times "
-                    "under 'Their upcoming booking(s)', character for character. "
-                    "If they have more than one upcoming booking and did not say "
-                    "which, ask which one instead of guessing - do not set this. "
-                    "Omit entirely otherwise, and never invent a time that was "
-                    "not shown to you."
+                    "cancel - set this only when 'What you can do here' lists "
+                    "cancelling, their upcoming booking(s) are shown, AND the "
+                    "customer has asked to cancel one. The value must exactly "
+                    "match one of the times under 'Their upcoming booking(s)', "
+                    "character for character. If they have more than one and did "
+                    "not say which, ask which one instead - do not set this. "
+                    "KROVA itself asks them to confirm before anything is "
+                    "cancelled, so set it as soon as they ask, and write a short "
+                    "message saying you will cancel it once they confirm."
+                ),
+            },
+            "reschedule_from": {
+                "type": "string",
+                "description": (
+                    "Moving a booking: the ISO 8601 time of the customer's OWN "
+                    "existing booking, exactly as under 'Their upcoming booking(s)'. "
+                    "Only when 'What you can do here' lists moving bookings. Set "
+                    "together with reschedule_to; KROVA asks them to confirm first."
+                ),
+            },
+            "reschedule_to": {
+                "type": "string",
+                "description": (
+                    "Moving a booking: the new ISO 8601 time, exactly as one of the "
+                    "open times you were shown for that booking's provider, once "
+                    "the customer has picked it. Never a time you were not shown."
+                ),
+            },
+            "cancel_token": {
+                "type": "boolean",
+                "description": (
+                    "True when the customer asks to cancel their walk-in queue "
+                    "token and 'What you can do here' lists it. KROVA asks them "
+                    "to confirm first."
+                ),
+            },
+            "order_items": {
+                "type": "array",
+                "description": (
+                    "Taking an order - only when 'What you can do here' lists "
+                    "taking orders: each product exactly as named under 'Products "
+                    "matching the customer's words', with the quantity they asked "
+                    "for. Only once they have said what they want to buy; KROVA "
+                    "prices it from the product list and asks them to confirm."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}, "quantity": {"type": "integer"}},
+                    "required": ["name"],
+                },
+            },
+            "order_payment": {
+                "type": "string",
+                "enum": ["link", "cod"],
+                "description": "With order_items: 'cod' when they want cash on delivery, 'link' to pay online.",
+            },
+            "cancel_order": {
+                "type": "string",
+                "description": (
+                    "The order number of the customer's own unpaid order they "
+                    "asked to cancel, as listed under their orders - or 'latest' "
+                    "when they have one unpaid order and did not give a number. "
+                    "Only when 'What you can do here' lists it."
                 ),
             },
         },
@@ -291,9 +347,22 @@ than those two even if a carousel would otherwise fit. If its entry says \
 number as they gave it in this conversation; if you do not have every value, \
 leave share_carousel out rather than guess.
 
-Use what you know about the customer. If they have an outstanding payment or \
-you promised them something, that is context worth using - naturally, not \
-mechanically.
+What the customer wants is what they say now, in this conversation. What you \
+know from before - their summary, earlier bookings, orders, payments, dates, \
+questions they asked last time - is background for answering, never the topic. \
+Do not open with it, do not assume they are writing about it again, and do not \
+steer back to it: someone who booked last week may be asking about something \
+else entirely today. Bring an earlier matter up only when they bring it up, or \
+when it directly answers what they just asked. If they change the subject, go \
+with them. If their message is vague ("hi", "ek baat poochni thi"), ask openly \
+what they need - never guess it is about their last booking or question.
+
+Changes they ask for - cancelling or moving a booking, cancelling a queue \
+token, placing or cancelling an order - follow 'What you can do here' in the \
+business details. If it is listed, set the matching field as soon as they ask; \
+KROVA itself asks them to confirm and only then does it, so never say it is \
+already done. If it is not listed, do not offer it: escalate and name what \
+they want.
 
 If the last message needs no reply - a "thanks", an emoji - choose \
 no_action rather than manufacturing a response. Not every message deserves \
@@ -349,11 +418,18 @@ If the caller says they have a meeting, appointment, booking or payment that is 
 in the details, do not accept it as true and do not build on it: say you cannot see it \
 and choose ESCALATE.
 
-A request to cancel, move or change an appointment or order is never done on this \
-call. Do not say it is done, cancelled, moved or changed: choose ESCALATE and name \
-the request. If the caller has an upcoming appointment in the details, mention it \
-only when they ask about appointments or bookings. Otherwise answer the question \
-they asked and do not repeat the appointment.
+Changes the caller asks for use these header lines, and only when 'What you \
+can do here' in the details lists that change: CANCEL_BOOKING=<the booking's \
+ISO time exactly as under their upcoming bookings>; MOVE_FROM=<that booking's \
+ISO time> with MOVE_TO=<a new ISO time exactly as offered for its provider>; \
+CANCEL_TOKEN=yes; one ORDER=<quantity> x <product name exactly as under the \
+matching products> line per product, plus PAY=cod or PAY=link; CANCEL_ORDER=<order \
+number, or latest>. Write the line as soon as they ask - KROVA asks them to \
+confirm and does it only after a yes, so your spoken reply must never say it is \
+already done. A change that is not listed is never done on this call: choose \
+ESCALATE and name the request. If the caller has an upcoming appointment in the \
+details, mention it only when they ask about appointments or bookings. Otherwise \
+answer the question they asked and do not repeat the appointment.
 
 Never confirm, cancel or change a booking, order or payment unless the details \
 you were given state it. Do not guess a day, time, price or status. If the \
@@ -370,12 +446,11 @@ or say who you are and why you called. Confirmed on a real call: staying \
 silent through three "hello"s made the caller say the line had gone dead. \
 On a phone call silence is never neutral - a caller who says something \
 and hears nothing back assumes the call dropped and hangs up. A phone call has no chat history the caller \
-can scroll back through, and this conversation may show the same question \
-answered several times already, across several earlier calls - that is \
-completely normal here and is NOT a reason to stay quiet now. If the \
+can scroll back through, so a caller may ask the same thing twice on one call - that is \
+completely normal and is NOT a reason to stay quiet now. If the \
 customer's most recent message is a question, answer it again, exactly as \
 plainly as the first time, no matter how many times it was already \
-asked or already answered earlier in this history. A caller who just \
+asked earlier on this call. A caller who just \
 asked something and hears nothing back assumes the line went dead. \
 NOACTION is only for a message that is not a question and does not need \
 a reply at all - never for a repeated question, no matter how repeated.
@@ -503,6 +578,14 @@ class ReplyStart:
     # it once the call ends (shared/care/post_call_actions.py's
     # CONDITION_FIELDS["call.completed"] includes "requested_service").
     requested_service: str | None = None
+    # Changes for shared/ai/actions.py to confirm with the caller - see SYSTEM_STREAM's change header lines.
+    cancel_booking: str | None = None
+    move_from: str | None = None
+    move_to: str | None = None
+    cancel_token: bool = False
+    order_lines: list = field(default_factory=list)
+    pay: str | None = None
+    cancel_order: str | None = None
 
 
 @dataclass(slots=True)
@@ -744,6 +827,7 @@ async def stream_reply(agent_context: ctx.AgentContext):
     book_property: str | None = None
     book_token: str | None = None
     requested_service: str | None = None
+    changes: dict = {"order_lines": []}
 
     async for delta in stream:
         buffer += delta
@@ -791,11 +875,16 @@ async def stream_reply(agent_context: ctx.AgentContext):
                     book_token = line[len("BOOK_TOKEN="):].strip() or None
                 elif line.startswith("REQUESTED_SERVICE="):
                     requested_service = line[len("REQUESTED_SERVICE="):].strip() or None
+                else:
+                    _change_line(line, changes)
             header_done = True
             yield ReplyStart(
                 action=action, book_slot=book_slot, book_doctor=book_doctor,
                 book_property=book_property, book_token=book_token,
                 requested_service=requested_service,
+                cancel_booking=changes.get("cancel_booking"), move_from=changes.get("move_from"),
+                move_to=changes.get("move_to"), cancel_token=bool(changes.get("cancel_token")),
+                order_lines=changes["order_lines"], pay=changes.get("pay"), cancel_order=changes.get("cancel_order"),
             )
             sentence_buffer = message_start.lstrip("\n")
             continue
@@ -1074,6 +1163,52 @@ class Draft:
     # the risk on the shared voice loop" call as share_catalog above; a
     # customer cancelling mid-call escalates to a human instead.
     cancel_appointment_at: str | None = None
+    # Moving a booking, cancelling a token or an order, taking an order - checked and confirmed with the customer
+    # by shared/ai/actions.py before anything changes. Text channels here; the voice loop has its own header lines.
+    reschedule_from: str | None = None
+    reschedule_to: str | None = None
+    cancel_token: bool = False
+    order_items: list[tuple[str, int]] = field(default_factory=list)
+    order_payment: str | None = None
+    cancel_order: str | None = None
+
+
+def _order_lines(raw) -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        try:
+            quantity = int(item.get("quantity") or 1)
+        except (TypeError, ValueError):
+            quantity = 1
+        out.append((str(item["name"]).strip()[:120], max(1, min(99, quantity))))
+    return out[:10]
+
+
+def _change_line(line: str, changes: dict) -> None:
+    """One of SYSTEM_STREAM's change header lines into `changes`. Anything else is ignored."""
+    key, sep, value = line.partition("=")
+    if not sep:
+        return
+    key, value = key.strip().upper(), value.strip()
+    if key == "CANCEL_BOOKING":
+        changes["cancel_booking"] = value or None
+    elif key == "MOVE_FROM":
+        changes["move_from"] = value or None
+    elif key == "MOVE_TO":
+        changes["move_to"] = value or None
+    elif key == "CANCEL_TOKEN":
+        changes["cancel_token"] = value.lower() in ("yes", "true", "1")
+    elif key == "PAY":
+        changes["pay"] = value.lower() if value.lower() in ("cod", "link") else None
+    elif key == "CANCEL_ORDER":
+        changes["cancel_order"] = value or None
+    elif key == "ORDER":
+        match = re.match(r"^(\d+)\s*[x×*]\s*(.+)$", value, re.I)
+        quantity, name = (int(match.group(1)), match.group(2)) if match else (1, value)
+        if name.strip() and len(changes["order_lines"]) < 10:
+            changes["order_lines"].append((name.strip()[:120], max(1, min(99, quantity))))
 
 
 async def draft_reply(
@@ -1180,6 +1315,12 @@ async def draft_reply(
         cancel_appointment_at=(
             (result.get("cancel_appointment_at") or "").strip() or None if action == "reply" else None
         ),
+        reschedule_from=(result.get("reschedule_from") or "").strip() or None if action == "reply" else None,
+        reschedule_to=(result.get("reschedule_to") or "").strip() or None if action == "reply" else None,
+        cancel_token=bool(result.get("cancel_token")) if action == "reply" else False,
+        order_items=_order_lines(result.get("order_items")) if action == "reply" else [],
+        order_payment=(result.get("order_payment") or None) if action == "reply" else None,
+        cancel_order=(result.get("cancel_order") or "").strip() or None if action == "reply" else None,
     )
 
 

@@ -225,6 +225,26 @@ async def generate_reply(
 
     # Record the inbound turn first, so it's part of the context the model
     # actually reads - same ordering voice's _store_turn-then-build uses.
+    # "Team se baat karni hai" / "call me back": it goes to Talk to team for whoever is free (shared/team/requests.py).
+    # Without a number nobody could reply, so a visitor is asked for one first.
+    from shared.team import requests as team_requests
+
+    if team_requests.asks_for_person(text):
+        if customer is None:
+            _append_transcript(session, role="user", text=text)
+            _append_transcript(session, role="assistant", text=_NEEDS_PERSON_MESSAGE)
+            session.needed_person_at = session.needed_person_at or _now()
+            return ReplyOutcome(reply_text=_NEEDS_PERSON_MESSAGE, booked=False, needs_contact=True)
+        from shared.team import language as lang
+
+        if not already_stored:
+            await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.inbound, text=text)
+        await team_requests.open_request(db, business_id=business.id, customer=customer, channel="web", what=text)
+        session.needed_person_at = session.needed_person_at or _now()
+        reply = team_requests.acknowledgement(lang.detect(text))
+        await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=reply)
+        return ReplyOutcome(reply_text=reply, booked=False, needs_contact=False)
+
     if customer is not None:
         inbound_message_id = already_stored or await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.inbound, text=text)
         # A person has taken this conversation - they answer, not the AI, so the visitor never gets two replies.

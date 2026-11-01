@@ -31,6 +31,8 @@ PUSH_KINDS: dict[str, str] = {
     "draft": "AI replies waiting for your OK",
     "slow_reply": "A customer has waited too long",
     "team_alert": "Alerts from your automations",
+    "ai_action": "Bookings or orders the AI changed for a customer",
+    "team_request": "A customer asked to talk to the team",
     "calls": "A call is coming to you",
     "wallet": "Wallet and plan",
 }

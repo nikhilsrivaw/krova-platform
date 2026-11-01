@@ -39,5 +39,15 @@ Team page → Teams and routing (owner and admins).
 - Customer phone numbers - Shown (default) or Last 4 digits only. With last 4 digits, agents can still message the customer and call them through KROVA (their phone rings first), but can't see or copy the full number.
 Owners and admins can always do all of this.
 
+## Talk to team (customers who asked for a person)
+Sidebar → Talk to team (everyone on the team; phone app: More → Talk to team, and on Today).
+- When a customer asks to talk to a person or to be called back - on a call, WhatsApp, Instagram or the website chat ("team se baat karni hai", "manager ko bulao", "call me back") - it lands here. On a call, KROVA first tries to put them through to your team; if nobody can take the call, it lands here. A missed call that nobody on the call list picked up also lands here ("Missed call - call back").
+- This is not an escalation: Escalations are questions the AI could not answer. Talk to team is a customer who wants a person.
+- In a chat the customer is told their ask reached the team and asked if a particular time suits them. On the website chat a visitor is first asked for their name and number - without one nobody could reply.
+- Who hears: the chat's team (Teams and routing) when it has one, otherwise everyone who is available, plus the owner and admins. If nobody takes it in 15 minutes, the owner and admins are reminded once.
+- Waiting / Mine / Done tabs. A customer who asks again while their request is open is added to the same request, not a new one.
+- Open a request for the side panel: what they want, the customer's briefing (every channel's recent messages, notes, promises, money owed, next visit), and buttons - "I'll take it" (the request and the customer's chat become yours), Call now (your phone rings first, then the customer), Open chat, Put back. Owner and admins can also take one over or "Give it to" a named person, who is told.
+- Done: write what happened. The note is saved on the customer, so the whole team sees what was agreed. "Close without talking" closes it with no call.
+
 ## Activity feed
 Team page → Activity feed: who did what and when - messages sent, replies approved, settings changed, data downloaded, sign-ins, and refused attempts. It never shows what a message said. Rows can't be edited or deleted.

@@ -154,7 +154,7 @@ def test_a_known_visitor_who_needs_a_person_is_handed_to_one(monkeypatch):
     monkeypatch.setattr(agent_module, "notify_escalation", quiet)
     monkeypatch.setattr(web_reply, "_hand_to_person", hand)
     out = asyncio.run(web_reply.generate_reply(_GetDb(customer), business=_business(),
-                                               session=_session(customer.id), text="manager se baat karao"))
+                                               session=_session(customer.id), text="warranty claim kaise hoga?"))
     assert handed == ["needs a person"] and "reply right here" in out.reply_text and not out.needs_contact
 
 
