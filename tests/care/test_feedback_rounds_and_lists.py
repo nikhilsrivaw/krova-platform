@@ -366,3 +366,55 @@ def test_the_form_saves_the_thing_not_the_question(monkeypatch):
     asyncio.run(feedback.add_external(Db(), _business(), [{"phone": "9876543210", "about": "how was the product",
                                                            "date": "30/10/2026"}], source="form", now=NOW))
     assert added[0].about == "product on 30 Oct"
+
+
+# ── only the moments a business has ─────────────────────────────────────────
+
+def _typed(vertical, **settings):
+    return SimpleNamespace(id=BIZ, name="Shop", vertical=vertical, timezone="Asia/Kolkata", is_active=True,
+                           settings=settings)
+
+
+def test_each_type_sees_only_the_moments_it_has():
+    assert list(feedback.available_triggers(_typed("general"))) == ["chat"]
+    assert list(feedback.available_triggers(_typed("local_service"))) == ["visit", "token", "chat"]
+    assert list(feedback.available_triggers(_typed("commerce"))) == ["order", "chat"]
+    on = _typed("general", capability_overrides={"order_sync": True})
+    assert list(feedback.available_triggers(on)) == ["order", "chat"]
+
+
+def test_the_sweep_never_runs_a_moment_without_its_feature(monkeypatch):
+    asked = []
+
+    async def candidates(db, business, trigger, now, delay):
+        asked.append(trigger)
+        return []
+
+    monkeypatch.setattr(feedback, "_candidates", candidates)
+    business = _typed("general", feedback={"enabled": True, "triggers": ["visit", "token", "order", "chat"]})
+    asyncio.run(feedback.plan_requests(_Db(), business, now=NOW))
+    assert asked == ["chat"]
+
+
+def test_saving_keeps_a_tick_on_a_hidden_moment(monkeypatch):
+    from services.api.routers import feedback as api
+    from shared.channels.whatsapp import required_templates
+
+    business = _typed("commerce", feedback={"enabled": True, "triggers": ["visit", "order"]})
+
+    async def statuses(db, business_id):
+        return {}
+
+    monkeypatch.setattr(required_templates, "statuses", statuses)
+
+    class Db:
+        async def get(self, model, key):
+            return business
+
+        async def flush(self):
+            return None
+
+    body = api.SettingsIn(enabled=True, triggers=["chat"], delay_minutes=0, cooldown_days=7)
+    out = asyncio.run(api.put_settings(body, SimpleNamespace(business=BIZ), Db()))
+    assert set(out.trigger_labels) == {"order", "chat"}
+    assert business.settings["feedback"]["triggers"] == ["chat", "visit"]  # order unticked; visit kept for later

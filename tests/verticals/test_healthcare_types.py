@@ -131,3 +131,14 @@ def test_leads_and_forms_are_off_by_default_for_healthcare_and_on_for_the_rest()
     for key in verticals.keys():
         has = "lead_capture" in verticals.get(key).get("capabilities", [])
         assert has == (not key.startswith("health_")), key
+
+
+def test_the_old_clinic_type_never_asks_for_reviews_either():
+    """Hidden since the health_* types, but businesses still run on it - the NMC rule applies to them too."""
+    from shared.care import feedback
+
+    clinic = SimpleNamespace(vertical="clinic", settings={"google_review_url": "https://g.page/r/x",
+                                                          "feedback": {"review_link": "https://g.page/r/x"}})
+    assert verticals.get("clinic")["review_requests"] is False
+    assert recall._asks_for_reviews(clinic) is False and not recall.type_allows_reviews(clinic)
+    assert feedback.review_url(clinic) is None

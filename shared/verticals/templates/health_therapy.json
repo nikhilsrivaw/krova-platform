@@ -101,6 +101,7 @@
     "100% theek"
   ],
   "review_requests": false,
+  "emergency": "medical",
   "flow_templates": [
     {
       "key": "book_followup",

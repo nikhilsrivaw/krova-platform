@@ -80,8 +80,29 @@ def write(business, *, actions: dict[str, list[str]], cutoff_hours: int | None) 
     return read(business)
 
 
+# What each action cannot work without (Settings -> Features). Taking an order also needs "Price list & payments":
+# the order is priced and paid from it (shared/catalogue/chat_orders.py).
+NEEDS: dict[str, tuple[str, ...]] = {
+    "book": ("scheduling",), "cancel_booking": ("scheduling",), "reschedule_booking": ("scheduling",),
+    "book_token": ("opd_queue",), "cancel_token": ("opd_queue",),
+    "take_order": ("order_sync", "price_list_payments"), "cancel_order": ("order_sync",),
+}
+
+
+def available(business, action: str) -> bool:
+    """Whether the features this action needs are switched on - otherwise the AI is never offered it."""
+    from shared import verticals
+
+    return all(verticals.has_capability(business, cap) for cap in NEEDS.get(action, ()))
+
+
 def allowed(business, action: str, channel: str | None) -> bool:
-    """Whether the AI may do this on this channel. Website chat keeps what it always had: booking and tokens only."""
+    """
+    Whether the AI may do this on this channel: its features are on, and the owner allowed it there. Website chat
+    keeps what it always had: booking and tokens only.
+    """
+    if not available(business, action):
+        return False
     if channel == "web":
         return action in ("book", "book_token")
     if channel not in CHANNELS:

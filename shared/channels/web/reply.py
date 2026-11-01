@@ -262,6 +262,28 @@ async def generate_reply(
 
     # Record the inbound turn first, so it's part of the context the model
     # actually reads - same ordering voice's _store_turn-then-build uses.
+    # An emergency is told where to get help at once and the team alerted - before the AI (shared/care/emergency.py).
+    from shared.care import emergency
+
+    phrase = emergency.detect(business, text)
+    if phrase:
+        line = emergency.reply(business, text)
+        reason = emergency.reason(phrase)
+        if customer is None:
+            _append_transcript(session, role="user", text=text)
+            _append_transcript(session, role="assistant", text=line)
+        else:
+            if not already_stored:
+                await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.inbound, text=text)
+            await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=line)
+            await _hand_to_person(db, business=business, customer=customer, reason=reason)
+        await agent_module.notify_escalation(
+            business.id, reason=reason, customer_id=customer.id if customer is not None else None, channel="web", db=db,
+        )
+        session.needed_person_at = session.needed_person_at or _now()
+        logger.warning("emergency in website chat business=%s session=%s", business.id, session.id)
+        return ReplyOutcome(reply_text=line, booked=False, needs_contact=customer is None)
+
     # "Team se baat karni hai" / "call me back": it goes to Talk to team for whoever is free (shared/team/requests.py).
     # Without a number nobody could reply, so a visitor is asked for one first.
     from shared.team import requests as team_requests

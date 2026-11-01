@@ -48,6 +48,21 @@ TRIGGERS = {
     "order": "After an order is delivered",
     "chat": "After a chat is marked resolved",
 }
+# The feature each moment comes from (Settings -> Features). A business without it never sees or runs that moment;
+# a tick it already has is kept, so switching the feature on brings it back. "chat" needs nothing.
+TRIGGER_NEEDS = {"visit": "scheduling", "token": "opd_queue", "order": "order_sync"}
+
+
+def trigger_available(business, trigger: str) -> bool:
+    from shared import verticals
+
+    need = TRIGGER_NEEDS.get(trigger)
+    return need is None or verticals.has_capability(business, need)
+
+
+def available_triggers(business) -> dict[str, str]:
+    """The moments this business can be asked about, for the Feedback page."""
+    return {key: label for key, label in TRIGGERS.items() if trigger_available(business, key)}
 # Requests added by hand or by the API - always asked about, whatever is ticked above.
 EXTERNAL = "external"
 CHANNELS = ("whatsapp", "voice", "both")
@@ -252,7 +267,7 @@ async def plan_requests(db: AsyncSession, business: Business, now: datetime | No
         return 0
     delay = timedelta(minutes=s["delay_minutes"])
     made = 0
-    for trigger in s["triggers"]:
+    for trigger in [x for x in s["triggers"] if trigger_available(business, x)]:
         for customer_id, ref, about, at in await _candidates(db, business, trigger, now, delay):
             customer = await db.get(Customer, customer_id)
             if customer is None or customer.is_private:

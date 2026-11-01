@@ -23,7 +23,7 @@ NOW = datetime(2026, 11, 1, 6, 0, tzinfo=timezone.utc)
 
 def _business(**settings):
     return SimpleNamespace(id=BIZ, settings={"ai_actions": settings} if settings else {}, timezone="Asia/Kolkata",
-                           vertical="general", capabilities=None)
+                           vertical="local_service", capabilities=None)
 
 
 # ── settings ────────────────────────────────────────────────────────────────
@@ -324,3 +324,43 @@ def test_the_settings_api_shows_every_action_and_refuses_unknown_ones(monkeypatc
     assert {a.key: a.channels for a in saved.actions}["cancel_booking"] == list(actions.CHANNELS)  # untouched
     with pytest.raises(HTTPException):
         asyncio.run(api.put_settings(api.SettingsIn(actions={"refund": ["voice"]}), user, Db()))
+
+
+# ── an action is offered only when its features are on ─────────────────────
+
+def _typed(vertical, overrides=None, actions=None):
+    settings = {}
+    if overrides:
+        settings["capability_overrides"] = overrides
+    if actions:
+        settings["ai_actions"] = {"actions": actions}
+    return SimpleNamespace(id=BIZ, settings=settings, timezone="Asia/Kolkata", vertical=vertical, capabilities=None)
+
+
+def test_taking_an_order_needs_orders_and_the_price_list():
+    on = {"take_order": ["whatsapp"], "cancel_order": ["whatsapp"]}
+    shop = _typed("commerce", actions=on)
+    assert not actions.available(shop, "take_order") and actions.available(shop, "cancel_order")
+    assert not actions.allowed(shop, "take_order", "whatsapp") and actions.allowed(shop, "cancel_order", "whatsapp")
+    priced = _typed("commerce", overrides={"price_list_payments": True}, actions=on)
+    assert actions.available(priced, "take_order") and actions.allowed(priced, "take_order", "whatsapp")
+
+
+def test_a_switched_off_feature_hides_its_actions_even_when_the_owner_ticked_them():
+    ticked = {"book": ["voice"], "cancel_booking": ["voice"], "reschedule_booking": [], "book_token": ["voice"],
+              "cancel_token": []}
+    plain = _typed("general", actions=ticked)
+    assert actions.allowed_on(plain, "voice") == [] and not actions.allowed(plain, "book", "web")
+    salon = _typed("local_service", actions=ticked)
+    assert set(actions.allowed_on(salon, "voice")) == {"book", "cancel_booking", "book_token"}
+    no_queue = _typed("local_service", overrides={"opd_queue": False}, actions=ticked)
+    assert "book_token" not in actions.allowed_on(no_queue, "voice") and not actions.allowed(no_queue, "book_token", "web")
+
+
+def test_the_settings_screen_shows_the_same_rule():
+    from services.api.routers import ai_actions as api
+
+    out = {a.key: a.available for a in api._out(_typed("commerce")).actions}
+    assert out == {"book": False, "cancel_booking": False, "reschedule_booking": False, "book_token": False,
+                   "cancel_token": False, "take_order": False, "cancel_order": True}
+    assert set(actions.NEEDS) == set(actions.ACTIONS)

@@ -110,6 +110,7 @@
     "value low"
   ],
   "review_requests": false,
+  "emergency": "medical",
   "flow_templates": [],
   "knowledge_card": {
     "offers": {

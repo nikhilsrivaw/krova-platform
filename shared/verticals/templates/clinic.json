@@ -328,5 +328,7 @@
       }
     }
   ],
+  "review_requests": false,
+  "emergency": "medical",
   "selectable": false
 }

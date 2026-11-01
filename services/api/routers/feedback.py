@@ -124,7 +124,8 @@ async def _settings_out(db, business: Business) -> SettingsOut:
     states = await required_templates.statuses(db, business.id)
     state, reason = states.get(feedback.TEMPLATE, ("missing", None))
     return SettingsOut(
-        **feedback.read(business), trigger_labels=feedback.TRIGGERS, template_state=state, template_reason=reason,
+        **feedback.read(business), trigger_labels=feedback.available_triggers(business), template_state=state,
+        template_reason=reason,
         review_template_state=states.get("feedback_review_link", ("missing", None))[0],
         review_link_set=bool((business.settings or {}).get("google_review_url")),
         review_allowed=type_allows_reviews(business),
@@ -151,6 +152,9 @@ async def put_settings(body: SettingsIn, current_user: OwnerOrAdminDep, db: DbDe
         raise HTTPException(422, f"Unknown moment: {', '.join(sorted(unknown))}")
     business = await db.get(Business, current_user.business)
     values = body.model_dump()
+    # The page only shows moments whose feature is on: a tick on a hidden one stays, for when it is switched back on.
+    hidden = [x for x in feedback.read(business)["triggers"] if not feedback.trigger_available(business, x)]
+    values["triggers"] = [x for x in body.triggers if feedback.trigger_available(business, x)] + hidden
     if not body.rounds:
         values.pop("rounds")  # keep what is saved
     feedback.write(business, values)

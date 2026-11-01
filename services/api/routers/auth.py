@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.care import emergency
 from shared.auth import google_oauth, otp, service
 from shared.auth.passwords import (
     MAX_PASSWORD_LENGTH,
@@ -104,6 +105,10 @@ class MeResponse(BaseModel):
     # reasoning for why this one key gets a named field instead of an
     # arbitrary-JSONB write endpoint.
     google_review_url: str | None
+    # The business's own emergency desk number, said after 112 when a message is an emergency - only for a type
+    # whose template has an emergency set (healthcare). shared/care/emergency.py.
+    emergency_phone: str | None = None
+    emergency_enabled: bool = False
     # Same reasoning, same pattern - the only way this business can ever
     # turn on shared/care/commitment_deadline_calls.py's proactive voice
     # calls, which previously had no UI path to enable at all.
@@ -621,6 +626,8 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
+        emergency_phone=(business.settings or {}).get("emergency_phone") if business else None,
+        emergency_enabled=bool(emergency.phrases(business)) if business else False,
         proactive_deadline_calls_enabled=bool(
             (business.settings or {}).get("proactive_deadline_calls_enabled")
         ) if business else False,
@@ -637,6 +644,8 @@ class UpdateMeRequest(BaseModel):
     # reusing Business.settings as the actual storage (same JSONB bag
     # already used for e.g. settings["pipeline_stages"]).
     google_review_url: str | None = Field(default=None, max_length=2000)
+    # "" clears it.
+    emergency_phone: str | None = Field(default=None, max_length=30)
     proactive_deadline_calls_enabled: bool | None = None
 
 
@@ -679,6 +688,10 @@ async def update_me(
                 and body.google_review_url != (current_settings.get("google_review_url") or "")
             )
             or (
+                body.emergency_phone is not None
+                and body.emergency_phone != (current_settings.get("emergency_phone") or "")
+            )
+            or (
                 body.proactive_deadline_calls_enabled is not None
                 and body.proactive_deadline_calls_enabled
                 != bool(current_settings.get("proactive_deadline_calls_enabled"))
@@ -702,6 +715,11 @@ async def update_me(
             )
         if body.google_review_url is not None:
             business.settings = {**(business.settings or {}), "google_review_url": body.google_review_url}
+        if body.emergency_phone is not None:
+            number = emergency.clean_phone(body.emergency_phone)
+            if body.emergency_phone.strip() and number is None:
+                raise HTTPException(status_code=422, detail="The emergency number should be a phone number, like 98765 43210.")
+            business.settings = {**(business.settings or {}), "emergency_phone": number}
         if body.proactive_deadline_calls_enabled is not None:
             business.settings = {
                 **(business.settings or {}),
@@ -724,6 +742,8 @@ async def update_me(
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
+        emergency_phone=(business.settings or {}).get("emergency_phone") if business else None,
+        emergency_enabled=bool(emergency.phrases(business)) if business else False,
         proactive_deadline_calls_enabled=bool(
             (business.settings or {}).get("proactive_deadline_calls_enabled")
         ) if business else False,

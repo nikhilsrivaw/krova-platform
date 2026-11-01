@@ -668,6 +668,11 @@ class CallPipeline:
             await self._scripted_reply()
             return
 
+        # An emergency is told where to get help before anything else, then put through to the team if anyone can
+        # take it (shared/care/emergency.py) - never the "someone will follow up" line an escalation speaks.
+        if await self._answer_emergency():
+            return
+
         if self.customer_id is None:
             # Saving the caller's turn failed. Silence sounds like a dead line, so say so.
             logger.warning("reply requested with no resolved customer")
@@ -1163,6 +1168,35 @@ class CallPipeline:
                 )
         except Exception:
             logger.exception("team request failed call=%s", self.provider_call_id)
+
+    async def _answer_emergency(self) -> bool:
+        """True when the caller's last words were an emergency and it was handled (shared/care/emergency.py)."""
+        from shared.care import emergency
+
+        last = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
+        business = await self.db.get(Business, self.route.business_id) if self.db is not None else None
+        phrase = emergency.detect(business, last)
+        if not phrase:
+            return False
+        reason = emergency.reason(phrase)
+        logger.warning("emergency on a call call=%s business=%s", self.provider_call_id, self.route.business_id)
+        await self._mark_escalated(reason)
+        try:
+            await agent_module.notify_escalation(
+                self.route.business_id, reason=reason, customer_id=self.customer_id, channel="voice", db=self.db,
+                request_summary=self._caller_summary(),
+            )
+        except Exception:
+            logger.exception("emergency alert failed call=%s", self.provider_call_id)
+        self._audio_bytes_sent = 0
+        self._audio_started_at = None
+        await self._say_stream(_single_chunk(emergency.reply(business, last)), record=True)
+        await self._wait_for_line_playback()
+        targets = await self._transfer_targets()
+        if targets:
+            await self._alert_first(targets[0])
+            await self._try_transfer(targets)
+        return True
 
     async def _person_asked_without_transfer(self) -> None:
         """The caller wants a person and this business has no number to hand the call to."""

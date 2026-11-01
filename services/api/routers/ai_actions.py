@@ -16,10 +16,6 @@ from shared.db.models import Business
 router = APIRouter(prefix="/ai-actions", tags=["ai-actions"])
 
 # What each action needs this business to have switched on (Settings -> Features).
-NEEDS = {
-    "book": "scheduling", "cancel_booking": "scheduling", "reschedule_booking": "scheduling",
-    "book_token": "opd_queue", "cancel_token": "opd_queue", "take_order": "order_sync", "cancel_order": "order_sync",
-}
 
 
 class ActionOut(BaseModel):
@@ -47,7 +43,7 @@ def _out(business: Business) -> SettingsOut:
     return SettingsOut(
         actions=[
             ActionOut(key=key, label=label, channels=current["actions"][key],
-                      available=verticals.has_capability(business, NEEDS[key]), asks_to_confirm=key in rules.CHANGES)
+                      available=rules.available(business, key), asks_to_confirm=key in rules.CHANGES)
             for key, (label, _default) in rules.ACTIONS.items()
         ],
         cutoff_hours=current["cutoff_hours"], channels=list(rules.CHANNELS),

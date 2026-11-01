@@ -241,6 +241,40 @@ async def _try_share_catalog(*, business: Business, customer: Customer, db: Asyn
         logger.warning("catalog share failed business=%s: %s", business.id, exc)
 
 
+async def _answer_emergency(db: AsyncSession, *, message, business, customer, phrase: str) -> None:
+    """Send the emergency line now and alert the team - see shared/care/emergency.py."""
+    from shared.care import emergency
+    from shared.team import rules as team_rules
+
+    channel = message.channel.value if hasattr(message.channel, "value") else str(message.channel)
+    reason = emergency.reason(phrase)
+    logger.warning("emergency message business=%s customer=%s channel=%s", business.id, customer.id, channel)
+    if channel in ("whatsapp", "instagram"):
+        line = MessageDraft(
+            business_id=message.business_id, customer_id=message.customer_id, in_reply_to_id=message.id,
+            channel=channel, action=DraftAction.reply, status=DraftStatus.pending,
+            body=emergency.reply(business, message.content),
+            reasoning="Emergency - told where to get help at once, before any draft.", gap=None, confidence=1.0,
+            used_context=[], expires_at=message.occurred_at + SERVICE_WINDOW, cost_paise=0,
+        )
+        db.add(line)
+        await db.flush()
+        try:
+            await send_draft(line, message.business_id, db, reviewed_by_user_id=None)
+        except DraftSendError as exc:
+            logger.error("emergency line not sent draft=%s: %s", line.id, exc)
+    await agent_module.notify_escalation(
+        message.business_id, reason=reason, customer_id=message.customer_id, channel=channel, db=db,
+        request_summary=(message.content or "")[:500] or None,
+    )
+    try:
+        async with db.begin_nested():
+            await team_rules.hand_to_person(db, business_id=message.business_id, customer_id=message.customer_id,
+                                            reason=reason)
+    except Exception:
+        logger.exception("emergency hand to person failed business=%s", business.id)
+
+
 async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageDraft | None:
     """
     Read the conversation this message belongs to and propose a reply.
@@ -306,6 +340,15 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
     from shared.scheduling import qr_token
 
     if not await plan_blocked(db, message.business_id) and await qr_token.handle(message, business, customer, db):
+        return None
+
+    # An emergency ("seene mein dard", "सांस नहीं आ रही") is told where to get help at once - before the AI, whatever
+    # the autonomy setting or plan, because it cannot wait for a person to approve a draft. shared/care/emergency.py.
+    from shared.care import emergency
+
+    phrase = emergency.detect(business, message.content)
+    if phrase:
+        await _answer_emergency(db, message=message, business=business, customer=customer, phrase=phrase)
         return None
 
     # "Team se baat karni hai" / "call me back": it goes to Talk to team for whoever is free - not an escalation, and
