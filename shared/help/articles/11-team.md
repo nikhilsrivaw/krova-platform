@@ -41,7 +41,7 @@ Owners and admins can always do all of this.
 
 ## Talk to team (customers who asked for a person)
 Sidebar → Talk to team (everyone on the team; phone app: More → Talk to team, and on Today).
-- When a customer asks to talk to a person or to be called back - on a call, WhatsApp, Instagram or the website chat ("team se baat karni hai", "manager ko bulao", "call me back") - it lands here. On a call, KROVA first tries to put them through to your team; if nobody can take the call, it lands here. A missed call that nobody on the call list picked up also lands here ("Missed call - call back").
+- When a customer asks to talk to a person or to be called back - on a call, WhatsApp, Instagram or the website chat ("team se baat karni hai", "manager ko bulao", "call me back"), in English letters or in Hindi script ("मुझे टीम से बात करनी है", "manager से connect करो"), or any other way of asking for a real person - it lands here. On a call, KROVA first tries to put them through to your team; if nobody can take the call, it lands here. A missed call that nobody on the call list picked up also lands here ("Missed call - call back").
 - This is not an escalation: Escalations are questions the AI could not answer. Talk to team is a customer who wants a person.
 - In a chat the customer is told their ask reached the team and asked if a particular time suits them. On the website chat a visitor is first asked for their name and number - without one nobody could reply.
 - Who hears: the chat's team (Teams and routing) when it has one, otherwise everyone who is available, plus the owner and admins. If nobody takes it in 15 minutes, the owner and admins are reminded once.

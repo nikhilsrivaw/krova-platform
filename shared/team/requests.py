@@ -40,9 +40,19 @@ PERSON_WANT = (
     r"connect (?:me|kar|karo|karwa|kardo|kar do|krdo|krwa|to)|bulao|bulwa\w*|"
     r"chahiye|karni hai|karna hai|want to)"
 )
+# The same, as a call's speech-to-text writes Hindi: in Devanagari, often mixed with English words ("मुझे team से बात
+# करनी है"). Devanagari vowel signs are not "word" characters to Python's re, so these match without \b. "किसी"/"कोई"
+# alone are weak ("कोई discount चाहिए" is not a person), so they count only with a talk word, never with "चाहिए".
+DEVA_NOUN = r"(?:टीम|इंसान|इन्सान|आदमी|मैनेजर|मालिक|ओनर|स्टाफ|एजेंट|व्यक्ति|प्रतिनिधि|ऑपरेटर|एग्जीक्यूटिव|सेल्स)"
+DEVA_WEAK = r"(?:किसी|कोई)"
+DEVA_TALK = r"(?:बात\s*(?:कर|करा|करवा|हो)|(?:connect|baat|transfer)\s*(?:कर|करा|करवा)|कनेक्ट|बुला|जोड़|जोड|ट्रांसफर|संपर्क)"
+DEVA_WANT = rf"(?:{DEVA_TALK}|चाहिए|चाहता|चाहती)"
 PERSON_REQUEST = re.compile(
     rf"\b(?=.*\b{PERSON_NOUN}\b)(?=.*\b{PERSON_WANT}\b)"
-    r"|\btransfer (?:kar|karo|kardo|kar do|karwa)\w*|\btransfer me\b",
+    r"|\btransfer (?:kar|karo|kardo|kar do|karwa)\w*|\btransfer me\b"
+    rf"|^(?=.*(?:\b{PERSON_NOUN}\b|{DEVA_NOUN}))(?=.*(?:\b{PERSON_WANT}\b|{DEVA_WANT}))"
+    rf"|^(?=.*{DEVA_WEAK})(?=.*(?:{DEVA_TALK}|\b(?:talk to|speak to|speak with|connect)\b))"
+    r"|ट्रांसफर\s*(?:कर|कीजिए|करें)",
     re.IGNORECASE,
 )
 # "Contact the team" asks for a person, but "the sales team's contact number" asks for a detail.

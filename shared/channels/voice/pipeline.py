@@ -722,6 +722,19 @@ class CallPipeline:
 
         action = first.action if isinstance(first, agent_module.ReplyStart) else "escalate"
 
+        # The model heard a request for a person the word check missed ("kisi asli aadmi se baat karao"): the same
+        # hand-over as above.
+        if isinstance(first, agent_module.ReplyStart) and first.wants_person:
+            async for _ in events:
+                pass
+            logger.info("caller asked for a person (model) call=%s", self.provider_call_id)
+            targets = await self._transfer_targets()
+            if targets:
+                await self.request_transfer(targets=targets)
+            else:
+                await self._person_asked_without_transfer()
+            return
+
         # A "yes" to a change KROVA just asked about is done here whatever the model chose; a new change it asked
         # for is confirmed first (shared/ai/actions.py).
         if await self._handle_change(first, events):

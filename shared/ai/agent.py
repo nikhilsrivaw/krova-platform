@@ -381,7 +381,12 @@ This is a live phone call - the caller is waiting in silence right now, so \
 every extra second you take to plan is a second they hear nothing. Output in \
 exactly this format, nothing else, no markdown, no preamble:
 
-The first line is exactly one word: REPLY, ESCALATE, or NOACTION.
+The first line is exactly one word: REPLY, ESCALATE, NOACTION, or PERSON.
+
+PERSON when the caller asks to speak to a person - a team member, the owner, \
+a manager, a human, "kisi se baat karao", "real aadmi chahiye", in any words \
+or language. Nothing else follows; KROVA itself puts the call through or tells \
+the team. A question about the team ("how big is your team?") is not PERSON.
 
 If REPLY: optionally, one or more lines of BOOK_SLOT=<ISO 8601 datetime>, \
 BOOK_DOCTOR=<name>, BOOK_PROPERTY=<name>, BOOK_TOKEN=<shift name> - \
@@ -586,6 +591,8 @@ class ReplyStart:
     order_lines: list = field(default_factory=list)
     pay: str | None = None
     cancel_order: str | None = None
+    # The model's own "the caller wants a person" (SYSTEM_STREAM's PERSON) - action is "escalate" alongside it.
+    wants_person: bool = False
 
 
 @dataclass(slots=True)
@@ -837,14 +844,21 @@ async def stream_reply(agent_context: ctx.AgentContext):
                 continue
             first_line, _, rest = buffer.partition("\n")
             word = first_line.strip().upper()
-            if word not in ("REPLY", "ESCALATE", "NOACTION"):
+            if word not in ("REPLY", "ESCALATE", "NOACTION", "PERSON"):
                 logger.warning("stream_reply got unrecognised action %r, escalating", word)
                 word = "ESCALATE"
-            action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}[word]
+            wants_person = word == "PERSON"
+            # PERSON is an escalation to anyone who does not know the word, so every reader stays safe; the customer
+            # call loop puts the call through (shared/channels/voice/pipeline.py).
+            action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action", "PERSON": "escalate"}[word]
+            if wants_person:
+                gap_parts.append("Caller asked to reach a person")
 
             if action != "reply":
                 # No booking header for these - same as before this existed.
-                yield ReplyStart(action=action)
+                yield ReplyStart(action=action, wants_person=wants_person)
+                if wants_person:
+                    continue
                 content = rest.lstrip("\n")
                 if action == "escalate" and content:
                     gap_parts.append(content)
@@ -923,10 +937,12 @@ async def stream_reply(agent_context: ctx.AgentContext):
         # The stream ended before a single newline ever arrived - a very
         # short or malformed output. Treat as escalate rather than silence.
         word = buffer.strip().upper()
-        action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action"}.get(
+        action = {"REPLY": "reply", "ESCALATE": "escalate", "NOACTION": "no_action", "PERSON": "escalate"}.get(
             word, "escalate"
         )
-        yield ReplyStart(action=action)
+        if word == "PERSON":
+            gap_parts.append("Caller asked to reach a person")
+        yield ReplyStart(action=action, wants_person=word == "PERSON")
 
     if action == "reply" and sentence_buffer.strip():
         yield ReplyChunk(text=sentence_buffer.strip())
