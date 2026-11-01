@@ -207,10 +207,41 @@ async def _candidates(db: AsyncSession, business: Business, trigger: str, now: d
     return []
 
 
-async def _recently_asked(db: AsyncSession, customer_id: uuid.UUID, since: datetime) -> bool:
-    row = await db.execute(select(FeedbackRequest.id).where(
-        FeedbackRequest.customer_id == customer_id, FeedbackRequest.created_at >= since).limit(1))
-    return row.first() is not None
+PENDING = ("due", "sent", "calling")
+
+
+async def _recently_asked(db: AsyncSession, customer_id: uuid.UUID, since: datetime) -> str | None:
+    """
+    Why this customer should not get another request now: "waiting" - one is already lined up or under way;
+    "asked" - one actually went out since `since`. None otherwise. A request that never went out (skipped, or
+    switched off before its turn) does not count - nobody asked them anything.
+    """
+    rows = (await db.execute(select(FeedbackRequest.status).where(
+        FeedbackRequest.customer_id == customer_id,
+        (FeedbackRequest.status.in_(PENDING)) | (FeedbackRequest.sent_at >= since),
+    ).limit(5))).all()
+    statuses = {r[0] for r in rows}
+    if statuses & set(PENDING):
+        return "waiting"
+    return "asked" if statuses else None
+
+
+# What people type when they mean the thing itself: "how was the product?" -> "product".
+_QUESTION = re.compile(
+    r"^(?:(?:how|hows|how's)\s+(?:was|is|did|were)\s+(?:you\s+(?:find|like)\s+)?|feedback\s+(?:on|for|about)\s+|"
+    r"please\s+rate\s+)?(?:(?:the|your|my|our)\b)?\s*",
+    re.IGNORECASE,
+)
+_TAIL = re.compile(r"\s*(?:kaisa|kaisi|kaise)\s*(?:tha|thi|the|laga|lagi|rha|rhi|raha|rahi)?\s*$|[\s?!.]+$",
+                   re.IGNORECASE)
+
+
+def clean_what(text: str) -> str:
+    """The thing to ask about, from what was typed - without "how was the ..." or a question mark."""
+    what = " ".join(str(text or "").split())
+    for _ in range(2):
+        what = _TAIL.sub("", _QUESTION.sub("", what, count=1)).strip()
+    return what[:120]
 
 
 async def plan_requests(db: AsyncSession, business: Business, now: datetime | None = None) -> int:
@@ -227,7 +258,7 @@ async def plan_requests(db: AsyncSession, business: Business, now: datetime | No
             if customer is None or customer.is_private:
                 continue
             if s["cooldown_days"] and await _recently_asked(db, customer_id, now - timedelta(days=s["cooldown_days"])):
-                continue
+                continue  # lined up already, or asked recently
             try:
                 async with db.begin_nested():
                     db.add(FeedbackRequest(
@@ -395,7 +426,7 @@ async def add_external(db: AsyncSession, business: Business, rows: list[dict], *
         if happened < now - MANUAL_LOOKBACK:
             skipped.append({"row": number, "reason": "Happened more than 30 days ago"})
             continue
-        what = " ".join(str(row.get("about") or "").split())[:120] or "visit"
+        what = clean_what(row.get("about")) or "visit"
         # Meta treats feedback as a utility message only when it names the specific visit or trip - so it carries a date.
         about = what if re.search(r"\d", what) else f"{what} on {_day(business, happened)}"
         name = " ".join(str(row.get("name") or "").split())[:120] or None
@@ -404,9 +435,14 @@ async def add_external(db: AsyncSession, business: Business, rows: list[dict], *
         if customer.is_private:
             skipped.append({"row": number, "reason": "This customer is marked private"})
             continue
-        if s["cooldown_days"] and await _recently_asked(db, customer.id, now - timedelta(days=s["cooldown_days"])):
-            skipped.append({"row": number, "reason": f"Already asked in the last {s['cooldown_days']} days"})
-            continue
+        if s["cooldown_days"]:
+            why = await _recently_asked(db, customer.id, now - timedelta(days=s["cooldown_days"]))
+            if why == "waiting":
+                skipped.append({"row": number, "reason": "Already on the list, waiting to be asked"})
+                continue
+            if why == "asked":
+                skipped.append({"row": number, "reason": f"Asked in the last {s['cooldown_days']} days"})
+                continue
         key = str(row.get("ref") or "").strip() or (
             f"{phone}:{happened:%Y%m%d%H%M}:{hashlib.sha1(what.lower().encode()).hexdigest()[:10]}")
         due = max(now, happened + delay)

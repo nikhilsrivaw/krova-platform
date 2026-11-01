@@ -301,3 +301,68 @@ def test_the_form_and_api_shapes():
     assert api.AddIn(phone="9876543210", about="trip").model_dump()["date"] is None
     body = public_api.FeedbackIn(customers=[{"phone": "9876543210", "about": "trip", "ref": "PNR1"}])
     assert body.customers[0].ref == "PNR1"
+
+
+@pytest.mark.parametrize("typed, kept", [
+    ("how was the product", "product"), ("How was your trip?", "trip"), ("product kaisa laga", "product"),
+    ("feedback on AC repair", "AC repair"), ("How did you find the service?", "service"),
+    ("Delhi to Jaipur bus", "Delhi to Jaipur bus"), ("Theme park visit", "Theme park visit"),
+    ("Howrah to Puri trip", "Howrah to Puri trip"), ("Rate card printing", "Rate card printing"),
+])
+def test_a_question_typed_as_what_is_turned_into_the_thing(typed, kept):
+    assert feedback.clean_what(typed) == kept
+
+
+class _StatusDb(_Db):
+    async def execute(self, stmt, *a, **k):
+        stmt.compile(dialect=postgresql.dialect())
+        rows = self.rows
+        return SimpleNamespace(all=lambda: [(s,) for s in rows])
+
+
+@pytest.mark.parametrize("statuses, why", [
+    (["due"], "waiting"), (["calling", "answered"], "waiting"), (["answered"], "asked"), ([], None),
+])
+def test_only_a_request_lined_up_or_sent_counts_against_the_cooldown(statuses, why):
+    assert asyncio.run(feedback._recently_asked(_StatusDb(statuses), uuid.uuid4(), NOW - timedelta(days=7))) == why
+
+
+@pytest.mark.parametrize("why, reason", [
+    ("waiting", "Already on the list, waiting to be asked"), ("asked", "Asked in the last 7 days"),
+])
+def test_a_skipped_customer_is_told_the_real_reason(monkeypatch, why, reason):
+    from shared.identity import resolver
+
+    async def resolve(*a, **k):
+        return SimpleNamespace(customer=SimpleNamespace(id=uuid.uuid4(), is_private=False))
+
+    async def recent(*a, **k):
+        return why
+
+    monkeypatch.setattr(resolver, "resolve", resolve)
+    monkeypatch.setattr(feedback, "_recently_asked", recent)
+    report = asyncio.run(feedback.add_external(_Db(), _business(), [{"phone": "9876543210", "about": "order"}],
+                                               source="form", now=NOW))
+    assert report["added"] == 0 and report["skipped"] == [{"row": 1, "reason": reason}]
+
+
+def test_the_form_saves_the_thing_not_the_question(monkeypatch):
+    from shared.identity import resolver
+
+    async def resolve(*a, **k):
+        return SimpleNamespace(customer=SimpleNamespace(id=uuid.uuid4(), is_private=False))
+
+    async def not_recent(*a, **k):
+        return None
+
+    monkeypatch.setattr(resolver, "resolve", resolve)
+    monkeypatch.setattr(feedback, "_recently_asked", not_recent)
+    added = []
+
+    class Db(_Db):
+        def add(self, obj):
+            added.append(obj)
+
+    asyncio.run(feedback.add_external(Db(), _business(), [{"phone": "9876543210", "about": "how was the product",
+                                                           "date": "30/10/2026"}], source="form", now=NOW))
+    assert added[0].about == "product on 30 Oct"
