@@ -335,6 +335,7 @@ async def widget_message(site_key: str, body: MessageIn, db: DbDep) -> MessageOu
 
     guardrails.record_turn(session)
     outcome = await web_reply.generate_reply(db, business=business, session=session, text=body.text,
+                                             reply_language=config.reply_language,
                                              already_stored=asked_again)
     session.last_seen_at = now
     await db.flush()

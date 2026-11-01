@@ -224,6 +224,26 @@ class AgentContext:
     # The business's sellable products ({"name", "price"}), only when the AI may take orders - matched against what
     # the customer says, like the catalogue rows, never shown whole.
     products: list[dict] = field(default_factory=list)
+    # The business's rule for the reply's language ("auto" | "en" | "hi") - Website chat sets it; elsewhere "auto".
+    reply_language: str = "auto"
+    # Set for a second try after a reply came back in the wrong script (shared/ai/reply_language.py).
+    language_retry: bool = False
+
+    def last_inbound(self) -> str | None:
+        return next((t["text"] for t in reversed(self.recent) if t["direction"] == "inbound"), None)
+
+    def expected_script(self) -> str | None:
+        from shared.ai import reply_language
+
+        return reply_language.expected(self.last_inbound(), self.reply_language)
+
+    def language_line(self) -> str | None:
+        from shared.ai import reply_language
+
+        line = reply_language.hint(self.last_inbound(), self.reply_language)
+        if line and self.language_retry:
+            line += " " + reply_language.correction(self.expected_script())
+        return line
 
     def asked_topics(self) -> set[str]:
         """
@@ -517,6 +537,9 @@ class AgentContext:
         for turn in self.recent:
             speaker = "Customer" if turn["direction"] == "inbound" else "You"
             lines.append(f"[{turn['channel']}] {speaker}: {turn['text']}")
+        language = self.language_line()
+        if language:
+            lines.append(f"\n{language}")
         return "\n".join(lines)
 
 

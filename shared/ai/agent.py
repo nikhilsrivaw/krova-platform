@@ -1275,6 +1275,26 @@ async def draft_reply(
     )
 
     result = completion.tool_input or {}
+    # A reply in the wrong script ("what services do you offer?" answered in Devanagari) gets one more try with the
+    # mistake named - not on a live call, where the caller would hear the wait.
+    from shared.ai import reply_language
+
+    want = agent_context.expected_script()
+    if not fast and result.get("action") == "reply" and reply_language.mismatched(result.get("message"), want):
+        logger.info("reply came back in the wrong script (want %s) - asking again", want)
+        again = await client.complete(
+            system=SYSTEM,
+            messages=[{
+                "role": "user",
+                "content": [business_block, {"type": "text", "text": f"{prompt}\n\n{reply_language.correction(want)}"}],
+            }],
+            cache_system=cache, speed="deep", task="reply_text", tool=REPLY_TOOL, max_tokens=1024,
+        )
+        retry = again.tool_input or {}
+        if retry.get("action") == "reply" and retry.get("message") and not reply_language.mismatched(retry.get("message"), want):
+            again.cost_paise = (again.cost_paise or 0) + (completion.cost_paise or 0)
+            completion, result = again, retry
+
     action = result.get("action")
     if action not in ("reply", "escalate", "no_action"):
         # An unrecognised action means we do not know what it intended. Hand it

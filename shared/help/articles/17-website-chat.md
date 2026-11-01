@@ -16,7 +16,8 @@ What you can change (Edit website):
 - Button side (right or left), theme (light or dark - light for new websites), and an optional label beside the button such as "Need help? Chat with us".
 - Pop-up message: a short line that shows next to the button a few seconds after a visitor arrives, once a day, for visitors who have not chatted yet.
 - Ready questions: up to four buttons ("What are your prices?", "Book an appointment") shown before the visitor types.
-- Chat window language: English or Hindi for the buttons and notices. The AI answers in whatever language the visitor writes.
+- Chat window language: English or Hindi for the buttons and notices in the chat window. It does not change the replies.
+- Replies in: "Visitor's language" (default) - English gets English, Hinglish gets Hinglish in English letters, Hindi in Devanagari gets Devanagari, judged from their latest message, not from earlier ones. "Always English" or "Always Hindi" - every reply in that language whatever the visitor writes. If a reply still comes back in the wrong letters (Devanagari for an English question), KROVA writes it once more before sending. On WhatsApp, Instagram and calls replies always follow the customer's latest message.
 - Name and phone number: "Only when needed" (the AI asks when a person or a booking needs it) or "Ask before the chat starts" (every visitor who chats becomes a lead in your Inbox; some visitors leave instead).
 - WhatsApp button: a button in the chat header that opens a WhatsApp chat with your connected WhatsApp number.
 - Height from the bottom: raise the chat button if your website already has its own WhatsApp or call button in that corner, so they do not sit on each other.

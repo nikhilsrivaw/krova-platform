@@ -64,6 +64,9 @@ class WebWidgetConfig(UUIDMixin, TimestampMixin, Base):
     ask_contact: Mapped[str | None] = mapped_column(String(12), nullable=True)
     # The widget's own words: "en" (default) or "hi". The AI answers in the visitor's language either way.
     language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # What the replies are in ("Replies in"): None/"auto" - the visitor's language and script; "en" always English;
+    # "hi" always Hindi in Devanagari. shared/ai/reply_language.py.
+    reply_language: Mapped[str | None] = mapped_column(String(8), nullable=True)
     theme: Mapped[str | None] = mapped_column(String(5), nullable=True)
     # A "WhatsApp" button in the chat header, to the business's connected WhatsApp number.
     whatsapp_button: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

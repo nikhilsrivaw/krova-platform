@@ -43,6 +43,8 @@ class SiteIn(BaseModel):
     starters: list[str] = Field(default_factory=list, max_length=10)
     ask_contact: str | None = None
     language: str | None = None
+    # What the replies are in: "auto" (the visitor's language), "en" or "hi".
+    reply_language: str | None = None
     theme: str | None = None
     whatsapp_button: bool = False
     status_text: str | None = Field(default=None, max_length=40)
@@ -65,6 +67,7 @@ class SiteOut(BaseModel):
     starters: list[str]
     ask_contact: str
     language: str
+    reply_language: str = "auto"
     theme: str
     whatsapp_button: bool
     logo_url: str | None
@@ -125,7 +128,7 @@ def _out(site: WebWidgetConfig) -> SiteOut:
         id=str(site.id), domain=site.allowed_domain, site_key=site.site_key, title=site.title, greeting=site.greeting,
         accent=site.accent, active=site.active, position=site.position or "right", launcher_text=site.launcher_text,
         teaser=site.teaser, starters=list(site.starters or []), ask_contact=site.ask_contact or "when_needed",
-        language=site.language or "en", theme=site.theme or "light", whatsapp_button=bool(site.whatsapp_button),
+        language=site.language or "en", reply_language=site.reply_language or "auto", theme=site.theme or "light", whatsapp_button=bool(site.whatsapp_button),
         logo_url=site.logo_url, status_text=site.status_text, offset_bottom=site.offset_bottom,
         mobile_mode=site.mobile_mode or "full", hide_paths=list(site.hide_paths or []),
         last_loaded_at=_iso(loaded), working=working,
@@ -154,6 +157,7 @@ def _look(site: WebWidgetConfig, body: SiteIn) -> None:
     site.starters = sites.clean_starters(body.starters)
     site.ask_contact = sites.pick(body.ask_contact, sites.ASK_CONTACT)
     site.language = sites.pick(body.language, sites.LANGUAGES)
+    site.reply_language = sites.pick(body.reply_language, ("en", "hi"))  # None = auto
     site.theme = sites.pick(body.theme, sites.THEMES)
     site.whatsapp_button = body.whatsapp_button
     site.status_text = _text(body.status_text)

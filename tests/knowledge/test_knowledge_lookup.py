@@ -106,6 +106,11 @@ class _Ctx:
 
     render_lookup = context.AgentContext.render_lookup
     render_conversation = context.AgentContext.render_conversation
+    language_line = context.AgentContext.language_line
+    last_inbound = context.AgentContext.last_inbound
+    expected_script = context.AgentContext.expected_script
+    reply_language = "auto"
+    language_retry = False
 
     def __init__(self, recent):
         self.knowledge = _items()

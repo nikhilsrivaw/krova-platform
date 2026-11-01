@@ -278,7 +278,7 @@ def _widget_db(config, business, session=None):
 def _config(**kw):
     base = dict(id=uuid.uuid4(), business_id=BIZ, active=True, title=None, greeting=None, accent=None, position=None,
                 logo_url=None, status_text=None, offset_bottom=None, mobile_mode=None, hide_paths=[],
-                launcher_text=None, teaser=None, starters=[], ask_contact=None, language=None, theme=None,
+                launcher_text=None, teaser=None, starters=[], ask_contact=None, language=None, reply_language=None, theme=None,
                 whatsapp_button=False, last_loaded_at=None, rate_limit_window_started_at=None, rate_limit_count=0)
     base.update(kw)
     return SimpleNamespace(**base)
@@ -337,6 +337,9 @@ def test_the_site_settings_are_cleaned_when_saved():
                                          ask_contact="before_chat", language="fr", theme="light", whatsapp_button=True))
     assert site.title is None and site.accent is None and site.position is None and site.starters == ["a", "b"]
     assert site.ask_contact == "before_chat" and site.language is None and site.theme == "light" and site.whatsapp_button
+    for given, saved in (("en", "en"), ("hi", "hi"), ("auto", None), ("fr", None)):
+        web_chat._look(site, web_chat.SiteIn(domain="shop.in", reply_language=given))
+        assert site.reply_language == saved
 
 
 def test_the_page_queries_compile():

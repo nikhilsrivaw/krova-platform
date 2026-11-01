@@ -215,11 +215,48 @@ async def earlier_question(db: AsyncSession, session: WebSession, text: str) -> 
     return latest.id if latest is not None and (latest.content or "").strip() == text.strip() else None
 
 
+async def _in_the_right_script(context, reply_text: str) -> str:
+    """
+    A reply in the wrong script (an English question answered in Devanagari) is written once more with the mistake
+    named. Only a plain reply is swapped - a second answer that books or hands over is not taken, since nothing it
+    asks for would happen. Shared/ai/reply_language.py.
+    """
+    from shared.ai import reply_language
+
+    want = context.expected_script()
+    if not reply_language.mismatched(reply_text, want):
+        return reply_text
+    logger.info("web reply came back in the wrong script (want %s) - asking again", want)
+    context.language_retry = True
+    try:
+        events = agent_module.stream_reply(context)
+        first = await events.__anext__()
+        chunks: list[str] = []
+        async for ev in events:
+            if isinstance(ev, agent_module.ReplyChunk):
+                chunks.append(ev.text)
+        again = " ".join(chunks).strip()
+        plain = isinstance(first, agent_module.ReplyStart) and first.action == "reply" and not (
+            first.book_slot or first.book_token)
+        if plain and again and not reply_language.mismatched(again, want):
+            return again
+    except StopAsyncIteration:
+        pass
+    except Exception:  # the first answer still goes out rather than nothing
+        logger.exception("second try at the reply's script failed")
+    finally:
+        context.language_retry = False
+    return reply_text
+
+
 async def generate_reply(
     db: AsyncSession, *, business: Business, session: WebSession, text: str,
-    already_stored: uuid.UUID | None = None,
+    already_stored: uuid.UUID | None = None, reply_language: str | None = None,
 ) -> ReplyOutcome:
-    """`already_stored`: this question is already a stored message (asked again with the visitor's details)."""
+    """
+    `already_stored`: this question is already a stored message (asked again with the visitor's details).
+    `reply_language`: the site's "Replies in" rule ("auto" | "en" | "hi"), shared/ai/reply_language.py.
+    """
     customer = await db.get(Customer, session.customer_id) if session.customer_id else None
     inbound_message_id: uuid.UUID | None = None
 
@@ -256,6 +293,7 @@ async def generate_reply(
     else:
         _append_transcript(session, role="user", text=text)
         context = await agent_context.build_anonymous(business.id, _transcript_as_recent(session), db)
+    context.reply_language = reply_language or "auto"
 
     events = agent_module.stream_reply(context)
     try:
@@ -360,6 +398,8 @@ async def generate_reply(
         if isinstance(ev, agent_module.ReplyChunk):
             chunks.append(ev.text)
     reply_text = " ".join(chunks).strip() or "Got it."
+    if not booked:
+        reply_text = await _in_the_right_script(context, reply_text)
 
     if customer is not None:
         await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=reply_text)
