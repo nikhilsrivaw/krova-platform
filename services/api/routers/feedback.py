@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import DbDep, OwnerOrAdminDep
+from shared.billing import features as plan_features
 from shared.care import feedback
 from shared.channels.whatsapp import required_templates, template_service
 from shared.db.models import Business, Customer, FeedbackRequest
@@ -22,7 +23,7 @@ from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/feedback", tags=["feedback"])
+router = APIRouter(prefix="/feedback", tags=["feedback"], dependencies=[plan_features.dependency(plan_features.FEEDBACK)])
 
 
 class RoundIn(BaseModel):

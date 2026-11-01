@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from services.api.dependencies import DbDep
+from shared.billing import features as plan_features
 from shared.billing.guards import plan_blocked
 from shared.channels.web import guardrails, reply as web_reply, sites
 from shared.db.models import (
@@ -63,7 +64,7 @@ async def _config_and_business(site_key: str, db: DbDep) -> tuple[WebWidgetConfi
     if config is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Widget not found")
     business = await db.get(Business, config.business_id)
-    if business is None or not business.is_active:
+    if business is None or not business.is_active or not plan_features.has(business, plan_features.WEBSITE_CHAT):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Widget not found")
     return config, business
 

@@ -24,9 +24,10 @@ UTC = timezone.utc
 # ── the money ───────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("plan,base,gst,total", [
+    ("solo", 169_900, 30_582, 200_482),
     ("starter", 299_900, 53_982, 353_882),
-    ("pro", 599_900, 107_982, 707_882),
-    ("scale", 999_900, 179_982, 1_179_882),
+    ("pro", 799_900, 143_982, 943_882),
+    ("scale", 1_249_900, 224_982, 1_474_882),
 ])
 def test_plan_prices_with_gst(plan, base, gst, total):
     assert plans.plan_charge(plan) == (base, gst, total)

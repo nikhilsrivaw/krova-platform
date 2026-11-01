@@ -117,6 +117,12 @@ def _summary(rounds: list[dict]) -> str:
     return "both" if len(kinds) > 1 else rounds[0]["channel"]
 
 
+def _plan_has_feedback(business) -> bool:
+    from shared.billing import features
+
+    return features.has(business, features.FEEDBACK)
+
+
 def read(business) -> dict:
     raw = ((getattr(business, "settings", None) or {}).get("feedback") or {})
 
@@ -131,7 +137,8 @@ def read(business) -> dict:
         ask_from, ask_until = DEFAULTS["ask_from"], DEFAULTS["ask_until"]
     link = raw.get("review_link")
     return {
-        "enabled": bool(raw.get("enabled", DEFAULTS["enabled"])),
+        # Off on a plan without Feedback (Solo, shared/billing/features.py) whatever was saved - no rounds go out.
+        "enabled": bool(raw.get("enabled", DEFAULTS["enabled"])) and _plan_has_feedback(business),
         "triggers": [t for t in TRIGGERS if t in triggers] if isinstance(triggers, list) else list(DEFAULTS["triggers"]),
         "delay_minutes": num("delay_minutes", 0, 7 * 24 * 60),
         "channel": _summary(rounds),

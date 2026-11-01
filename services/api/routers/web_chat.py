@@ -18,12 +18,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from services.api.dependencies import DbDep, OwnerOrAdminDep
+from shared.billing import features as plan_features
 from shared.channels.web import sites
 from shared.db.models import Channel, Customer, Direction, Message, WebSession, WebWidgetConfig
 from shared.integrations import media_storage
 from shared.integrations.media_storage import MediaStorageError
 
-router = APIRouter(prefix="/web-chat", tags=["web-chat"])
+router = APIRouter(prefix="/web-chat", tags=["web-chat"], dependencies=[plan_features.dependency(plan_features.WEBSITE_CHAT)])
 
 MAX_SITES = 10
 STATS_DAYS = 7

@@ -12,10 +12,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
+from shared.billing import features as plan_features
 from shared.db.models import BusinessMember, Customer, RoutingRule, Team, TeamMember
 from shared.team import rules as team_rules
 
-router = APIRouter(prefix="/routing", tags=["routing"])
+router = APIRouter(prefix="/routing", tags=["routing"], dependencies=[plan_features.dependency(plan_features.TEAM_ROUTING)])
 
 MAX_TEAMS = 30
 MAX_RULES = 50

@@ -323,8 +323,10 @@ class FeedbackOut(BaseModel):
 @router.post("/feedback", response_model=FeedbackOut, status_code=status.HTTP_201_CREATED)
 async def add_feedback_customers(body: FeedbackIn, business: ApiKeyBusinessDep, db: DbDep) -> FeedbackOut:
     """Ask these customers for feedback, on the business's own Feedback rules (shared/care/feedback.py)."""
+    from shared.billing import features
     from shared.care import feedback
 
+    features.require(business, features.FEEDBACK)
     try:
         report = await feedback.add_external(db, business, [c.model_dump() for c in body.customers], source="api")
     except ValueError as exc:

@@ -303,7 +303,7 @@ async def quote(amount_rupees: int, current_user: OwnerOrAdminDep) -> QuoteOut:
 
 
 class SubscribeIn(BaseModel):
-    plan: Literal["starter", "pro", "scale"]
+    plan: Literal["solo", "starter", "pro", "scale"]
     coupon: str | None = Field(default=None, max_length=64)
 
 

@@ -2,7 +2,8 @@
 What each plan can hold. One table, read by every place that has a limit (and mirrored in
 krova-web/lib/planGuide.ts for the pricing page). Plain numbers - no database, no network.
 
-Only *capacity* differs between plans. Features (Ask KROVA, reply modes, automations, analytics,
+Mostly *capacity* differs between plans - the few features the entry plan (Solo) leaves out are in
+shared/billing/features.py. Features (Ask KROVA, reply modes, automations, analytics,
 voice call campaigns, team tools, support) are the same on all three, on purpose.
 
 A business whose plan is not one of these (a trial, or one from before billing) has no plan limits
@@ -31,13 +32,16 @@ class PlanLimits:
 
 
 PLAN_LIMITS: dict[str, PlanLimits] = {
+    # One person: the owner's own login only, and no lead source beyond its own forms. What Solo leaves out on top of
+    # these sizes is in shared/billing/features.py.
+    "solo": PlanLimits(500, 1, 1, 4_000, 300, 1_000, 0, 0, 0),
     "starter": PlanLimits(1_000, 1, 3, 6_000, 500, 5_000, 1, 0, 0),
     "pro": PlanLimits(2_000, 3, 8, 10_000, 3_000, 20_000, None, 2, 5),
     "scale": PlanLimits(3_500, 5, 20, 16_000, 10_000, 50_000, None, 10, 20),
 }
 
-PLAN_NAMES = {"starter": "Starter", "pro": "Pro", "scale": "Scale"}
-_NEXT = {"starter": "Pro", "pro": "Scale"}
+PLAN_NAMES = {"solo": "Solo", "starter": "Starter", "pro": "Pro", "scale": "Scale"}
+_NEXT = {"solo": "Starter", "starter": "Pro", "pro": "Scale"}
 
 
 def limits_for(plan: str | None) -> PlanLimits | None:

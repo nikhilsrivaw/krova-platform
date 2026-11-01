@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
+from shared.billing import features as plan_features
 from shared.care import response_metrics
 from shared.db.models import (
     BusinessMember,
@@ -42,6 +43,8 @@ from shared.db.models import (
 )
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+# The reports are not on Solo; the dashboard summary (/overview) and response speed are on every plan.
+_REPORTS = plan_features.dependency(plan_features.ANALYTICS)
 
 
 class AgeingBucket(BaseModel):
@@ -163,7 +166,7 @@ def _money(paise: int) -> str:
     return f"₹{paise / 100:,.0f}"
 
 
-@router.get("/receivables", response_model=Receivables)
+@router.get("/receivables", dependencies=[_REPORTS], response_model=Receivables)
 async def receivables(current_user: OwnerOrAdminDep, db: DbDep) -> Receivables:
     """
     What you are owed, by how late it is.
@@ -253,7 +256,7 @@ async def receivables(current_user: OwnerOrAdminDep, db: DbDep) -> Receivables:
     )
 
 
-@router.get("/kept", response_model=Kept)
+@router.get("/kept", dependencies=[_REPORTS], response_model=Kept)
 async def kept_promises(
     current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=90, le=365)
 ) -> Kept:
@@ -313,7 +316,7 @@ async def kept_promises(
     )
 
 
-@router.get("/channels", response_model=list[ChannelActivity])
+@router.get("/channels", dependencies=[_REPORTS], response_model=list[ChannelActivity])
 async def channel_activity(
     current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> list[ChannelActivity]:
@@ -407,7 +410,7 @@ async def response_speed(
     )
 
 
-@router.get("/agent", response_model=AgentPerformance)
+@router.get("/agent", dependencies=[_REPORTS], response_model=AgentPerformance)
 async def agent_performance(
     current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> AgentPerformance:
@@ -481,7 +484,7 @@ async def agent_performance(
     )
 
 
-@router.get("/trust-report", response_model=TrustReport)
+@router.get("/trust-report", dependencies=[_REPORTS], response_model=TrustReport)
 async def trust_report(
     current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> TrustReport:
@@ -531,7 +534,7 @@ async def trust_report(
     )
 
 
-@router.get("/team", response_model=TeamPerformance)
+@router.get("/team", dependencies=[_REPORTS], response_model=TeamPerformance)
 async def team_performance(
     current_user: OwnerOrAdminDep, db: DbDep, days: int = Query(default=30, le=365)
 ) -> TeamPerformance:

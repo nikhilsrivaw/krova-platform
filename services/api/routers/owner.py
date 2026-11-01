@@ -11,13 +11,14 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
+from shared.billing import features as plan_features
 from shared.ai import client, providers
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/owner", tags=["owner"])
+router = APIRouter(prefix="/owner", tags=["owner"], dependencies=[plan_features.dependency(plan_features.ASK_KROVA)])
 
 HISTORY_TURNS = 10
 

@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from services.api.dependencies import CurrentUserDep, DbDep
+from shared.billing import features as plan_features
 from shared.care import emergency
 from shared.auth import google_oauth, otp, service
 from shared.auth.passwords import (
@@ -109,6 +110,9 @@ class MeResponse(BaseModel):
     # whose template has an emergency set (healthcare). shared/care/emergency.py.
     emergency_phone: str | None = None
     emergency_enabled: bool = False
+    # The plan's key, and the features it leaves out (shared/billing/features.py) - the sidebar shows a lock.
+    plan: str | None = None
+    locked_features: list[str] = []
     # Same reasoning, same pattern - the only way this business can ever
     # turn on shared/care/commitment_deadline_calls.py's proactive voice
     # calls, which previously had no UI path to enable at all.
@@ -628,6 +632,8 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
         emergency_phone=(business.settings or {}).get("emergency_phone") if business else None,
         emergency_enabled=bool(emergency.phrases(business)) if business else False,
+        plan=getattr(business, "plan", None) if business else None,
+        locked_features=sorted(plan_features.locked_for(getattr(business, "plan", None))) if business else [],
         proactive_deadline_calls_enabled=bool(
             (business.settings or {}).get("proactive_deadline_calls_enabled")
         ) if business else False,
@@ -744,6 +750,8 @@ async def update_me(
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
         emergency_phone=(business.settings or {}).get("emergency_phone") if business else None,
         emergency_enabled=bool(emergency.phrases(business)) if business else False,
+        plan=getattr(business, "plan", None) if business else None,
+        locked_features=sorted(plan_features.locked_for(getattr(business, "plan", None))) if business else [],
         proactive_deadline_calls_enabled=bool(
             (business.settings or {}).get("proactive_deadline_calls_enabled")
         ) if business else False,

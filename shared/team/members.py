@@ -151,7 +151,7 @@ async def create_member(
         raise TeamError(f"A team can have up to {MAX_MEMBERS} people.", 409)
     plan_cap = plan_limits.limits_for(business.plan)
     if plan_cap is not None and members_now >= plan_cap.team_logins:
-        nxt = {"starter": "Pro", "pro": "Scale"}.get((business.plan or "").lower())
+        nxt = {"solo": "Starter", "starter": "Pro", "pro": "Scale"}.get((business.plan or "").lower())
         tail = f" Move to {nxt} on the Billing page for more." if nxt else ""
         raise TeamError(
             f"Your {plan_limits.PLAN_NAMES[business.plan.lower()]} plan includes {plan_cap.team_logins} team logins.{tail}",

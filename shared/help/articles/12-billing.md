@@ -3,7 +3,7 @@
 The exact prices, limits and wallet amounts are listed under "Current plans and prices" below this article set - always quote those numbers.
 
 ## Plans
-Three monthly plans: Starter, Pro and Scale. Every plan has the same features; they differ only in size (customer messages a month the plan is built for, phone lines, team logins, how much business information the AI reads, campaign audience size, contacts per import, lead sources, API keys and webhooks). Prices are per month plus 18% GST.
+Four monthly plans: Solo Rs 1,699, Starter Rs 2,999, Pro Rs 7,999 and Scale Rs 12,499 (per month, plus 18% GST). They differ in size (customer messages a month the plan is built for, phone lines, team logins, how much business information the AI reads, campaign audience size, contacts per import, lead sources, API keys and webhooks). Solo is for one person: 500 customer messages, only the owner's login, 1 phone line, campaigns up to 300 people, no lead sources beyond your own forms - and it leaves out Website chat, Feedback, Analytics reports, Ask KROVA and Teams and routing rules (they show a lock and open Billing). WhatsApp, Instagram, the Voice Agent, automations, campaigns and your business type's tools are on every plan, Solo too. If you subscribed before 2 Nov 2026, you keep the price you signed up at; a new plan or a change of plan is at today's price.
 - Only the owner can choose or change the plan (Billing page).
 - You approve the monthly payment once (card or UPI AutoPay) and it renews by itself; you are told before each charge.
 - If a renewal fails, it is retried over a week before the plan is paused. While paused, AI replies, calls and campaigns are off; your customers and conversations stay.

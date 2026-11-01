@@ -13,12 +13,16 @@ import math
 GST_PCT = 18
 
 # Paise, before GST.
+# Changed 2026-11-02 (Solo added; Pro 5,999 -> 7,999, Scale 9,999 -> 12,499 - with GST it stays under the
+# Rs 15,000 UPI AutoPay limit, see tests/billing). A business already subscribed keeps
+# what it signed up at: renewals charge Subscription.amount_paise, never this table (shared/billing/service.py).
 PLAN_PRICES_PAISE: dict[str, int] = {
+    "solo": 1_699_00,
     "starter": 2_999_00,
-    "pro": 5_999_00,
-    "scale": 9_999_00,
+    "pro": 7_999_00,
+    "scale": 12_499_00,
 }
-PLAN_LABELS = {"starter": "Starter", "pro": "Pro", "scale": "Scale"}
+PLAN_LABELS = {"solo": "Solo", "starter": "Starter", "pro": "Pro", "scale": "Scale"}
 
 NUMBER_RENT_PAISE = 220_00      # per phone number, per month, taken from the wallet
 # On top of what a call really costs KROVA. Switched OFF for now (Nikhil, 2026-10-14): calls are charged at
