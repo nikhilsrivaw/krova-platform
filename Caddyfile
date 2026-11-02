@@ -1,3 +1,17 @@
 api.krova.space {
+    # Security headers on every API response. No Content-Security-Policy here on purpose: the API returns JSON and
+    # the website chat's /widget.js, which runs on the business's own site under that site's policy.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+    # No request bigger than this reaches the app (the largest upload is 10 MB). Also closes Starlette's unbounded
+    # url-encoded form parsing (PayU and Plivo post forms).
+    request_body {
+        max_size 20MB
+    }
     reverse_proxy app:8000
 }

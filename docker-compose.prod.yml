@@ -17,7 +17,11 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: krova
-      POSTGRES_PASSWORD: krova_prod_test
+      # From .env (POSTGRES_PASSWORD=...). The default is the old test password, kept only so an existing server
+      # keeps starting until it is changed. This only sets the password when the database is first created, so to
+      # change it on a running server: ALTER USER krova PASSWORD '<new>'; then put the same value in .env and
+      # restart. Letters and digits only - it also sits inside DATABASE_URL below.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-krova_prod_test}
       POSTGRES_DB: krova
     volumes:
       - krova_pgdata:/var/lib/postgresql
@@ -32,7 +36,7 @@ services:
     container_name: krova-api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+      DATABASE_URL: postgresql+asyncpg://krova:${POSTGRES_PASSWORD:-krova_prod_test}@postgres:5432/krova
     env_file:
       - .env
     depends_on:
@@ -62,7 +66,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.workers.respond"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+      DATABASE_URL: postgresql+asyncpg://krova:${POSTGRES_PASSWORD:-krova_prod_test}@postgres:5432/krova
     env_file:
       - .env
     depends_on:
@@ -75,7 +79,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.workers.analyse"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+      DATABASE_URL: postgresql+asyncpg://krova:${POSTGRES_PASSWORD:-krova_prod_test}@postgres:5432/krova
     env_file:
       - .env
     depends_on:
@@ -88,7 +92,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.workers.profile"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+      DATABASE_URL: postgresql+asyncpg://krova:${POSTGRES_PASSWORD:-krova_prod_test}@postgres:5432/krova
     env_file:
       - .env
     depends_on:
@@ -101,7 +105,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.workers.call_campaign"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+      DATABASE_URL: postgresql+asyncpg://krova:${POSTGRES_PASSWORD:-krova_prod_test}@postgres:5432/krova
     env_file:
       - .env
     depends_on:
@@ -114,7 +118,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.workers.webhook_delivery"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://krova:krova_prod_test@postgres:5432/krova
+      DATABASE_URL: postgresql+asyncpg://krova:${POSTGRES_PASSWORD:-krova_prod_test}@postgres:5432/krova
     env_file:
       - .env
     depends_on:

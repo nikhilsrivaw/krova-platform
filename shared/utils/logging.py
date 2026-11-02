@@ -6,6 +6,7 @@ the workers and the voice service alike.
 """
 
 import logging
+import re
 import sys
 
 from shared.config.settings import settings
@@ -26,6 +27,7 @@ def _configure() -> None:
         )
     )
 
+    handler.addFilter(_Redact())
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(settings.log_level)
@@ -36,6 +38,42 @@ def _configure() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     _configured = True
+
+
+# A phone number: 10 to 13 digits, maybe with +, spaces or dashes. Counted on its digits so a date (8) never matches.
+_PHONE = re.compile(r"(?<![\w-])\+?\d[\d \-]{8,16}\d(?![\w-])")
+_EMAIL = re.compile(r"\b([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b")
+
+
+def mask(message: str) -> str:
+    """Phone numbers down to their last four digits, email addresses down to their first letter and domain."""
+    def phone(m: re.Match) -> str:
+        digits = re.sub(r"\D", "", m.group(0))
+        if not 10 <= len(digits) <= 13:
+            return m.group(0)
+        return ("+" if m.group(0).startswith("+") else "") + "*" * (len(digits) - 4) + digits[-4:]
+
+    return _EMAIL.sub(r"\1***@\2", _PHONE.sub(phone, message))
+
+
+class _Redact(logging.Filter):
+    """Every log line passes through here: no full phone number or email address is ever written to a log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+            masked = mask(message)
+            if masked != message:
+                record.msg, record.args = masked, None
+        except Exception:  # noqa: BLE001 - a log line must never be lost to its own redaction
+            pass
+        return True
+
+
+def said(text: str | None) -> str:
+    """What a customer said, for a log line: the words only when LOG_CUSTOMER_TEXT is on, else just how long it was."""
+    text = (text or "").strip()
+    return repr(text) if settings.log_customer_text else f"[{len(text)} chars]"
 
 
 def get_logger(name: str) -> logging.Logger:

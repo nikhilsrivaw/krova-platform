@@ -62,7 +62,7 @@ from shared.db.models import (
 )
 from shared.scheduling import booking as scheduling_booking
 from shared.scheduling import queue_booking
-from shared.utils.logging import get_logger
+from shared.utils.logging import get_logger, said
 
 logger = get_logger(__name__)
 
@@ -454,8 +454,8 @@ class CallPipeline:
             # context instead - this one line is what turns "it happened
             # again" into a provable root cause instead of another guess.
             logger.info(
-                "voice turn call=%s turn=%d heard: %r",
-                self.provider_call_id, len(self.turns) + 1, text.strip(),
+                "voice turn call=%s turn=%d heard: %s",
+                self.provider_call_id, len(self.turns) + 1, said(text),
             )
             await self._handle_utterance(text.strip())
         else:
@@ -673,9 +673,9 @@ class CallPipeline:
         self._playing_until = 0.0
         if heard_by is not None:
             logger.info(
-                "voice barge-in call=%s after=%.2fs of %.2fs heard=%.0f%% still_playing=%s by=%r",
+                "voice barge-in call=%s after=%.2fs of %.2fs heard=%.0f%% still_playing=%s by=%s",
                 self.provider_call_id, now - (self._reply_audio_start or now), self._reply_audio_seconds,
-                fraction * 100, was_playing, heard_by[:60],
+                fraction * 100, was_playing, said(heard_by[:60]),
             )
 
         if self._speculation_timer is not None:
@@ -1686,8 +1686,8 @@ class CallPipeline:
                 # itself" report is the agent regenerating the same reply
                 # for different input, or audio/relay replaying old output.
                 logger.info(
-                    "voice turn call=%s said (complete=%s): %r",
-                    self.provider_call_id, turn.complete, turn.text.strip(),
+                    "voice turn call=%s said (complete=%s): %s",
+                    self.provider_call_id, turn.complete, said(turn.text),
                 )
             # Quiet is counted from when the caller stops hearing the agent, not from when the audio was sent.
             self._last_activity = max(time.monotonic(), self._playing_until)

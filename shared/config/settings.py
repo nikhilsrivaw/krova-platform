@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"
     )
+    # What customers say is kept out of the logs ("[42 chars]" instead) unless this is switched on for a while to
+    # debug a call. Phone numbers and email addresses are always masked (shared/utils/logging.py).
+    log_customer_text: bool = Field(default=False, alias="LOG_CUSTOMER_TEXT")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
 
     # Public origin this service is reachable at. Used for webhook callbacks
@@ -59,6 +62,9 @@ class Settings(BaseSettings):
 
     # Encrypts channel credentials at rest. Fernet key, 44 chars base64.
     encryption_key: str = Field(alias="ENCRYPTION_KEY")
+    # Earlier keys, comma separated, kept only to READ what was stored with them while a key is being rotated
+    # (scripts/rotate_encryption_key.py). Everything new is encrypted with ENCRYPTION_KEY.
+    encryption_keys_old: str = Field(default="", alias="ENCRYPTION_KEYS_OLD")
 
     # ── Meta (WhatsApp + Instagram) ──────────────────────────────────────────
     meta_app_id: str = Field(default="", alias="META_APP_ID")

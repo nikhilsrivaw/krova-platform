@@ -12,7 +12,7 @@ option available, and it does not need to be - this runs when a channel is
 connected or a token refreshed, not on the request path.
 """
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from shared.config.settings import settings
 
@@ -28,16 +28,21 @@ class DecryptionError(Exception):
     """
 
 
-_fernet: Fernet | None = None
+_fernet: MultiFernet | None = None
 
 
-def _cipher() -> Fernet:
+def _cipher() -> MultiFernet:
+    """
+    The current key first - it encrypts everything new - then any earlier keys from ENCRYPTION_KEYS_OLD, which are
+    only ever used to read what was stored before a rotation (scripts/rotate_encryption_key.py).
+    """
     global _fernet
     if _fernet is None:
         if not settings.encryption_key:
             raise RuntimeError("ENCRYPTION_KEY is not set")
         try:
-            _fernet = Fernet(settings.encryption_key.encode())
+            keys = [settings.encryption_key] + [k.strip() for k in settings.encryption_keys_old.split(",") if k.strip()]
+            _fernet = MultiFernet([Fernet(k.encode()) for k in keys])
         except (ValueError, TypeError) as exc:
             raise RuntimeError(
                 "ENCRYPTION_KEY is not a valid Fernet key. Generate one with: "
@@ -60,6 +65,20 @@ def decrypt(ciphertext: str) -> str:
         raise DecryptionError(
             "Stored credential could not be decrypted - ENCRYPTION_KEY may have changed"
         ) from exc
+
+
+def rotate(ciphertext: str) -> str:
+    """The same secret encrypted again with the current key (it may have been stored with an earlier one)."""
+    try:
+        return _cipher().rotate(ciphertext.encode()).decode()
+    except InvalidToken as exc:
+        raise DecryptionError("Stored credential could not be decrypted with any configured key") from exc
+
+
+def reset_cipher() -> None:
+    """Forget the cached keys (tests, and a key change inside one process)."""
+    global _fernet
+    _fernet = None
 
 
 def encrypt_optional(plaintext: str | None) -> str | None:

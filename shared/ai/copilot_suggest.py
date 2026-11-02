@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from shared.ai import client, voice_guard
 from shared.ai import context as ctx
-from shared.utils.logging import get_logger
+from shared.utils.logging import get_logger, said
 
 logger = get_logger(__name__)
 
@@ -84,7 +84,7 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
         return Suggestion(text=None, cost_paise=completion.cost_paise)
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}\n{agent_context.render_lookup()}"
     if unsafe_suggestion(text, facts):
-        logger.info("copilot suggestion dropped by guard: %r", text[:160])
+        logger.info("copilot suggestion dropped by guard: %s", said(text[:160]))
         return Suggestion(text=None, cost_paise=completion.cost_paise)
     return Suggestion(text=text, cost_paise=completion.cost_paise)
 
