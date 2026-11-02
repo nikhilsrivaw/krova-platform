@@ -33,7 +33,7 @@ Catalogue page: what you sell - import from your WhatsApp catalogue, upload a CS
 
 ## Taking an order in a chat
 The AI can also take an order itself on calls, WhatsApp or Instagram, or cancel an unpaid one, once you tick it in Settings → What the AI can do for customers. It names the products from your Catalogue page, repeats the order and total back, and places it only after the customer says yes - with a payment link on WhatsApp or as cash on delivery.
-Conversations → open a chat → "Take order" (also inside the customer panel, and in the phone app chat: "Take an order"). Needs two features on (Settings → Features): Orders & products, and Price list & payments - plus products with a price on the Catalogue page.
+Conversations → open a chat → "Take order" (also inside the customer panel, and in the phone app chat: "Take an order"). Needs two features on (Settings → Features): Orders & products, and Price list & payments - both are on from the start for "You sell products" businesses - plus products with a price on the Catalogue page.
 - Find a product, press Add, set how many with - and +. The total shows as you go. Prices come from your Catalogue page; you can't type a different price.
 - Choose "Send payment link" or "Cash on delivery", add a note if you like (size, address, gift wrap), and place the order.
 - Payment link: a Razorpay link for the total goes on WhatsApp, naming what was ordered. The order is made only if the link could be made. When the customer pays, the order turns "paid" by itself, your order automations run, and if the customer came from a Meta ad, Meta is told about the purchase. Money recorded by hand on the Ledger for it does the same.

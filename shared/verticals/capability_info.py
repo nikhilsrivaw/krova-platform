@@ -133,4 +133,6 @@ _CAPABILITIES = (
 SWITCHABLE: dict[str, CapabilityInfo] = {c.key: c for c in _CAPABILITIES}
 
 # Switches no business type starts with - each business turns them on itself, whatever its type.
-OPT_IN_ONLY = frozenset({"price_list_payments"})
+# Empty since 2026-11-02: "price_list_payments" (fees, payment links, orders taken in a chat) starts on for the
+# commerce type only, whose whole job is selling; every other type still switches it on itself.
+OPT_IN_ONLY: frozenset[str] = frozenset()

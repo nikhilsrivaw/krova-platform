@@ -71,14 +71,16 @@ def test_every_switchable_capability_is_one_a_template_really_declares():
     assert not OPT_IN_ONLY & declared
 
 
-def test_price_list_payments_is_off_until_the_business_turns_it_on():
+def test_price_list_payments_starts_on_for_commerce_only():
     from types import SimpleNamespace
 
     from shared.payments import fee_list
 
     for key in verticals.keys():
         business = SimpleNamespace(vertical=key, settings={})
-        assert not fee_list.enabled(business), key
+        assert fee_list.enabled(business) is (key == "commerce"), key
+    off = SimpleNamespace(vertical="commerce", settings={"capability_overrides": {"price_list_payments": False}})
+    assert not fee_list.enabled(off)  # a commerce business can still switch it off
     on = SimpleNamespace(vertical="general", settings={"capability_overrides": {"price_list_payments": True}})
     assert fee_list.enabled(on)
 

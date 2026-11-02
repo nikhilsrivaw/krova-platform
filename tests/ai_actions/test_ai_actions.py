@@ -339,11 +339,13 @@ def _typed(vertical, overrides=None, actions=None):
 
 def test_taking_an_order_needs_orders_and_the_price_list():
     on = {"take_order": ["whatsapp"], "cancel_order": ["whatsapp"]}
-    shop = _typed("commerce", actions=on)
+    shop = _typed("commerce", overrides={"price_list_payments": False}, actions=on)
     assert not actions.available(shop, "take_order") and actions.available(shop, "cancel_order")
     assert not actions.allowed(shop, "take_order", "whatsapp") and actions.allowed(shop, "cancel_order", "whatsapp")
-    priced = _typed("commerce", overrides={"price_list_payments": True}, actions=on)
+    priced = _typed("commerce", actions=on)  # commerce starts with Price list & payments on
     assert actions.available(priced, "take_order") and actions.allowed(priced, "take_order", "whatsapp")
+    other = _typed("b2b", overrides={"order_sync": True}, actions=on)  # any other type switches it on itself
+    assert not actions.available(other, "take_order")
 
 
 def test_a_switched_off_feature_hides_its_actions_even_when_the_owner_ticked_them():
@@ -360,7 +362,7 @@ def test_a_switched_off_feature_hides_its_actions_even_when_the_owner_ticked_the
 def test_the_settings_screen_shows_the_same_rule():
     from services.api.routers import ai_actions as api
 
-    out = {a.key: a.available for a in api._out(_typed("commerce")).actions}
+    out = {a.key: a.available for a in api._out(_typed("commerce", overrides={"price_list_payments": False})).actions}
     assert out == {"book": False, "cancel_booking": False, "reschedule_booking": False, "book_token": False,
                    "cancel_token": False, "take_order": False, "cancel_order": True}
     assert set(actions.NEEDS) == set(actions.ACTIONS)

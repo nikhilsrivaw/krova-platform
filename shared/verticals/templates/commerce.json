@@ -7,7 +7,8 @@
     "order_sync",
     "photo_product_match",
     "tpa_claim_tracking",
-    "lead_capture"
+    "lead_capture",
+    "price_list_payments"
   ],
   "labels": {
     "claims": {
