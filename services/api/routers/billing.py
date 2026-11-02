@@ -65,10 +65,13 @@ class PaymentOut(BaseModel):
 
 
 class UsageOut(BaseModel):
-    """This month against what the plan is built for. Messages are shown, never cut off."""
+    """This month against what the plan is built for. On Solo the AI stops replying at messages_stop_at."""
     plan: str
     messages_used: int
     messages_limit: int
+    # Solo only (shared/billing/message_meter.py): the count where automatic replies pause; None = never.
+    messages_stop_at: int | None = None
+    ai_replies_stopped: bool = False
     phone_lines_used: int
     phone_lines_limit: int
     team_used: int
@@ -129,8 +132,12 @@ async def _usage(db, business_id) -> UsageOut | None:
             KnowledgeItem.business_id == business_id, KnowledgeItem.active == True  # noqa: E712
         )
     )).scalar_one()
+    from shared.billing import message_meter
+
+    meter = await message_meter.usage_for(db, business_id, business.plan)
     return UsageOut(
         plan=business.plan, messages_used=await limits.messages_this_month(db, business_id),
+        messages_stop_at=meter["stop_at"], ai_replies_stopped=meter["ai_stopped"],
         messages_limit=cap.messages, phone_lines_used=lines, phone_lines_limit=cap.phone_lines,
         team_used=team, team_limit=cap.team_logins, knowledge_tokens_used=int(tokens),
         knowledge_tokens_limit=cap.knowledge_tokens,

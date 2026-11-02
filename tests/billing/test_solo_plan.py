@@ -34,7 +34,8 @@ def test_solo_is_sized_for_one_person():
 
 
 def test_only_solo_leaves_features_out():
-    assert features.locked_for("solo") == {"website_chat", "feedback", "analytics", "ask_krova", "team_routing"}
+    assert features.locked_for("solo") == {"website_chat", "feedback", "analytics", "ask_krova", "team_routing",
+                                           "call_campaigns"}
     for plan in ("starter", "pro", "scale", None, "trial"):
         assert features.locked_for(plan) == frozenset()
     solo = SimpleNamespace(plan="solo")
@@ -44,8 +45,13 @@ def test_only_solo_leaves_features_out():
     assert e.value.status_code == 402 and "Ask KROVA is not part of the Solo plan" in e.value.detail["message"]
 
 
-def test_automations_and_campaigns_are_not_locked_on_solo():
-    assert not {"automations", "campaigns", "call_campaigns"} & features.locked_for("solo")
+def test_automations_and_whatsapp_campaigns_stay_on_solo_but_call_campaigns_do_not():
+    assert not {"automations", "campaigns"} & features.locked_for("solo")
+    from services.api.routers import call_campaigns
+
+    locked = {(r.path, tuple(r.methods)) for r in call_campaigns.router.routes if r.dependencies}
+    assert {p for p, _ in locked} == {"/call-campaigns/preview", "/call-campaigns", "/call-campaigns/{campaign_id}/send"}
+    assert all(m == ("POST",) for _, m in locked)  # the list and audiences stay open for the Voice page
 
 
 def test_the_locked_routers_check_the_plan():
@@ -94,3 +100,10 @@ def test_feedback_never_runs_on_solo_and_the_website_chat_is_hidden():
     with pytest.raises(HTTPException) as e:
         asyncio.run(widget._config_and_business("key", Db()))
     assert e.value.status_code == 404
+
+
+def test_solo_cannot_connect_a_lead_source():
+    with pytest.raises(HTTPException) as e:
+        limits.check_new_lead_source("solo", {}, "justdial_token_hash")
+    assert "not part of the Solo plan" in e.value.detail["message"]
+    limits.check_new_lead_source("starter", {}, "justdial_token_hash")  # Starter's one is allowed

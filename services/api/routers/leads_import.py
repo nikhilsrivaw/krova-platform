@@ -60,6 +60,12 @@ async def import_leads(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No lead rows found in the file")
     if len(records) > MAX_ROWS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"More than {MAX_ROWS} rows. Split the file.")
+    # The plan's own import size, the same one the contacts import uses (shared/billing/limits.py) - Solo's 1,000
+    # is below this file's 2,000 ceiling.
+    from shared.billing import limits as plan_limits
+
+    business = await db.get(Business, current_user.business)
+    plan_limits.check_size(business.plan if business else None, "import_rows", "contacts in one import", len(records))
 
     parsed = [parse_lead(record) for record in records]
     if not any(lead.name or lead.phone or lead.email for lead in parsed):

@@ -16,6 +16,8 @@ FEEDBACK = "feedback"
 ANALYTICS = "analytics"
 ASK_KROVA = "ask_krova"
 TEAM_ROUTING = "team_routing"
+# Calling a list of customers. Solo campaigns are WhatsApp only; an automation may still place one call.
+CALL_CAMPAIGNS = "call_campaigns"
 
 LABELS = {
     WEBSITE_CHAT: "Website chat",
@@ -23,10 +25,11 @@ LABELS = {
     ANALYTICS: "Analytics reports",
     ASK_KROVA: "Ask KROVA",
     TEAM_ROUTING: "Teams and routing rules",
+    CALL_CAMPAIGNS: "Call campaigns",
 }
 
 LOCKED: dict[str, frozenset[str]] = {
-    "solo": frozenset({WEBSITE_CHAT, FEEDBACK, ANALYTICS, ASK_KROVA, TEAM_ROUTING}),
+    "solo": frozenset({WEBSITE_CHAT, FEEDBACK, ANALYTICS, ASK_KROVA, TEAM_ROUTING, CALL_CAMPAIGNS}),
 }
 # The plan that has it, named in the message.
 _UNLOCKS_ON = "Starter"

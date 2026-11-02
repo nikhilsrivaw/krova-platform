@@ -581,7 +581,12 @@ async def run_wallet_sweep() -> None:
             charged = await wallet.settle_voice_usage(db)
             paid, short = await wallet.collect_number_rent(db)
             low = await wallet.alert_low_balances(db)
+            from shared.billing import message_meter
+
+            notices = await message_meter.send_notices(db)
             await db.commit()
+            if notices:
+                logger.info("message notices sent: %s", notices)
             if charged or short or low:
                 logger.info("wallet sweep: calls=%s rent_paid=%s rent_short=%s low=%s", charged, paid, short, low)
     except Exception:

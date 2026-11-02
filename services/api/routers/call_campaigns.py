@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.dependencies import OwnerOrAdminDep, CurrentUserDep, DbDep
+from shared.billing import features as plan_features
 from shared.campaigns import audience as audience_module
 from shared.db import queue
 from shared.db.models import (
@@ -49,6 +50,8 @@ from shared.utils.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/call-campaigns", tags=["call-campaigns"])
+# Not on Solo (its campaigns are WhatsApp only); listing stays open so the Voice page loads.
+_ON_PLAN = plan_features.dependency(plan_features.CALL_CAMPAIGNS)
 
 
 # ── audiences (thin wrap - same Audience enum campaigns.py already uses) ────
@@ -115,7 +118,7 @@ def _mask(phone: str) -> str:
     return f"{phone[:4]}••••{phone[-2:]}" if len(phone) > 6 else "••••"
 
 
-@router.post("/preview", response_model=CallCampaignPreviewOut)
+@router.post("/preview", response_model=CallCampaignPreviewOut, dependencies=[_ON_PLAN])
 async def preview(body: CallCampaignIn, current_user: CurrentUserDep, db: DbDep) -> CallCampaignPreviewOut:
     try:
         audience = Audience(body.audience)
@@ -186,7 +189,7 @@ def _out(campaign: CallCampaign) -> CallCampaignOut:
     )
 
 
-@router.post("", response_model=CallCampaignOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=CallCampaignOut, status_code=status.HTTP_201_CREATED, dependencies=[_ON_PLAN])
 async def create_call_campaign(body: CallCampaignIn, current_user: OwnerOrAdminDep, db: DbDep) -> CallCampaignOut:
     try:
         audience = Audience(body.audience)
@@ -301,7 +304,7 @@ async def _check_number_series(campaign: CallCampaign, business: Business | None
         )
 
 
-@router.post("/{campaign_id}/send", response_model=CallCampaignOut)
+@router.post("/{campaign_id}/send", response_model=CallCampaignOut, dependencies=[_ON_PLAN])
 async def send_call_campaign(campaign_id: uuid.UUID, current_user: OwnerOrAdminDep, db: DbDep) -> CallCampaignOut:
     """
     Resolve the audience once, write one CallCampaignRecipient per person,

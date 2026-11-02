@@ -604,7 +604,14 @@ async def stream(
                     if pipeline_mode == "customer" and from_number and route.owner_phone:
                         try:
                             if normalise(IdentityKind.phone.value, from_number) == route.owner_phone:
-                                pipeline_mode = "owner"
+                                # Asking KROVA about the business by phone is Ask KROVA - not on Solo
+                                # (shared/billing/features.py). There the owner's call is an ordinary one,
+                                # which also lets them hear their own agent.
+                                from shared.billing import features as plan_features
+
+                                owner_business = await db.get(Business, route.business_id)
+                                if plan_features.has(owner_business, plan_features.ASK_KROVA):
+                                    pipeline_mode = "owner"
                         except InvalidIdentifier:
                             pass
 

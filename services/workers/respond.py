@@ -364,6 +364,23 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
                 what=message.content or "",
             )
 
+    # Solo's monthly messages and grace are used up: the AI stops replying until the 1st or an upgrade. The message
+    # stays in the inbox for the team, and goes to a person (shared/billing/message_meter.py). A request for a
+    # person still gets its acknowledgement below.
+    if not asked_for_person:
+        from shared.billing import message_meter
+
+        if await message_meter.ai_replies_stopped(db, business):
+            try:
+                from shared.team.rules import hand_to_person as give_to_person
+
+                async with db.begin_nested():
+                    await give_to_person(db, business_id=business.id, customer_id=customer.id,
+                                         reason="Plan's messages used up - reply yourself")
+            except Exception:
+                logger.exception("hand to person failed business=%s", business.id)
+            return None
+
     autonomy = (business.autonomy or "observe").lower()
     if autonomy == "observe":
         # Watching only. The business has not asked for drafts yet.
