@@ -21,6 +21,7 @@ Voice page → Number Settings (Agent Speech & Greeting card), per number:
 - Owner Phone Number (not on the Solo plan - there the owner's call is answered like any customer's): calling your voice line from this number gets you an agent that answers about your own ledger (who owes you, what is overdue).
 - Call Answering: AI Answers (default), or Live Copilot (a short greeting, then the "Who answers" list rings and suggestions show on screen).
 - Several numbers: name each (e.g. "Sales"), choose incoming/outgoing use, and which one outgoing calls go from.
+- Talking over the agent: a caller can interrupt at any time - "ruko", "nahi", "ek minute" or a new question stops the agent at once, and it answers what they said. A listener's "haan", "hmm", "ji" or "theek hai" does not stop it. On a call KROVA makes, the opening line always plays in full; anything the person says over it ("abhi busy hoon") is answered right after.
 
 ## Each number's own job (Voice page → Number Settings → "This number's job and who answers")
 Pick the number at the top, then:

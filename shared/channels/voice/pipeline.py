@@ -149,10 +149,28 @@ _PLAYBACK_MARGIN_SECONDS = 0.5
 _PERSON_REQUEST = team_requests.PERSON_REQUEST
 _CONTACT_REQUEST = team_requests.CONTACT_REQUEST
 
-# A listener's "hmm / haan / ok" while the agent talks is not an interruption.
+# A listener's "hmm / haan / ok" while the agent talks is not an interruption. In Devanagari too: a call's
+# speech-to-text writes Hindi in Devanagari, so "हाँ" and "ठीक है" are what actually arrives. Words that mean
+# "stop" - ruko, nahi, wait, ek minute, suniye - are deliberately NOT here: they always interrupt.
 _BACKCHANNEL = frozenset({
-    "haan", "han", "ha", "haa", "ji", "haanji", "hmm", "hm", "mm", "ok", "okay", "achha",
-    "accha", "theek", "thik", "yes", "yeah", "yep", "right", "sure", "oh",
+    "haan", "han", "ha", "haa", "ji", "haanji", "hmm", "hm", "hmmm", "mm", "ok", "okay", "okk", "achha", "acha",
+    "accha", "theek", "thik", "hai", "yes", "yeah", "yep", "right", "sure", "oh", "bilkul", "sir", "madam",
+    "हाँ", "हां", "हा", "जी", "हम्म", "हम", "अच्छा", "ठीक", "है", "ओके", "बिल्कुल", "सर",
+})
+# What someone says when they pick up an outbound call - answered by the opening line itself.
+_PICKUP_WORDS = _BACKCHANNEL | frozenset({
+    "hello", "helo", "hallo", "hi", "boliye", "bolo", "kaun", "bol", "raha", "rahe", "rahi", "who", "is", "this",
+    "speaking", "हेलो", "हैलो", "बोलिए", "बोलो", "कौन", "बोल", "रहा", "रहे", "रही",
+})
+# Partial text that mostly repeats what the agent is saying right now is the agent's own voice coming back through a
+# speakerphone, not the caller. A finished sentence is only thrown away when it repeats the agent almost word for
+# word - "kal 4 baje nahi" shares words with "kal 4 baje ka slot hai" and is a real answer.
+_ECHO_OVERLAP = 0.6
+_ECHO_OVERLAP_FINAL = 0.85
+# Words that mean "stop / no" - never mistaken for an echo or a listener's "haan".
+_STOP_WORDS = frozenset({
+    "ruko", "rukiye", "ruk", "nahi", "nahin", "nhi", "no", "wait", "stop", "minute", "suniye", "suno", "sunie",
+    "रुको", "रुकिए", "नहीं", "नही", "सुनिए", "सुनो", "मिनट",
 })
 
 # Quiet line: ask once, then end the call rather than keep a dead line (and its cost) open.
@@ -162,9 +180,19 @@ _MAX_CALL_SECONDS = 20 * 60
 _WATCH_TICK = 2.0
 
 
+def _words(text: str) -> list[str]:
+    """Words split on spaces - \\w alone breaks Devanagari at its vowel signs ("हाँ" is not one \\w run)."""
+    return re.sub(r"[^\w\s\u0900-\u097F']", " ", (text or "").lower()).split()
+
+
 def _is_backchannel(text: str) -> bool:
-    words = re.findall(r"[\w']+", text.lower())
-    return 0 < len(words) <= 2 and all(w in _BACKCHANNEL for w in words)
+    words = _words(text)
+    return 0 < len(words) <= 3 and all(w in _BACKCHANNEL for w in words)
+
+
+def _is_pickup(text: str) -> bool:
+    words = _words(text)
+    return 0 < len(words) and all(w in _PICKUP_WORDS for w in words)
 
 
 async def _single_chunk(text: str):
@@ -297,6 +325,14 @@ class CallPipeline:
     # transfer matches how long the line actually plays.
     _audio_bytes_sent: int = 0
     _audio_started_at: float | None = field(default=None, repr=False)
+    # When the audio already handed to Plivo finishes playing to the caller. The agent's reply is generated and sent
+    # far faster than it is heard, so "the reply task finished" says nothing about whether the caller can still hear
+    # it - this does, and it is what barge-in, the idle timer and the record of what was heard go by.
+    _playing_until: float = field(default=0.0, repr=False)
+    _reply_audio_start: float | None = field(default=None, repr=False)
+    _reply_audio_seconds: float = 0.0
+    # A sentence the person said over an outbound call's opening line - answered once the line has played.
+    _opening_heard: str | None = None
     # Serialises the "store the caller's turn, start the reply" step. Transcripts are
     # now handled concurrently so a caller can interrupt, and two of them must never
     # use the one database session at the same moment.
@@ -330,6 +366,12 @@ class CallPipeline:
                 await self._say_stream(chunks, record=True)
             finally:
                 self._opening_protected = False
+            heard, self._opening_heard = self._opening_heard, None
+            if heard:
+                # "Abhi busy hoon" said over the opening line is answered once the line has finished playing -
+                # never dropped, and never cutting the line short.
+                await self._wait_until_heard()
+                await self._handle_utterance(heard)
             return
         greeting = self.route.greeting
         if self.mode == "customer":
@@ -360,6 +402,12 @@ class CallPipeline:
         # _reply_task was added to fix. A "hello" carries nothing worth
         # answering anyway; the caller's next turn is handled normally.
         if self._opening_protected:
+            if is_final:
+                # "Hello?" when picking up is answered by the line itself. But a short "haan" near the end of a line
+                # that asks something ("...kya aap kal aa sakte hain?") is the answer, and is kept.
+                answering = self._awaiting_answer() and self._heard_fraction(time.monotonic()) >= 0.6
+                if answering or not _is_pickup(text):
+                    self._opening_heard = text.strip()
             return
 
         # Only a final transcript's language is trusted - a partial can
@@ -374,10 +422,26 @@ class CallPipeline:
         if language and is_final:
             self.detected_language = language
 
-        if self._reply_task is not None and not self._reply_task.done():
-            if _is_backchannel(text):
-                return
-            await self._barge_in()
+        if self._audible():
+            if not is_final:
+                # Partial text only decides whether to stop talking. One stray word is more likely line noise than
+                # the caller, so it takes two words - or a word that means stop - to cut the agent off; a one-word
+                # question ("kitne?") still stops it when its final arrives.
+                words = _words(text)
+                if _is_backchannel(text) or self._is_echo(text):
+                    return
+                if len(words) < 2 and not any(w in _STOP_WORDS for w in words):
+                    return
+                await self._barge_in(heard_by=text.strip())
+            elif _is_backchannel(text):
+                if not self._awaiting_answer():
+                    return  # a listener's "haan" while the agent talks
+                # "Haan ji" over the end of a question is the answer: let the question finish, then take it.
+                await self._wait_until_heard()
+            elif self._echo_overlap(text) >= _ECHO_OVERLAP_FINAL:
+                return  # the agent's own line, heard back almost word for word
+            else:
+                await self._barge_in(heard_by=text.strip())
 
         if is_final:
             # Ground truth for diagnosing a "repeats itself / doesn't
@@ -554,7 +618,41 @@ class CallPipeline:
         ]
         return self._context_cache
 
-    async def _barge_in(self) -> None:
+    def _audible(self) -> bool:
+        """The caller can still hear the agent: a reply is being made, or its audio is still playing."""
+        running = self._reply_task is not None and not self._reply_task.done()
+        return running or time.monotonic() < self._playing_until
+
+    def _echo_overlap(self, text: str) -> float:
+        """How much of what was heard repeats the agent's current line, 0 to 1 - 0 when it says stop or no."""
+        agent = next((t.text for t in reversed(self.turns) if t.role == "agent"), "")
+        said, theirs = set(_words(agent)), _words(text)
+        if len(theirs) < 2 or not said or any(w in _STOP_WORDS for w in theirs):
+            return 0.0
+        return sum(1 for w in theirs if w in said) / len(theirs)
+
+    def _is_echo(self, text: str) -> bool:
+        """Partial text that mostly repeats the agent's current sentence - its own voice through a speakerphone."""
+        return self._echo_overlap(text) >= _ECHO_OVERLAP
+
+    def _awaiting_answer(self) -> bool:
+        """The agent's line asks something - a question, or a change waiting for "haan" - so a short yes is an answer."""
+        agent = next((t.text for t in reversed(self.turns) if t.role == "agent"), "")
+        return self._pending_change is not None or "?" in agent[-40:]
+
+    async def _wait_until_heard(self) -> None:
+        """Hold until the audio already sent has finished playing."""
+        remaining = self._playing_until - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+    def _heard_fraction(self, now: float) -> float:
+        """How much of the current reply's audio the caller has actually heard, 0 to 1, by the clock."""
+        if self._reply_audio_start is None or self._reply_audio_seconds <= 0:
+            return 1.0
+        return max(0.0, min(1.0, (now - self._reply_audio_start) / self._reply_audio_seconds))
+
+    async def _barge_in(self, heard_by: str | None = None) -> None:
         """
         The caller started talking while the agent was still speaking.
 
@@ -563,7 +661,22 @@ class CallPipeline:
         hear - including any speculative one, which is answering a question
         the caller has now talked over.
         """
+        now = time.monotonic()
+        was_playing = now < self._playing_until
+        fraction = self._heard_fraction(now)
+        # What the caller heard, by the clock - set before the reply is cancelled so the turn it stores on its way out
+        # is this much, not everything that was already sent.
+        last_agent = self.turns[-1] if self.turns and self.turns[-1].role == "agent" else None
+        if last_agent is not None and fraction < 1.0:
+            self._spoken_chars = min(self._spoken_chars or len(last_agent.text), int(len(last_agent.text) * fraction))
         await self.send_clear()
+        self._playing_until = 0.0
+        if heard_by is not None:
+            logger.info(
+                "voice barge-in call=%s after=%.2fs of %.2fs heard=%.0f%% still_playing=%s by=%r",
+                self.provider_call_id, now - (self._reply_audio_start or now), self._reply_audio_seconds,
+                fraction * 100, was_playing, heard_by[:60],
+            )
 
         if self._speculation_timer is not None:
             self._speculation_timer.cancel()
@@ -591,11 +704,12 @@ class CallPipeline:
         # The agent's turn is on record as whatever fraction was actually
         # spoken before it was cut off, not the sentence it never finished -
         # so the next turn reasons from what the caller heard.
-        if self.turns and self.turns[-1].role == "agent" and not self.turns[-1].complete:
-            spoken = self.turns[-1].text[: self._spoken_chars].strip()
-            if spoken and self.history and self.history[-1]["role"] == "assistant":
+        if last_agent is not None and fraction < 1.0:
+            # Nothing heard yet still has to be said so: the next reply must not assume the caller heard it.
+            spoken = last_agent.text[: int(len(last_agent.text) * fraction)].strip() or "(interrupted before it was heard)"
+            if self.history and self.history[-1]["role"] == "assistant":
                 self.history[-1]["content"] = spoken
-                self.turns[-1].text = spoken
+            last_agent.text = spoken
 
     async def _handle_utterance(self, text: str) -> None:
         """Store what the caller said, then generate and speak a reply."""
@@ -1302,7 +1416,7 @@ class CallPipeline:
             await asyncio.sleep(_WATCH_TICK)
             if self._opening_protected:
                 continue
-            if self._reply_task is not None and not self._reply_task.done():
+            if self._audible():
                 continue
             now = time.monotonic()
             if now - self._started_at > _MAX_CALL_SECONDS:
@@ -1401,10 +1515,9 @@ class CallPipeline:
         than real time. The duration comes from the bytes actually sent, not a
         guessed constant.
         """
-        if self._audio_started_at is None:
+        if self._audio_started_at is None and self._playing_until <= 0:
             return
-        duration = self._audio_bytes_sent / _MULAW_BYTES_PER_SECOND
-        remaining = duration - (time.monotonic() - self._audio_started_at)
+        remaining = self._playing_until - time.monotonic()
         await asyncio.sleep(max(0.0, remaining) + _PLAYBACK_MARGIN_SECONDS)
 
     def _caller_summary(self) -> str | None:
@@ -1531,6 +1644,8 @@ class CallPipeline:
                 yield chunk
 
         self._spoken_chars = 0
+        self._reply_audio_start = None
+        self._reply_audio_seconds = 0.0
         t_start = time.monotonic()
         t_first_chunk: float | None = None
         try:
@@ -1540,6 +1655,14 @@ class CallPipeline:
                 if self._audio_started_at is None:
                     self._audio_started_at = time.monotonic()
                 self._audio_bytes_sent += len(chunk)
+                # Plivo plays what it is given in order, at 8,000 bytes a second: this chunk starts when the one
+                # before it ends (or now, if the line had gone quiet) and adds its own length.
+                seconds = len(chunk) / _MULAW_BYTES_PER_SECOND
+                plays_from = max(self._playing_until, time.monotonic())
+                if self._reply_audio_start is None:
+                    self._reply_audio_start = plays_from
+                self._playing_until = plays_from + seconds
+                self._reply_audio_seconds += seconds
                 await self.send_audio(chunk)
                 # Rough proportional tracking - good enough for barge-in
                 # recovery, not claimed as exact.
@@ -1566,7 +1689,8 @@ class CallPipeline:
                     "voice turn call=%s said (complete=%s): %r",
                     self.provider_call_id, turn.complete, turn.text.strip(),
                 )
-            self._last_activity = time.monotonic()
+            # Quiet is counted from when the caller stops hearing the agent, not from when the audio was sent.
+            self._last_activity = max(time.monotonic(), self._playing_until)
             if record and turn.text.strip() and self.mode != "owner":
                 await self._store_turn(
                     direction=Direction.outbound,
