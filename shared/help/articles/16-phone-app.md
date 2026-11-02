@@ -6,7 +6,7 @@ Open the app link on your phone (Settings in the app shows it, with a Copy butto
 ## Tabs
 Team members: Today, Inbox, Ledger, Approvals and More. Owner and admins: Today, Inbox, Ask KROVA (the round button in the middle), Ledger and More - Approvals is in More and on Today's "AI replies waiting" card, and its count shows on the Today tab. More holds everything else; screens for features your business doesn't use don't appear.
 
-## Ask KROVA (owner and admins)
+## Ask KROVA (owner and admins; not on the Solo plan - there the tab and the Today bar are not shown)
 Ask anything about your business in Hindi, Hinglish or English - from the round Ask button, or the "KROVA se kuch bhi poochho" bar at the top of Today (tap a ready question or type your own). It answers from KROVA's own records: money owed and received, any customer by name or number, bookings, orders, leads, calls, the team - for today, a week, a month or the dates you name.
 
 ## Today

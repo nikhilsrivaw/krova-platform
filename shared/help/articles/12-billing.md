@@ -9,11 +9,11 @@ Customer messages a month: the owner and admins get a phone notification at 80% 
 - Only the owner can choose or change the plan (Billing page).
 - You approve the monthly payment once (card or UPI AutoPay) and it renews by itself; you are told before each charge.
 - If a renewal fails, it is retried over a week before the plan is paused. While paused, AI replies, calls and campaigns are off; your customers and conversations stay.
-- Going past the message size of your plan doesn't switch anything off - moving up keeps the cost per message lower.
+- On Starter, Pro and Scale, going past the message size doesn't switch anything off - moving up keeps the cost per message lower. On Solo, automatic replies pause past 550 (see above).
 - Coupon code: enter it on the Billing page before choosing a plan.
 
 ## Wallet (for voice)
-Calls and phone number rent are paid from the wallet, not the plan. Billing page → Wallet → Add money. GST and the payment gateway fee are added on top, so the wallet gets exactly the amount you chose. Calls stop when the balance reaches zero; you see a warning when it is running low.
+Calls and phone number rent are paid from the wallet, not the plan. Billing page → Wallet → Add money. No GST is added to a top-up; only the payment gateway's fee is added on top, so the wallet gets exactly the amount you chose. A top-up gets a receipt, not a tax invoice. Calls stop when the balance reaches zero; you see a warning when it is running low.
 
 ## Invoices
 Billing page → Invoices and receipts: a GST invoice after each plan payment, a receipt after each wallet top-up. Add your billing details (business name, address, GSTIN if registered, state) before your first payment so the invoice is right. Invoices are issued by Aqirox Technology.

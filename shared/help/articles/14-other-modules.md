@@ -3,7 +3,7 @@
 ## Escalations
 Every time the AI couldn't answer something on its own. (A customer who asks to talk to a person goes to Talk to team instead.) Open ones alert whoever is on staff if nobody acknowledges them for 15 minutes. Press "I have got this", reply to the customer (WhatsApp, Instagram or call), then Resolve with a short note (only your team sees it). You can build an automation for escalations like one you are looking at.
 
-## Feedback (owner and admins)
+## Feedback (owner and admins; not on the Solo plan)
 Sidebar → Feedback. KROVA asks customers how it went and keeps what they say.
 - Switch it on and choose what to ask about automatically: after a booking or appointment, after a walk-in token is done, after an order is delivered, after a chat is marked resolved. Only the moments your business has are shown - booking needs Bookings, token needs the walk-in queue, order needs Orders (Settings → Features); switch one on and it appears, with your earlier tick kept. Choose when the first ask goes (right away, 30 minutes to the next day after it is over), and how often one customer may be asked (at most once in 3, 7, 14 or 30 days, or no limit). Only visits, orders and chats from the last 3 days are asked about.
 - Rounds: KROVA keeps asking until the customer answers, up to 5 rounds. Each round is WhatsApp or a call, and from round 2 you choose the gap: "if no answer, after" 1 hour to 1 week. Example: WhatsApp first, a call after 1 day, WhatsApp again after 2 days. It stops the moment they answer. If a round cannot go out (template not approved, voice wallet empty, calls blocked) the next round runs straight away. After the last round KROVA waits (2 days after a WhatsApp, 3 hours after a call) and then marks it "No answer after every round". Calls are paid from your voice wallet.
@@ -53,7 +53,7 @@ Your listings (price, status, RERA number). The AI quotes price and availability
 Claims: track a warranty or insurance claim until it closes; customers can be updated when its status changes. Cases: one per client with status and next hearing; the AI answers only from what you record.
 
 ## Analytics
-AI performance (approval rate, edits, rejections - whether it is safe to move from Draft to Act mode), response speed, the trust report, team performance, receivables aging and promise-keeping.
+Not on the Solo plan (the Dashboard summary is). AI performance (approval rate, edits, rejections - whether it is safe to move from Draft to Act mode), response speed, the trust report, team performance, receivables aging and promise-keeping.
 
 ## Mobile app
 KROVA has a mobile app view with "Ask KROVA" (owner and admins), where you can ask anything about your own business in Hindi, Hinglish or English and get an answer from KROVA's records: money owed and received, a customer by name or number (their messages, promises, bookings, orders, calls, notes), bookings, walk-in tokens, orders, leads, quotations, calls, escalations, signals, campaigns, AI replies, the team's work and the voice wallet - for today, last week, last month or any dates you name. For example "aaj kya pending hai?", "pichhle mahine business mein kya hua?", "Sharma ji ka kya scene hai?". It never guesses: what KROVA doesn't record (like expenses or profit) it says it doesn't track.

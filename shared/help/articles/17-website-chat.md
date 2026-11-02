@@ -1,6 +1,6 @@
 # Website chat (AI chat button on your own website)
 
-Website chat page (sidebar, under Channels - owner and admins).
+Website chat page (sidebar, under Channels - owner and admins). Not on the Solo plan: the page shows a lock and the chat does not appear on your site.
 
 Setting it up:
 - Add website: type your site's address (for example myshop.in). The chat button works on that address and its www. form only, not on other sites. You can add up to 10 websites.

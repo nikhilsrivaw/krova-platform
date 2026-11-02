@@ -50,15 +50,31 @@ def live_facts() -> str:
         lines.append(
             f"- {label}: Rs {plans.rupees(base)} a month + 18% GST (Rs {plans.rupees(total)} in all). Built for about "
             f"{lim.messages:,} customer messages a month; {lim.phone_lines} phone line(s); {lim.team_logins} team "
-            f"logins; campaigns up to {lim.campaign_audience:,} people; imports up to {lim.import_rows:,} contacts; "
-            f"lead sources: {'all' if lim.lead_sources is None else lim.lead_sources}; API keys: {lim.api_keys}; "
+            f"logins; WhatsApp campaigns up to {lim.campaign_audience:,} people; imports up to {lim.import_rows:,} "
+            f"contacts; lead sources: "
+            f"{'all' if lim.lead_sources is None else 'none (own forms, file import and manual entry only)' if lim.lead_sources == 0 else lim.lead_sources}; "
+            f"API keys: {lim.api_keys}; "
             f"webhooks: {lim.webhooks}."
         )
+    from shared.billing import features, message_meter
+
+    for key, locked in features.LOCKED.items():
+        names = ", ".join(features.LABELS[f] for f in sorted(locked))
+        lines.append(f"- Not on the {plans.PLAN_LABELS[key]} plan: {names}. They show a lock and open Billing.")
+    for key in sorted(message_meter.ENFORCED):
+        lines.append(
+            f"- On {plans.PLAN_LABELS[key]}, automatic WhatsApp and Instagram replies pause once "
+            f"{message_meter.stop_at(key):,} customer messages are used in a month (the size plus "
+            f"{message_meter.GRACE_PCT}%), until the 1st or a move to a bigger plan; messages still reach the inbox."
+        )
+    lines.append("- Every plan: the owner and admins get a phone notification at 80% and 100% of the plan's messages. "
+                 "Only Solo is ever paused. A business that subscribed earlier keeps the price it signed up at.")
     markup = plans.CALL_MARKUP_PCT
     lines += [
         "",
         f"- Wallet top-up: Rs {plans.rupees(plans.MIN_TOPUP_PAISE)} to Rs {plans.rupees(plans.MAX_TOPUP_PAISE)} at a "
-        "time; GST and the payment gateway fee are added on top.",
+        "time; no GST on a top-up, only the payment gateway's fee is added on top, and the wallet gets the full amount. "
+        "A top-up gets a receipt; a plan payment gets a GST tax invoice.",
         f"- Phone number rent: Rs {plans.rupees(plans.NUMBER_RENT_PAISE)} per number per month, from the wallet.",
         "- Calls are charged at what they cost" + (f" plus {markup}%." if markup else ", with no extra charge on top."),
         f"- The wallet shows a low-balance warning under Rs {plans.rupees(plans.LOW_BALANCE_PAISE)}.",

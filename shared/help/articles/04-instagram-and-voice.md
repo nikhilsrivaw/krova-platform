@@ -18,7 +18,7 @@ Then search a local number by area code or city (for example 080 Bengaluru, 022 
 ## Voice Agent settings
 Voice page → Number Settings (Agent Speech & Greeting card), per number:
 - Greeting, agent voice (male/female), language: Adaptive (replies in whatever the caller speaks - Hindi, English or a mix) or Fixed.
-- Owner Phone Number: calling your voice line from this number gets you an agent that answers about your own ledger (who owes you, what is overdue).
+- Owner Phone Number (not on the Solo plan - there the owner's call is answered like any customer's): calling your voice line from this number gets you an agent that answers about your own ledger (who owes you, what is overdue).
 - Call Answering: AI Answers (default), or Live Copilot (a short greeting, then the "Who answers" list rings and suggestions show on screen).
 - Several numbers: name each (e.g. "Sales"), choose incoming/outgoing use, and which one outgoing calls go from.
 

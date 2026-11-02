@@ -10,7 +10,7 @@ Campaigns page → WhatsApp Campaigns. Send an approved template to many custome
 Marketing templates go only to customers with Marketing Opt-In on (Customers page → customer → Marketing Opt-In). Others are skipped. Campaign History shows sent and failed counts.
 Your plan sets the largest audience for one campaign (see Billing).
 
-## Voice (call) campaigns
+## Voice (call) campaigns (not on the Solo plan)
 Campaigns page → Voice Campaigns. The AI phones a list of customers.
 - Who to call: a tag, days of silence, or specific numbers (up to 25).
 - Purpose: Service call (080 / 022 series) or Promotional call (140 series). Indian rules require the number series to match the purpose; campaigns are blocked if they don't match.
