@@ -253,7 +253,8 @@ REPLY_TOOL = {
                 ),
             },
         },
-        "required": ["action", "reasoning", "confidence"],
+        # `message` is required: left optional, Mistral chose "reply", gave the right reasoning and wrote no message.
+        "required": ["action", "message", "reasoning", "confidence"],
     },
 }
 

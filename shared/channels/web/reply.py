@@ -344,9 +344,8 @@ async def generate_reply(
             await agent_module.record_gap(business.id, gap, db)
         session.needed_person_at = session.needed_person_at or _now()
         from shared.ai import hand_over_lines
-        from shared.team import language as team_language
 
-        said_in = {"en": "english", "hi": "hindi"}.get(reply_language or "") or team_language.detect(text)
+        said_in = {"en": "english", "hi": "hindi"}.get(reply_language or "") or context.customer_language()
         if customer is None:
             ask = hand_over_lines.needs_contact(said_in) or _NEEDS_PERSON_MESSAGE
             _append_transcript(session, role="assistant", text=ask)

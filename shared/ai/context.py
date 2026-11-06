@@ -242,10 +242,16 @@ class AgentContext:
 
         return reply_language.expected(self.last_inbound(), self.reply_language)
 
+    def customer_language(self) -> str | None:
+        """The language of their last message: from its words when knowledge_pick ran, else from its letters."""
+        from shared.team import language as team_language
+
+        return team_language.spoken(self.last_inbound(), (self.picked or {}).get("language"))
+
     def language_line(self) -> str | None:
         from shared.ai import reply_language
 
-        line = reply_language.hint(self.last_inbound(), self.reply_language)
+        line = reply_language.hint(self.last_inbound(), self.reply_language, (getattr(self, "picked", None) or {}).get("language"))
         if line and self.language_retry:
             line += " " + reply_language.correction(self.expected_script())
         return line

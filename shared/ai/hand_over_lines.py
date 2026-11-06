@@ -3,7 +3,8 @@ What a customer is told when their question goes to the team, in their own langu
 
 Fixed sentences, never written by a model: this is the moment a model has nothing true to say, and a sentence that
 cannot vary cannot invent a fee. English has no entry, because each channel keeps its own English wording, which can
-name the missing fact. Language names are those of shared/team/language.py. Marathi is read as Hindi there.
+name the missing fact. Language names are those of shared/team/language.py. Someone who typed Tamil in English letters
+gets the Tamil script here: these sentences exist in one spelling each.
 """
 
 _TOLD = {
@@ -48,13 +49,22 @@ _NEEDS_CONTACT = {
 }
 
 
+# No sentences of their own yet: the closest one a reader of that language will follow.
+_NEAREST = {"marathi": "hindi", "nepali": "hindi", "konkani": "hindi", "maithili": "hindi", "dogri": "hindi",
+            "assamese": "bengali", "urdu": "hinglish"}
+
+
+def _in(lines: dict[str, str], language: str | None) -> str | None:
+    return lines.get(_NEAREST.get(language or "", language or ""))
+
+
 def told(language: str | None) -> str | None:
-    return _TOLD.get(language or "")
+    return _in(_TOLD, language)
 
 
 def told_again(language: str | None) -> str | None:
-    return _TOLD_AGAIN.get(language or "")
+    return _in(_TOLD_AGAIN, language)
 
 
 def needs_contact(language: str | None) -> str | None:
-    return _NEEDS_CONTACT.get(language or "")
+    return _in(_NEEDS_CONTACT, language)

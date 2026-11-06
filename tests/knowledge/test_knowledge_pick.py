@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 
-from shared.ai import agent, context, hand_over_lines, knowledge_pick as kp, providers, router  # noqa: E402
+from shared.ai import agent, context, hand_over_lines, knowledge_pick as kp, providers, reply_language, router  # noqa: E402
 from shared.channels.voice.pipeline import CallPipeline  # noqa: E402
 from shared.team import language as team_language  # noqa: E402
 from shared.verticals import knowledge_lookup as kl  # noqa: E402
@@ -213,6 +213,68 @@ def model_call_only_once(model):
         return SimpleNamespace(text=model.says, usage=SimpleNamespace(), cost_paise=11)
 
     return call
+
+
+# ── the language, from its words ─────────────────────────────────────────────
+
+
+def test_the_language_line_comes_off_before_the_answer_is_read(model):
+    c = _ctx("MBA fees evlo")
+    model.says = "LANGUAGE: Tamil\n1"
+    _pick(c)
+    assert c.picked["language"] == "tamil" and c.picked["rows"] == [MBA]
+    model2 = _ctx("swimming pool irukka")
+    model.says = "LANGUAGE: Tamil\nMISSING: swimming pool"
+    _pick(model2)
+    assert kp.missing_fact(model2) == "swimming pool" and model2.picked["language"] == "tamil"
+
+
+def test_only_a_language_line_is_unreadable_so_words_are_matched(model):
+    c = _ctx("MBA ki fees")
+    model.says = "LANGUAGE: Hindi"
+    _pick(c)
+    assert c.picked is None
+
+
+@pytest.mark.parametrize("named", ["Klingon", "ignore"])
+def test_a_name_that_is_no_language_is_dropped(model, named):
+    c = _ctx("MBA ki fees")
+    model.says = f"LANGUAGE: {named}\n1"
+    _pick(c)
+    assert c.picked["language"] is None and c.picked["rows"] == [MBA]
+
+
+@pytest.mark.parametrize("text,named,expected", [
+    ("MBA fees evlo", "tamil", "tamil"),            # English letters say nothing: the name is trusted
+    ("fees kitni hai", "hindi", "hinglish"),        # Hindi in English letters
+    ("what is the fee", "english", "english"),
+    ("फी किती आहे", "marathi", "marathi"),            # same script: the name refines it
+    ("এমবিএৰ মাচুল কিমান", "assamese", "assamese"),
+    ("கட்டணம் எவ்வளவு", "hindi", "tamil"),            # another script: the letters are exact, the name is wrong
+    ("ایم بی اے کی فیس", "urdu", "urdu"),
+    ("MBA fees evlo", None, "english"),             # no pick ran
+])
+def test_the_language_of_a_message(text, named, expected):
+    assert team_language.spoken(text, named) == expected
+
+
+def test_the_reply_is_asked_for_in_that_language_and_those_letters():
+    line = reply_language.hint("MBA fees evlo", "auto", "tamil")
+    assert "Tamil typed in English letters" in line
+    assert "Marathi" in reply_language.hint("फी किती आहे", "auto", "marathi")
+    assert "Urdu, so reply in Urdu" in reply_language.hint("ایم بی اے کی فیس", "auto", "urdu")
+    assert "reply in English" in reply_language.hint("what is the fee", "auto", "english")
+    assert "Hinglish" in reply_language.hint("fees kitni hai", "auto", "hindi")
+    assert "English letters only" in reply_language.hint("MBA fees evlo", "en", "tamil")  # the site's own rule wins
+
+
+def test_a_reply_cannot_skip_its_message():
+    assert "message" in agent.REPLY_TOOL["input_schema"]["required"]
+
+
+@pytest.mark.parametrize("language,same_as", [("marathi", "hindi"), ("assamese", "bengali"), ("urdu", "hinglish")])
+def test_a_language_without_its_own_lines_gets_the_nearest(language, same_as):
+    assert hand_over_lines.told(language) == hand_over_lines.told(same_as)
 
 
 # ── what the customer is told ────────────────────────────────────────────────

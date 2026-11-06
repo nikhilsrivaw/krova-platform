@@ -38,8 +38,8 @@ def expected(last_inbound: str | None, choice: str | None = "auto") -> str | Non
     return detected
 
 
-def hint(last_inbound: str | None, choice: str | None = "auto") -> str | None:
-    """The one line the model reads about this reply's language, or None."""
+def hint(last_inbound: str | None, choice: str | None = "auto", named: str | None = None) -> str | None:
+    """The one line the model reads about this reply's language, or None. `named`: the language judged from its words."""
     choice = _clean(choice)
     if choice == "en":
         return ("Reply language (set by the business): English, in English letters only - no Devanagari - whatever "
@@ -47,7 +47,13 @@ def hint(last_inbound: str | None, choice: str | None = "auto") -> str | None:
     if choice == "hi":
         return ("Reply language (set by the business): Hindi in Devanagari script, whatever language the customer "
                 "writes in. Keep product names, prices and links as they are.")
-    detected = lang.detect(last_inbound)
+    written = lang.detect(last_inbound)
+    detected = lang.spoken(last_inbound, named)
+    if detected != written and detected and detected != "hinglish":
+        if written in ("english", "hinglish"):
+            return (f"Reply language: their last message is {detected.title()} typed in English letters, so reply the "
+                    f"same way - {detected.title()} in English letters.")
+        return f"Reply language: their last message is in {detected.title()}, so reply in {detected.title()}, in its own script."
     if detected == "english":
         return ("Reply language: their last message is in English, so reply in English, in English letters only - "
                 "no Devanagari, even if earlier messages were in Hindi.")

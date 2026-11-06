@@ -139,7 +139,7 @@ def test_a_known_visitor_who_needs_a_person_is_handed_to_one(monkeypatch):
         return False
 
     async def ctx(*a, **k):
-        return SimpleNamespace()
+        return SimpleNamespace(customer_language=lambda: "hinglish")
 
     async def quiet(*a, **k):
         return None

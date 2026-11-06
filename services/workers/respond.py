@@ -580,9 +580,8 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
 
     if proposal.action == "escalate" and autonomy == "act" and channel in ("whatsapp", "instagram"):
         from shared.ai import hand_over_lines
-        from shared.team import language as team_language
 
-        said_in = team_language.detect(message.content)
+        said_in = context.customer_language()
         # The Hinglish and English chats keep their lines below, which also ask what the customer needs.
         local = None if said_in in ("hinglish", "english") else (
             hand_over_lines.needs_contact(said_in) if channel == "instagram" else hand_over_lines.told(said_in)

@@ -33,6 +33,29 @@ _HINGLISH = {
     "paisa", "paise", "jaldi", "zyada", "kam", "sab", "kuch", "koi", "kaun", "kahan", "yahan", "wahan", "ek", "do",
 }
 
+# What shared/ai/knowledge_pick.py may name from a message's words. detect() can only see letters, so to it "MBA fees
+# evlo" is English; a name from this list says it is Tamil.
+SPOKEN = frozenset(LANGUAGES) | {
+    "marathi", "urdu", "assamese", "nepali", "konkani", "maithili", "sanskrit", "sindhi", "kashmiri", "dogri", "bodo",
+    "manipuri", "santali",
+}
+# Written in a script that detect() reports under another language's name.
+_SHARES_SCRIPT = {"hindi": {"marathi", "nepali", "konkani", "maithili", "sanskrit", "dogri", "bodo"}, "bengali": {"assamese", "manipuri"}}
+
+
+def spoken(text: str | None, named: str | None) -> str | None:
+    """
+    The language of a message once a name from its words is known. An Indian script stays exact, so a name can only
+    refine it (Devanagari to Marathi); English letters say nothing, so there the name is trusted.
+    """
+    written = detect(text)
+    if not named or named == written:
+        return written
+    if written in (None, "english", "hinglish"):
+        return "hinglish" if named == "hindi" and written else named
+    return named if named in _SHARES_SCRIPT.get(written, ()) else written
+
+
 _VOICE = {
     "en": "english", "hi": "hindi", "ta": "tamil", "te": "telugu", "bn": "bengali", "gu": "gujarati", "kn": "kannada",
     "ml": "malayalam", "pa": "punjabi", "od": "odia", "or": "odia", "mr": "hindi",
