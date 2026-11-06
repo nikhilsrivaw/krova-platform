@@ -230,6 +230,9 @@ class AgentContext:
     reply_language: str = "auto"
     # Set for a second try after a reply came back in the wrong script (shared/ai/reply_language.py).
     language_retry: bool = False
+    # What shared/ai/knowledge_pick.py chose for the message in picked_for. None = it did not run, so words are matched.
+    picked: dict | None = None
+    picked_for: str | None = None
 
     def last_inbound(self) -> str | None:
         return next((t["text"] for t in reversed(self.recent) if t["direction"] == "inbound"), None)
@@ -501,6 +504,20 @@ class AgentContext:
         """render_static minus render_business: availability and this customer."""
         return "\n".join(self._live_lines())
 
+    def known_facts(self) -> str:
+        """What the business has written that is always read: so a question it answers is not called missing (knowledge_pick)."""
+        lines = [x for x in (self.dna_summary, self.line_note, self.pricing_notes) if x]
+        if self.offerings:
+            lines.append(f"What they offer: {self.offerings}")
+        if self.opening_hours:
+            lines.append(f"Opening hours: {self.opening_hours}")
+        if self.availability:
+            lines.append(f"Providers and open times:\n{self.availability}")
+        if self.open_shifts:
+            lines.append(f"Shifts open now:\n{self.open_shifts}")
+        lines.extend(render_knowledge(self.knowledge))
+        return "\n".join(lines).strip()
+
     def render_lookup(self) -> str:
         """
         Catalogue rows and Question bank answers that match what the customer just said - the "opened when needed"
@@ -511,17 +528,14 @@ class AgentContext:
         asked = " ".join(t["text"] for t in [t for t in self.recent if t["direction"] == "inbound"][-2:])
         if not asked.strip():
             return ""
-        rows = [
-            r for k in self.knowledge if k.get("topic") in (knowledge_lookup.CATALOGUE_TOPIC, fee_list.TOPIC)
-            for r in k.get("rows") or []
-        ]
-        bank = [{"question": k["title"], "answer": k["content"]} for k in self.knowledge if k.get("card") == knowledge_lookup.BANK]
-        found_rows = knowledge_lookup.match_catalogue(rows, asked)
-        found_answers = knowledge_lookup.match_bank(bank, asked)
-        found_products = (
-            knowledge_lookup.match_catalogue(getattr(self, "products", []), asked)
-            if "take_order" in getattr(self, "actions", ()) else []
-        )
+        rows, bank, products = lookup_items(self)
+        picked = getattr(self, "picked", None)  # shared/ai/knowledge_pick.py, when it ran for this message
+        if picked is not None:
+            found_rows, found_answers, found_products = picked["rows"], picked["answers"], picked["products"]
+        else:
+            found_rows = knowledge_lookup.match_catalogue(rows, asked)
+            found_answers = knowledge_lookup.match_bank(bank, asked)
+            found_products = knowledge_lookup.match_catalogue(products, asked)
         lines: list[str] = []
         if found_products:
             lines.append("\nProducts matching the customer's words - for an order, use these names exactly:")
@@ -545,8 +559,29 @@ class AgentContext:
         language = self.language_line()
         if language:
             lines.append(f"\n{language}")
+        if getattr(self, "picked", None) is not None:
+            lines.append(f"\n{ONLY_WHAT_IS_ON_FILE}")
         return "\n".join(lines)
 
+
+
+# Beside the customer's message, where a model reads it last: tested models state a made-up fee or say "yes, we have a
+# pool" when the same rule is only further up the prompt.
+ONLY_WHAT_IS_ON_FILE = (
+    "Everything on file that fits this message is shown above. If it does not say what was asked, you do not know it: no "
+    "price, date, number, yes or no from your own head. Say the office will confirm, in the customer's language, or escalate."
+)
+
+
+def lookup_items(context) -> tuple[list[dict], list[dict], list[dict]]:
+    """Everything that can be opened when needed: catalogue and fee rows, saved answers, and products if orders are on."""
+    rows = [
+        r for k in context.knowledge if k.get("topic") in (knowledge_lookup.CATALOGUE_TOPIC, fee_list.TOPIC)
+        for r in k.get("rows") or []
+    ]
+    bank = [{"question": k["title"], "answer": k["content"]} for k in context.knowledge if k.get("card") == knowledge_lookup.BANK]
+    products = getattr(context, "products", []) if "take_order" in getattr(context, "actions", ()) else []
+    return rows, bank, products
 
 
 def standing_gaps(dna) -> list[str]:

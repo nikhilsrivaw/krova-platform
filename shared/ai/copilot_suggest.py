@@ -14,7 +14,7 @@ human's own words remain their own words.
 import re
 from dataclasses import dataclass
 
-from shared.ai import client, voice_guard
+from shared.ai import client, knowledge_pick, voice_guard
 from shared.ai import context as ctx
 from shared.utils.logging import get_logger, said
 
@@ -65,6 +65,7 @@ def unsafe_suggestion(text: str, facts: str) -> bool:
 
 async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
     """One short suggestion for a staff member mid-call, or nothing."""
+    pick_cost = await knowledge_pick.pick(agent_context)
     prompt = (
         f"Today is {ctx.now_line()}.\n\n"
         f"{agent_context.render()}\n\n"
@@ -79,14 +80,15 @@ async def suggest(agent_context: ctx.AgentContext) -> Suggestion:
         max_tokens=150,
     )
 
+    cost = completion.cost_paise + pick_cost
     text = completion.text.strip()
     if not text or text.upper() == "NONE":
-        return Suggestion(text=None, cost_paise=completion.cost_paise)
+        return Suggestion(text=None, cost_paise=cost)
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}\n{agent_context.render_lookup()}"
     if unsafe_suggestion(text, facts):
         logger.info("copilot suggestion dropped by guard: %s", said(text[:160]))
-        return Suggestion(text=None, cost_paise=completion.cost_paise)
-    return Suggestion(text=text, cost_paise=completion.cost_paise)
+        return Suggestion(text=None, cost_paise=cost)
+    return Suggestion(text=text, cost_paise=cost)
 
 
 TRANSLATE_SYSTEM = """You are translating one line a caller just said on a \

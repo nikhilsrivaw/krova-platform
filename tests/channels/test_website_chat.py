@@ -15,6 +15,7 @@ from fastapi import HTTPException  # noqa: E402
 from sqlalchemy.dialects import postgresql  # noqa: E402
 
 from shared.ai import agent as agent_module  # noqa: E402
+from shared.ai import hand_over_lines  # noqa: E402
 from shared.channels.web import reply as web_reply  # noqa: E402
 from shared.channels.web import sites  # noqa: E402
 
@@ -155,7 +156,12 @@ def test_a_known_visitor_who_needs_a_person_is_handed_to_one(monkeypatch):
     monkeypatch.setattr(web_reply, "_hand_to_person", hand)
     out = asyncio.run(web_reply.generate_reply(_GetDb(customer), business=_business(),
                                                session=_session(customer.id), text="warranty claim kaise hoga?"))
-    assert handed == ["needs a person"] and "reply right here" in out.reply_text and not out.needs_contact
+    assert handed == ["needs a person"] and not out.needs_contact
+    assert out.reply_text == hand_over_lines.told("hinglish")  # in the words the visitor used
+    site_rule = asyncio.run(web_reply.generate_reply(
+        _GetDb(customer), business=_business(), session=_session(customer.id), text="warranty claim kaise hoga?", reply_language="en",
+    ))
+    assert "reply right here" in site_rule.reply_text  # "Replies in: English" on this site wins
 
 
 def _send_setup(monkeypatch, *, seen_ago):

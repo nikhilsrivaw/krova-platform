@@ -343,11 +343,16 @@ async def generate_reply(
         if gap:
             await agent_module.record_gap(business.id, gap, db)
         session.needed_person_at = session.needed_person_at or _now()
+        from shared.ai import hand_over_lines
+        from shared.team import language as team_language
+
+        said_in = {"en": "english", "hi": "hindi"}.get(reply_language or "") or team_language.detect(text)
         if customer is None:
-            _append_transcript(session, role="assistant", text=_NEEDS_PERSON_MESSAGE)
-            return ReplyOutcome(reply_text=_NEEDS_PERSON_MESSAGE, booked=False, needs_contact=True)
+            ask = hand_over_lines.needs_contact(said_in) or _NEEDS_PERSON_MESSAGE
+            _append_transcript(session, role="assistant", text=ask)
+            return ReplyOutcome(reply_text=ask, booked=False, needs_contact=True)
         await _hand_to_person(db, business=business, customer=customer, reason=gap or "needs a person")
-        reply = (
+        reply = hand_over_lines.told(said_in) or (
             f"I don't have {gap} on hand right now - someone from our team will reply right here shortly."
             if gap
             else "Let me get someone from our team - they will reply right here shortly."

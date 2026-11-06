@@ -579,6 +579,14 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
             logger.exception("draft ping failed business=%s", message.business_id)
 
     if proposal.action == "escalate" and autonomy == "act" and channel in ("whatsapp", "instagram"):
+        from shared.ai import hand_over_lines
+        from shared.team import language as team_language
+
+        said_in = team_language.detect(message.content)
+        # The Hinglish and English chats keep their lines below, which also ask what the customer needs.
+        local = None if said_in in ("hinglish", "english") else (
+            hand_over_lines.needs_contact(said_in) if channel == "instagram" else hand_over_lines.told(said_in)
+        )
         holding = MessageDraft(
             business_id=message.business_id,
             customer_id=message.customer_id,
@@ -586,7 +594,7 @@ async def draft_for_message(message_id: uuid.UUID, db: AsyncSession) -> MessageD
             channel=channel,
             action=DraftAction.reply,
             status=DraftStatus.pending,
-            body=(
+            body=local or (
                 ESCALATION_HOLDING_LINE_INSTAGRAM if channel == "instagram" else ESCALATION_HOLDING_LINE
             ),
             reasoning="Holding line while a person follows up on an escalated message.",

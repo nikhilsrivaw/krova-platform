@@ -4,7 +4,8 @@ The "opened when needed" knowledge: a Catalogue and a Question bank.
 The Business Card is read before every reply, so it has to stay small. These two can be large (hundreds of items, dozens
 of answers) because the AI never reads them whole: before a reply, the customer's latest words are matched against
 them and only the few rows and answers that fit are shown, next to the conversation. A message that matches nothing
-costs nothing extra. Matching is plain word overlap - no extra AI call, so it adds no cost and no wait on a phone call.
+costs nothing extra. Matching here is plain word overlap, with no AI call. Where shared/ai/knowledge_pick.py is switched
+on it chooses by meaning, in any language, and this word match is what runs when it cannot.
 
 The same for every business type: a row is a name, a price and a short detail, whatever is being sold.
 
@@ -42,7 +43,12 @@ _STOP = {
     "aapki", "aapke", "apna", "apni", "kitna", "kitne", "kitni", "kaise", "kab", "kahan", "kaha", "kaun", "kon", "koi",
     "kuch", "wala", "wali", "wale", "chahiye", "batao", "bataiye", "bata", "dijiye", "do", "de", "sakte", "sakta",
     "milega", "milegi", "milta", "milti", "raha", "rahi", "rahe", "tha", "thi", "the", "hu", "hoon", "ek",
+    "है", "हैं", "हो", "की", "का", "के", "को", "से", "में", "पर", "क्या", "कितना", "कितनी", "कितने", "कैसे", "कब", "कहां", "कहाँ",
+    "कौन", "और", "या", "भी", "तो", "नहीं", "हां", "हाँ", "जी", "मुझे", "मेरा", "मेरी", "आप", "आपका", "आपकी", "चाहिए", "बताओ", "बताइए",
 }
+
+# A word in any Indian script keeps its vowel signs: \w alone breaks "फीस" into pieces. The two danda marks are left out.
+_WORD = re.compile(r"[\wऀ-ॣ०-ൿ]+")
 
 
 def _stem(word: str) -> str:
@@ -55,7 +61,7 @@ def _stem(word: str) -> str:
 
 def words(text: str) -> set[str]:
     """The meaningful words of a text, lower-cased and roughly singular."""
-    return {_stem(w) for w in re.findall(r"\w+", (text or "").lower()) if w not in _STOP and (len(w) > 1 or w.isdigit())}
+    return {_stem(w) for w in _WORD.findall((text or "").lower()) if w not in _STOP and (len(w) > 1 or w.isdigit())}
 
 
 def _hit(word: str, target: set[str]) -> bool:

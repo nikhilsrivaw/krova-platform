@@ -12,7 +12,7 @@ Upload a price list, menu, brochure or FAQ (PDF, photo, text, CSV - up to 5 MB, 
 Who customers can ask for, how to reach you, languages you reply in and when you reply. The AI never promises that a person is free right now.
 
 ## Catalogue
-Every product, service, plan or dish with its price. The AI is shown only the items a customer names, so list everything - it doesn't make replies dearer. Paste a list (Name - Price - Details, one per line) or fill it from a file.
+Every product, service, plan or dish with its price. The AI is shown only the items a customer asks about, so list everything. You write each item once; a customer can ask about it in their own language. Paste a list (Name - Price - Details, one per line) or fill it from a file.
 
 ## Fees / Price list
 Needs "Price list & payments" on (Settings → Business → Features) - already on for "You sell products" businesses; until then this tab doesn't show and the AI doesn't use the list. Knowledge & Gaps page → Fees / Price list. Each test, service or visit with its fee in rupees, for example CT scan ₹2,500, X-ray ₹400. Add rows one by one or paste a rate list (Name - Amount - Details, one per line), then press Save fees.
@@ -23,10 +23,10 @@ Needs "Price list & payments" on (Settings → Business → Features) - already 
 - "Print rate list" prints the saved list as an A4 sheet with your business name, to put up at reception. Clinics and labs in many states must display their charge for each service where patients can see it.
 
 ## Question bank
-More answers beyond your top questions. The AI sees one only when a customer asks something like it.
+More answers beyond your top questions. The AI sees one only when a customer asks something like it, in any words or language. Write each answer once, in one language.
 
 ## Gaps queue
-Real questions customers asked that the AI couldn't answer. For each: add the answer to the Business card, add it as a top question or to the question bank, choose "Always hand this to me" (the AI will pass such questions to a person), or dismiss it.
+Real questions customers asked that the AI couldn't answer. When a customer asks for a fact that isn't in your knowledge, the AI doesn't guess: it tells them your team will get back to them, in their language, alerts your team, and the question lands here. Questions asked in Odia always go to your team for now. For each: add the answer to the Business card, add it as a top question or to the question bank, choose "Always hand this to me" (the AI will pass such questions to a person), or dismiss it.
 
 ## Extra knowledge entries
 Short notes for things that fit nowhere on the Business card. Every entry that is on is read on every message, so there is a size limit (your plan sets it).

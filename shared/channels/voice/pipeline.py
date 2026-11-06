@@ -1252,6 +1252,16 @@ class CallPipeline:
         is made in full once; later gaps get a short acknowledgement, because the same
         sentence turn after turn is what made callers think the agent was stuck.
         """
+        from shared.ai import hand_over_lines
+        from shared.team import language as team_language
+
+        last = next((t.text for t in reversed(self.turns) if t.role == "caller"), "")
+        heard = team_language.from_voice(self.detected_language)
+        said_in = heard if heard and heard != "english" else team_language.detect(last)
+        local = hand_over_lines.told_again(said_in) if self._followup_told else hand_over_lines.told(said_in)
+        if local:
+            self._followup_told = True
+            return local
         # A floor reason such as "needs a person: refund" is for staff, not for speech.
         topic = gap.strip() if gap else None
         if topic and (topic.lower().startswith("needs a person") or len(topic.split()) > 6):

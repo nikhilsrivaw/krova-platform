@@ -38,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.ai import auto_send_gate, bedrock_claude, client, context as ctx, providers, router, voice_guard
+from shared.ai import auto_send_gate, bedrock_claude, client, context as ctx, knowledge_pick, providers, router, voice_guard
 from shared.channels.whatsapp.carousel_media import clean_values as clean_carousel_values
 from shared.db.models import BusinessDNA
 from shared.utils.logging import get_logger
@@ -768,6 +768,14 @@ async def stream_reply(agent_context: ctx.AgentContext):
         yield ReplyDone(gap=None, cost_paise=0)
         return
 
+    pick_cost = await knowledge_pick.pick(agent_context)
+    missing = knowledge_pick.missing_fact(agent_context)
+    if missing:
+        # Nothing on file gives what they asked, so nothing is written for the model to get wrong (knowledge_pick).
+        yield ReplyStart(action="escalate")
+        yield ReplyDone(gap=missing, cost_paise=pick_cost)
+        return
+
     # Split into a stable half and a growing half, with a cache breakpoint
     # between them. On a live call this function runs once per turn, and
     # everything above the conversation - the business's details, its
@@ -948,7 +956,7 @@ async def stream_reply(agent_context: ctx.AgentContext):
         yield ReplyChunk(text=sentence_buffer.strip())
 
     gap = "".join(gap_parts).strip() or None if action == "escalate" else None
-    yield ReplyDone(gap=gap, cost_paise=stream.cost_paise)
+    yield ReplyDone(gap=gap, cost_paise=stream.cost_paise + pick_cost)
 
 
 async def stream_owner_reply(owner_context: ctx.OwnerContext, recent_turns: list[dict]):
@@ -1254,6 +1262,16 @@ async def draft_reply(
             context_message_ids=[],
         )
 
+    pick_cost = await knowledge_pick.pick(
+        agent_context, timeout=knowledge_pick.CALL_TIMEOUT_S if fast else knowledge_pick.CHAT_TIMEOUT_S
+    )
+    missing = knowledge_pick.missing_fact(agent_context)
+    if missing:
+        return Draft(
+            action="escalate", message=None, reasoning="What they asked is not in the business's details.", gap=missing,
+            confidence=1.0, cost_paise=pick_cost, context_message_ids=agent_context.context_message_ids,
+        )
+
     prompt = (
         f"Today is {ctx.now_line()}.\n\n"
         f"{agent_context.render_live()}\n"
@@ -1337,7 +1355,7 @@ async def draft_reply(
         reasoning=(result.get("reasoning") or "").strip(),
         gap=(result.get("gap") or "").strip() or None if action == "escalate" else None,
         confidence=confidence,
-        cost_paise=completion.cost_paise,
+        cost_paise=completion.cost_paise + pick_cost,
         context_message_ids=agent_context.context_message_ids,
         book_slot=(result.get("book_slot") or "").strip() or None if action == "reply" else None,
         book_doctor=(result.get("book_doctor") or "").strip() or None if action == "reply" else None,
