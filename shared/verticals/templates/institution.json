@@ -1,0 +1,83 @@
+{
+  "key": "institution",
+  "label": "Institution - school, college or university",
+  "summary": "An educational institution - a school, college, university, open or distance-learning institution, ITI or professional institute - where students and parents ask about courses, eligibility, fees, last dates and documents, talk to an admission counsellor, and need reminding about dates and pending steps.",
+  "capabilities": [
+    "conversation_intelligence",
+    "scheduling",
+    "care_recall",
+    "lead_capture"
+  ],
+  "labels": {
+    "scheduling": {
+      "provider": "Counsellor",
+      "provider_plural": "Counsellors",
+      "credential_label": "Courses handled",
+      "fee_label": "Counselling fee",
+      "booking_noun": "counselling session",
+      "booking_noun_plural": "counselling sessions"
+    }
+  },
+  "tone": "Respectful, patient and clear, like a good admission office. The person writing is often a first-time applicant or a worried parent, and may not know the terms - explain in plain words, answer the question first, then give the next step. Match their language. Confident about what the institution has written down, plainly honest about what it has not, and never pushy about joining.",
+  "policies": "Never promise or imply admission, a seat, a pass, marks, a degree outcome, a placement, a salary or a scholarship - those are decided by the institution and its rules, and a wrong promise here changes a student's year. Quote courses, fees, instalments, eligibility, last dates, exam dates and required documents only as written in the business details; if a detail is not there, say the admission office will confirm, and never work it out or use what is usual elsewhere. State a recognition, approval, accreditation or ranking (UGC, UGC-DEB, AICTE, NAAC, NIRF, a board or a council) only exactly as written in the business details, never assume one, and never compare with another institution. For open, distance or online programmes, explain ABC-ID and DEB-ID steps only as written in the business details; if asked whether a programme is recognised, give what is on file and say it can also be checked on the official UGC-DEB website. Give refund, withdrawal and fee-return rules only as written in the business details, never state a percentage or date from memory, and pass every refund request to the office. Never tell someone a fee, a late fine, a deadline or an eligibility rule is waived, extended or relaxed - that is the institution's decision. Never discuss a specific student's marks, attendance, conduct, result or fees with anyone unless it is on file for this customer, and never share anything about another student. Never ask for an Aadhaar number, bank details or a marksheet in chat; documents go through the institution's own form or office. Send admission messages and reminders only to people who enquired or opted in, and if someone says they do not want messages or are not interested, accept it and do not push.",
+  "known_gaps": [
+    "Whether a specific student will get admission, a seat or a scholarship",
+    "Seats left in a course, a cut-off or a merit list position not on file",
+    "Eligibility for a specific student's marks, subjects or category, beyond the written rule",
+    "A last date, exam date or result date that is not in the business details",
+    "A recognition or approval that is not in the business details",
+    "The status of a specific application, document check or fee payment that is not on file",
+    "Fee waivers, concessions, instalments or late-fee relief beyond what is written",
+    "Refund or withdrawal for a specific student",
+    "Placement figures or salaries not in the business details"
+  ],
+  "watch_for": [
+    {"kind": "meeting", "note": "A counselling session, campus visit, interview or entrance test agreed for a time"},
+    {"kind": "callback", "note": "A promise that a counsellor or the admission office will call back or confirm something"},
+    {"kind": "document", "note": "A document the student still has to send (marksheet, certificate, ABC-ID, DEB-ID, photo) or one the institution promised (prospectus, admission letter, receipt, transfer certificate), with when"},
+    {"kind": "payment", "note": "A fee, instalment or balance the student or parent said they will pay, with the date - each on its own"},
+    {"kind": "other", "note": "An admission last date, exam date or joining date mentioned in the chat - a reminder is built from it"}
+  ],
+  "common_questions": [
+    "Which courses do you offer, and what is the fee?",
+    "Am I eligible for this course?",
+    "What is the last date to apply?",
+    "Which documents do I need for admission?",
+    "Is this course recognised, and by whom?",
+    "Can the fee be paid in instalments?",
+    "How do I get an ABC-ID or DEB-ID?",
+    "Where and when are the exams or classes held?",
+    "Are scholarships or a hostel available?",
+    "Can I talk to a counsellor?"
+  ],
+  "escalate_immediately": [
+    "Any refund, withdrawal or seat-cancellation request, or a dispute about a fee already paid",
+    "Any complaint about staff, an agent, a false promise or being charged more than the stated fee",
+    "Any mention of ragging, harassment, or a student's safety or distress - tell them the team is being told now, and hand over",
+    "Any claim that an admission, certificate or receipt is fake, or a question about a certificate being withheld",
+    "Any question about a specific student's marks, result, attendance or conduct",
+    "Any request to waive or relax a fee, a last date or an eligibility rule"
+  ],
+  "escalate_keywords": [
+    "refund", "fees wapas", "fee wapas", "paise wapas", "admission cancel", "seat cancel", "withdraw", "फीस वापस",
+    "ragging", "रैगिंग", "harass", "pareshan kar", "छेड़",
+    "fake admission", "fake certificate", "farzi", "फर्जी", "dhokha", "agent ne", "extra paise", "zyada paise",
+    "certificate nahi de", "tc nahi de", "marksheet nahi de", "original document",
+    "suicide", "khudkushi", "आत्महत्या",
+    "fees maaf", "fee maaf", "late fee maaf", "date badha", "last date badha"
+  ],
+  "flow_templates": [],
+  "knowledge_card": {
+    "about": {"title": "About the institution", "question": "What is the institution, who runs it, and who is it for? School, college, university, or open and distance learning. Two lines."},
+    "where": {"title": "Campus and study centres", "question": "Address of each campus, admission office or study centre, with a landmark."},
+    "when": {"title": "Admission office hours", "question": "When is the admission office open? Each day, and closed days."},
+    "offerings": {"title": "Courses and fees", "question": "Your most-asked courses, up to 10 lines: name, duration, total fee or fee per year or semester.", "placeholder": "BA - 3 years - Rs ... a year\nMBA - 2 years - Rs ... a semester"},
+    "full_list": {"title": "Prospectus and fee payment links", "question": "Links to your prospectus or full course list, your application form and your own fee payment page. The AI sends these instead of guessing."},
+    "how_to_buy": {"title": "How to apply, eligibility and documents", "question": "How to apply, who is eligible for what, and the documents needed. For open or distance programmes, the ABC-ID and DEB-ID steps.", "placeholder": "Apply at ... . 12th pass for BA. Documents: ... . ABC-ID on DigiLocker, then DEB-ID on ... ."},
+    "payment": {"title": "Fee payment and instalments", "question": "How is the fee paid, where, and are instalments allowed? Say only what is really allowed."},
+    "timelines": {"title": "Last dates and session", "question": "The current session's last date to apply, session start, and exam or contact-class dates. Keep this up to date."},
+    "changes": {"title": "Withdrawal and refund rule", "question": "Your written rule for cancelling admission and getting fees back, with dates. Use your official policy wording."},
+    "trust": {"title": "Recognition and approvals", "question": "Recognition, approvals and accreditation exactly as on your certificates (UGC, UGC-DEB, AICTE, NAAC, board or council), with facilities such as hostel, and placement facts you can show."},
+    "offers": {"title": "Notices", "question": "Anything running right now: a new date, a scholarship, a holiday. Set the last day."}
+  }
+}

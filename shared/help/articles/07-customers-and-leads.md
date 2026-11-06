@@ -5,7 +5,7 @@ Customers page lists everyone who has messaged or called you, with a health scor
 - Open a customer (Inspect 360): AI profile, contact channels, pipeline stage, who pays for them (Paid By), key dates, deal value, Marketing Opt-In, tags and notes.
 - Key dates: a renewal, AMC expiry or birthday. Tick "Comes every year" for yearly dates. Automations can act on them ("5 days before Renewal → WhatsApp").
 - Tags: tag one customer, or select many and tag them together. Campaigns can target a tag.
-- Pipeline: switch the Customers page to the board view and drag a customer to another stage. The stages come with your business type.
+- Pipeline: switch the Customers page to the board view and drag a customer to another stage. Every business starts with New, Contacted, Qualified, Won and Lost, and can rename them to its own steps.
 - Import Contacts: upload a CSV with a phone column (and optionally name). Export CSV downloads the list.
 - Marketing Opt-In: only opted-in customers receive marketing templates. Only the owner or an admin can change it (and the deal value).
 

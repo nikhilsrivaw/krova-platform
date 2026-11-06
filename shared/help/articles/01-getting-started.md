@@ -4,7 +4,7 @@
 KROVA answers your customers on WhatsApp, Instagram and phone calls with AI, and keeps track of what was promised in those conversations (payments, callbacks, deliveries) in one place called the Commitment Ledger. Your team works the same inbox, and automations follow up for you.
 
 ## First steps after signing up
-1. Pick what kind of business you are (Settings → Business). This decides which modules you start with, how the AI talks and what it must never promise. You can change it later.
+1. Pick what kind of business you are (Settings → Business). This decides which modules you start with, how the AI talks and what it must never promise. You can change it later. Schools, colleges, universities and open or distance-learning institutions choose "Institution": it starts with counselling sessions, leads and forms, and reminders, speaks of counsellors, and never promises admission, a seat, a placement or a scholarship. Its Business card asks for courses, eligibility, documents, last dates, recognition and the refund rule. Fee payment stays on your own portal: put the link in the card and the AI sends it.
 2. Choose a plan on the Billing page. Until a plan is bought, you can look around (chats, customers, calendar), but WhatsApp, Instagram and the Voice Agent stay locked.
 3. Connect WhatsApp (WhatsApp page → Connect WhatsApp Number). It opens Meta's own signup window. The setup steps after signup show whether WhatsApp and voice are really connected and link to those pages; you can skip and do it later.
 4. Fill your Business card (Knowledge & Gaps page) - prices, hours, policies. The AI answers only from what you put there.
