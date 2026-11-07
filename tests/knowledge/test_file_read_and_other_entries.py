@@ -160,6 +160,19 @@ def test_a_broken_pdf_is_refused_plainly():
         kr.pdf_text(b"%PDF-1.4 not really a pdf")
 
 
+def test_a_prospectus_with_a_fee_table_and_hindi_reads_cleanly():
+    """A sample prospectus printed from a browser: pypdf broke its Hindi ("म" for "में"); PDFium must not."""
+    from pathlib import Path
+
+    text = kr.pdf_text((Path(__file__).parent / "fixtures" / "sample_prospectus.pdf").read_bytes())
+    assert "MBA (Online) 2 years Graduate with 50% (45% reserved) Rs 32,000 per semester" in text
+    assert "Certificate in Computer Applications 6 months 10th pass Rs 3,000 total" in text
+    assert "https://sgou-sample.edu.in/apply" in text
+    assert "हिंदी में जानकारी" in text
+    assert "प्रति वर्ष" in text and "परीक्षाएँ" in text and "केंद्र" in text
+    assert "शुल्क में 50% की छूट" in text
+
+
 def test_a_photo_is_sent_as_an_image(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(kr.client, "complete", _fake_complete({}, seen))

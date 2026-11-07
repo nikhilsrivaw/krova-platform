@@ -56,6 +56,14 @@ _CLAIMS_DEFAULTS: dict = {
 }
 
 
+_CATALOGUE_DEFAULTS: dict = {
+    # The Knowledge page tab and its heading.
+    "title": "Catalogue",
+    # One row of it, in a sentence ("Add an item", "Find an item").
+    "item": "item",
+}
+
+
 def _merge(base: dict, overlay: object) -> dict:
     """
     Overlay onto base, one nesting level deep, keeping base's exact shape.
@@ -98,6 +106,13 @@ def scheduling_labels(business: "Business") -> dict:
     template = get(business.vertical).get("labels", {}).get("scheduling")
     own = ((business.settings or {}).get("scheduling") or {}).get("labels")
     return _merge(_merge(_SCHEDULING_DEFAULTS, template), own)
+
+
+def catalogue_labels(business: "Business") -> dict:
+    """What this business calls its Catalogue - a college's "Courses" is the same list of names and prices."""
+    template = get(business.vertical).get("labels", {}).get("catalogue")
+    own = ((business.settings or {}).get("catalogue") or {}).get("labels")
+    return _merge(_merge(_CATALOGUE_DEFAULTS, template), own)
 
 
 def claim_labels(business: "Business") -> dict:

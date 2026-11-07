@@ -67,6 +67,35 @@ def hint(last_inbound: str | None, choice: str | None = "auto", named: str | Non
     return None
 
 
+# Arabic script, as Urdu is written (and Sindhi, Kashmiri).
+_ARABIC = ((0x0600, 0x06FF), (0x0750, 0x077F), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF))
+
+
+def _arabic_script(text: str | None) -> bool:
+    if not text:
+        return False
+    arabic = other = 0
+    for ch in text:
+        code = ord(ch)
+        if any(low <= code <= high for low, high in _ARABIC):
+            arabic += 1
+        elif ch.isalpha():
+            other += 1
+    return arabic >= 3 and arabic > other
+
+
+def spoken_hint(last_heard: str | None) -> str | None:
+    """
+    On a call the reply is read aloud, and the voice reads no Urdu script. When what the caller said came back from
+    speech in Urdu script, the reply is the same everyday language written in Devanagari so the Hindi voice can say it.
+    None otherwise - the usual hint() applies.
+    """
+    if _arabic_script(last_heard):
+        return ("Reply language: the caller is speaking Urdu. Reply in simple spoken Urdu (everyday Hindustani) written "
+                "in Devanagari script - your words are read aloud by a voice that cannot read Urdu script.")
+    return None
+
+
 def mismatched(reply: str | None, want: str | None) -> bool:
     """
     True when a reply is plainly in the wrong script: a Latin-letters reply carrying Indian-script words, or a

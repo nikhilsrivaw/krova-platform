@@ -12,7 +12,7 @@ Upload a price list, menu, brochure or FAQ (PDF, photo, text, CSV - up to 5 MB, 
 Who customers can ask for, how to reach you, languages you reply in and when you reply. The AI never promises that a person is free right now.
 
 ## Catalogue
-Every product, service, plan or dish with its price. The AI is shown only the items a customer asks about, so list everything. You write each item once; a customer can ask about it in their own language. If someone asks what you offer, the AI names your items and asks which one they want to know about. Paste a list (Name - Price - Details, one per line) or fill it from a file.
+Every product, service, plan or dish with its price. A school, college or university sees this tab as "Courses": the same list, one course per line with its fee. The AI is shown only the items a customer asks about, so list everything. You write each item once; a customer can ask about it in their own language. If someone asks what you offer, the AI names your items and asks which one they want to know about. Paste a list (Name - Price - Details, one per line) or fill it from a file.
 
 ## Fees / Price list
 Needs "Price list & payments" on (Settings → Business → Features) - already on for "You sell products" businesses; until then this tab doesn't show and the AI doesn't use the list. Knowledge & Gaps page → Fees / Price list. Each test, service or visit with its fee in rupees, for example CT scan ₹2,500, X-ray ₹400. Add rows one by one or paste a rate list (Name - Amount - Details, one per line), then press Save fees.

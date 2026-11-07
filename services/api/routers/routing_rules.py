@@ -215,6 +215,64 @@ async def order_rules(body: OrderIn, current_user: OwnerOrAdminDep, db: DbDep) -
     return [_rule_out(rows[r]) for r in body.rule_ids]
 
 
+class SuggestedTeamOut(BaseModel):
+    name: str
+    words: list[str]
+    exists: bool
+
+
+async def _suggested(db, business_id: uuid.UUID) -> list[SuggestedTeamOut]:
+    """The teams this business's type suggests (template "suggested_teams"), each marked if one of that name exists."""
+    from shared import verticals
+    from shared.db.models import Business
+
+    business = await db.get(Business, business_id)
+    try:
+        suggested = verticals.get(business.vertical).get("suggested_teams", []) if business else []
+    except verticals.UnknownVertical:
+        suggested = []
+    names = {n.lower() for n in (await db.execute(select(Team.name).where(Team.business_id == business_id))).scalars().all()}
+    return [
+        SuggestedTeamOut(name=s["name"], words=team_rules.clean_conditions({"words": s.get("words", [])}).get("words", []),
+                         exists=s["name"].lower() in names)
+        for s in suggested if s.get("name")
+    ]
+
+
+@router.get("/suggested", response_model=list[SuggestedTeamOut])
+async def suggested_teams(current_user: OwnerOrAdminDep, db: DbDep) -> list[SuggestedTeamOut]:
+    return await _suggested(db, current_user.business)
+
+
+@router.post("/suggested", response_model=list[TeamOut], status_code=status.HTTP_201_CREATED)
+async def create_suggested_teams(current_user: OwnerOrAdminDep, db: DbDep) -> list[TeamOut]:
+    """
+    Make the suggested teams that do not exist yet, each with a rule sending its words to it - in the template's
+    order, which is the order that works (exam words before the general "fee" and "admission"). Teams start with
+    nobody in them and their rules start OFF: a chat sent to an empty team would wait with no one told. The owner
+    adds people, then switches each rule on.
+    """
+    missing = [s for s in await _suggested(db, current_user.business) if not s.exists]
+    if not missing:
+        return []
+    teams_now = (await db.execute(select(func.count(Team.id)).where(Team.business_id == current_user.business))).scalar() or 0
+    rules_now = (await db.execute(select(func.count(RoutingRule.id)).where(
+        RoutingRule.business_id == current_user.business))).scalar() or 0
+    if teams_now + len(missing) > MAX_TEAMS or rules_now + len(missing) > MAX_RULES:
+        raise HTTPException(422, f"Up to {MAX_TEAMS} teams and {MAX_RULES} rules - remove some first.")
+    made: list[Team] = []
+    for i, s in enumerate(missing):
+        team = Team(business_id=current_user.business, name=s.name, sharing="round_robin")
+        db.add(team)
+        await db.flush()
+        db.add(RoutingRule(business_id=current_user.business, name=f"{s.name} questions", team_id=team.id,
+                           conditions={"words": s.words}, also_if_owned=False, active=False,
+                           position=int(rules_now) + i))
+        made.append(team)
+    await db.flush()
+    return [await _team_out(db, t) for t in made]
+
+
 @router.post("/test")
 async def test_rules(body: TestIn, current_user: OwnerOrAdminDep, db: DbDep) -> dict:
     """Which rule a message like this would hit, without sending or moving anything."""

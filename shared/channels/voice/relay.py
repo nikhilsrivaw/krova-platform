@@ -395,6 +395,9 @@ async def stream(
             language = (pipeline.detected_language if pipeline else None) or (
                 route.language if route else "en-IN"
             )
+        # STT hears more languages than the voice speaks: an Urdu caller ("ur-IN") is answered in the Hindi voice,
+        # never sent to the voice as a language it would refuse.
+        language = sarvam.speakable(language, fallback=route.language if route else "en-IN")
         speaker = route.speaker if route else "shubh"
 
         async with ws:

@@ -16,7 +16,8 @@
       "fee_label": "Counselling fee",
       "booking_noun": "counselling session",
       "booking_noun_plural": "counselling sessions"
-    }
+    },
+    "catalogue": {"title": "Courses", "item": "course"}
   },
   "tone": "Respectful, patient and clear, like a good admission office. The person writing is often a first-time applicant or a worried parent, and may not know the terms - explain in plain words, answer the question first, then give the next step. Match their language. Confident about what the institution has written down, plainly honest about what it has not, and never pushy about joining.",
   "policies": "Never promise or imply admission, a seat, a pass, marks, a degree outcome, a placement, a salary or a scholarship - those are decided by the institution and its rules, and a wrong promise here changes a student's year. Quote courses, fees, instalments, eligibility, last dates, exam dates and required documents only as written in the business details; if a detail is not there, do not answer it at all - pass the question to the team so a person replies, and never work it out or use what is usual elsewhere. State a recognition, approval, accreditation or ranking (UGC, UGC-DEB, AICTE, NAAC, NIRF, a board or a council) only exactly as written in the business details, never assume one, and never compare with another institution. For open, distance or online programmes, explain ABC-ID and DEB-ID steps only as written in the business details; if asked whether a programme is recognised, give what is on file and say it can also be checked on the official UGC-DEB website. Give refund, withdrawal and fee-return rules only as written in the business details, never state a percentage or date from memory, and pass every refund request to the office. Never tell someone a fee, a late fine, a deadline or an eligibility rule is waived, extended or relaxed - that is the institution's decision. Never discuss a specific student's marks, attendance, conduct, result or fees with anyone unless it is on file for this customer, and never share anything about another student. Never ask for an Aadhaar number, bank details or a marksheet in chat; documents go through the institution's own form or office. Send admission messages and reminders only to people who enquired or opted in, and if someone says they do not want messages or are not interested, accept it and do not push.",
@@ -30,6 +31,12 @@
     "Fee waivers, concessions, instalments or late-fee relief beyond what is written",
     "Refund or withdrawal for a specific student",
     "Placement figures or salaries not in the business details"
+  ],
+  "suggested_teams": [
+    {"name": "Exams & Results", "words": ["exam", "result", "marksheet", "mark sheet", "admit card", "hall ticket", "date sheet", "datesheet", "revaluation", "re-evaluation", "back paper", "supplementary", "degree certificate", "transcript", "assignment", "परीक्षा", "रिजल्ट", "परिणाम", "अंकपत्र", "मार्कशीट", "प्रवेश पत्र", "एडमिट कार्ड"]},
+    {"name": "Fees & Accounts", "words": ["refund", "receipt", "rasid", "instalment", "installment", "kist", "transaction", "payment fail", "paid", "fees jama", "fee jama", "fees bhar", "fee bhar", "late fee", "challan", "fees wapas", "fee wapas", "रसीद", "किस्त", "फीस जमा", "फीस वापस", "भुगतान"]},
+    {"name": "Student services", "words": ["transfer certificate", "tc chahiye", "tc lena", "migration", "bonafide", "character certificate", "id card", "hostel", "bus pass", "bus route", "bus fee", "transport", "library", "scholarship", "abc id", "abc-id", "deb id", "deb-id", "छात्रवृत्ति", "हॉस्टल", "छात्रावास", "स्थानांतरण प्रमाण"]},
+    {"name": "Admissions", "words": ["admission", "admision", "eligib", "seat", "course", "prospectus", "apply", "application", "last date", "counsel", "fee", "daakhila", "dakhila", "dakhla", "एडमिशन", "दाखिला", "प्रवेश", "कोर्स", "पात्रता", "फीस", "शुल्क"]}
   ],
   "watch_for": [
     {"kind": "meeting", "note": "A counselling session, campus visit, interview or entrance test agreed for a time"},

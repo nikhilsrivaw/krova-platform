@@ -35,6 +35,16 @@ def test_it_speaks_of_counsellors_not_demo_classes():
     assert wording["provider"] == "Counsellor" and wording["booking_noun"] == "counselling session"
 
 
+def test_its_catalogue_is_called_courses_and_others_keep_catalogue():
+    college = labels.catalogue_labels(SimpleNamespace(vertical="institution", settings={}))
+    assert college == {"title": "Courses", "item": "course"}
+    shop = labels.catalogue_labels(SimpleNamespace(vertical="general", settings={}))
+    assert shop == {"title": "Catalogue", "item": "item"}
+    own = labels.catalogue_labels(SimpleNamespace(
+        vertical="institution", settings={"catalogue": {"labels": {"title": "Programmes", "item": "  "}}}))
+    assert own == {"title": "Programmes", "item": "course"}
+
+
 def test_the_card_asks_what_an_admission_office_is_asked():
     fields = {f["key"]: f for f in knowledge_card.fields_for("institution")}
     assert fields["how_to_buy"]["title"] == "How to apply, eligibility and documents"

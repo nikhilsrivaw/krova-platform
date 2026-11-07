@@ -59,6 +59,9 @@ def spoken(text: str | None, named: str | None) -> str | None:
 _VOICE = {
     "en": "english", "hi": "hindi", "ta": "tamil", "te": "telugu", "bn": "bengali", "gu": "gujarati", "kn": "kannada",
     "ml": "malayalam", "pa": "punjabi", "od": "odia", "or": "odia", "mr": "hindi",
+    # Heard on a call but spoken back in the Hindi or Bengali voice (sarvam.speakable), so their lines are too.
+    "ur": "hindi", "ne": "hindi", "kok": "hindi", "mai": "hindi", "doi": "hindi", "sa": "hindi", "brx": "hindi",
+    "ks": "hindi", "sd": "hindi", "sat": "hindi", "as": "bengali", "mni": "bengali",
 }
 
 

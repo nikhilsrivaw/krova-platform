@@ -144,12 +144,45 @@ def _tool(fields: list[dict[str, Any]], faq_room: int, bank_room: int = 0) -> di
     }
 
 
+def _pdfium_text(raw: bytes) -> str | None:
+    """
+    The text layer read with PDFium (Chrome's PDF engine). pypdf drops or reorders Hindi and other Indic letters - a
+    test prospectus came out as "म" for "में" and "परी ाएँ" for "परीक्षाएँ" - while PDFium reads them as written.
+    None if PDFium cannot open the file; pypdf then has its go, with its clearer messages for locked or broken files.
+    """
+    try:
+        import pypdfium2
+
+        doc = pypdfium2.PdfDocument(raw)
+        try:
+            parts: list[str] = []
+            size = 0
+            for i in range(min(len(doc), MAX_PDF_PAGES)):
+                page = doc[i]
+                text_page = page.get_textpage()
+                text = (text_page.get_text_range() or "").replace("\r\n", "\n").strip()
+                text_page.close()
+                page.close()
+                parts.append(text)
+                size += len(text)
+                if size > MAX_TEXT_CHARS:
+                    break
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001 - pypdf is the fallback
+        return None
+    return "\n\n".join(p for p in parts if p)
+
+
 def pdf_text(raw: bytes) -> str:
     """
     The text layer of a PDF, read here rather than by the model: it works with every model (the Bedrock ones take no
     PDF input) and a page of text costs far fewer tokens than a page sent as a document. A scanned PDF has no text
     layer - the owner is asked for a photo instead, which the model can read.
     """
+    text = _pdfium_text(raw)
+    if text and len(text) >= 20:
+        return text
     try:
         reader = PdfReader(io.BytesIO(raw))
         if reader.is_encrypted and not reader.decrypt(""):

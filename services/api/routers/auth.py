@@ -101,6 +101,8 @@ class MeResponse(BaseModel):
     # defaults, its vertical's template, and its own settings. Sent from here
     # because every page already fetches /auth/me, exactly like capabilities.
     queue_labels: dict
+    # What the Knowledge page calls its Catalogue ("Courses" for an institution), resolved the same way.
+    catalogue_labels: dict = {}
     # Settings.google_review_url made a first-class field on this response
     # rather than a raw settings passthrough - see UpdateMeRequest's own
     # reasoning for why this one key gets a named field instead of an
@@ -627,6 +629,7 @@ async def me(current_user: CurrentUserDep, db: DbDep) -> MeResponse:
         vertical=business.vertical if business else None,
         capabilities=verticals.capabilities_for(business) if business else [],
         queue_labels=labels.queue_labels(business) if business else {},
+        catalogue_labels=labels.catalogue_labels(business) if business else {},
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,
@@ -745,6 +748,7 @@ async def update_me(
         vertical=business.vertical if business else None,
         capabilities=verticals.capabilities_for(business) if business else [],
         queue_labels=labels.queue_labels(business) if business else {},
+        catalogue_labels=labels.catalogue_labels(business) if business else {},
         autonomy=business.autonomy if business else None,
         role=current_user.role,
         google_review_url=(business.settings or {}).get("google_review_url") if business else None,

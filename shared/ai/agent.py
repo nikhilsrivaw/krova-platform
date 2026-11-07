@@ -258,6 +258,41 @@ REPLY_TOOL = {
     },
 }
 
+# Each optional field and what in the context makes it usable. A field whose test fails could never be filled
+# correctly (its own description says to omit it then), so it is left out of the tool - about 1,000 input tokens on
+# every reply of a business with no queue, listings, carousels or orders. A field not listed here is always sent.
+_FIELD_NEEDS = {
+    "book_slot": lambda c: c.availability is not None,
+    "book_doctor": lambda c: c.availability is not None,
+    "reschedule_from": lambda c: c.upcoming_bookings is not None,
+    "reschedule_to": lambda c: c.upcoming_bookings is not None,
+    "cancel_appointment_at": lambda c: c.upcoming_bookings is not None,
+    "book_property": lambda c: c.properties is not None,
+    "book_token": lambda c: c.open_shifts is not None,
+    "cancel_token": lambda c: c.open_shifts is not None,
+    "share_catalog": lambda c: c.orders is not None or "order_sync" in (c.capabilities or []),
+    "share_carousel": lambda c: bool(c.instagram_carousels or c.whatsapp_carousels),
+    "share_carousel_values": lambda c: bool(c.instagram_carousels or c.whatsapp_carousels),
+    "order_items": lambda c: bool(c.products),
+    "order_payment": lambda c: bool(c.products),
+    "cancel_order": lambda c: c.orders is not None,
+}
+
+
+def reply_tool(agent_context) -> dict:
+    """REPLY_TOOL with only the fields this business and conversation can use. Any doubt keeps the field."""
+    props = REPLY_TOOL["input_schema"]["properties"]
+    keep = {}
+    for name, schema in props.items():
+        need = _FIELD_NEEDS.get(name)
+        try:
+            usable = need is None or need(agent_context)
+        except Exception:  # noqa: BLE001 - a context without the attribute keeps the field
+            usable = True
+        if usable:
+            keep[name] = schema
+    return {**REPLY_TOOL, "input_schema": {**REPLY_TOOL["input_schema"], "properties": keep}}
+
 
 SYSTEM = """You answer customer messages on behalf of a business.
 
@@ -1326,6 +1361,7 @@ async def draft_reply(
     if cache:
         business_block["cache_control"] = {"type": "ephemeral"}
 
+    tool = reply_tool(agent_context)
     completion = await client.complete(
         system=SYSTEM,
         messages=[{
@@ -1335,7 +1371,7 @@ async def draft_reply(
         cache_system=cache,
         speed="fast" if fast else "deep",
         task="reply_text",
-        tool=REPLY_TOOL,
+        tool=tool,
         max_tokens=300 if fast else 1024,
     )
 
@@ -1353,7 +1389,7 @@ async def draft_reply(
                 "role": "user",
                 "content": [business_block, {"type": "text", "text": f"{prompt}\n\n{reply_language.correction(want)}"}],
             }],
-            cache_system=cache, speed="deep", task="reply_text", tool=REPLY_TOOL, max_tokens=1024,
+            cache_system=cache, speed="deep", task="reply_text", tool=tool, max_tokens=1024,
         )
         retry = again.tool_input or {}
         if retry.get("action") == "reply" and retry.get("message") and not reply_language.mismatched(retry.get("message"), want):

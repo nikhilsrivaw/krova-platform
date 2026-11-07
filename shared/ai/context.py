@@ -251,6 +251,10 @@ class AgentContext:
     def language_line(self) -> str | None:
         from shared.ai import reply_language
 
+        if getattr(self, "channel", None) == "voice":
+            spoken = reply_language.spoken_hint(self.last_inbound())
+            if spoken:
+                return spoken
         line = reply_language.hint(self.last_inbound(), self.reply_language, (getattr(self, "picked", None) or {}).get("language"))
         if line and self.language_retry:
             line += " " + reply_language.correction(self.expected_script())

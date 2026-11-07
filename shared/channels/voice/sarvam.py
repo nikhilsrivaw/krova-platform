@@ -40,6 +40,29 @@ STT_MODEL = "saaras:v3-realtime"
 # both mispronounced unrecognisably by v2 on a real call) are v3-only.
 TTS_MODEL = "bulbul:v3"
 
+# The languages bulbul:v3 can speak (docs.sarvam.ai models page, checked 2026-11-08). saaras:v3 hears about 22,
+# so a caller's detected language can be one the voice cannot speak - Urdu above all.
+TTS_LANGUAGES = frozenset({
+    "hi-IN", "bn-IN", "ta-IN", "te-IN", "gu-IN", "en-IN", "kn-IN", "ml-IN", "mr-IN", "pa-IN", "od-IN",
+})
+# Heard but not speakable: spoken in the voice closest to it. Spoken Urdu and Hindi are one everyday language; the
+# rest share a script or are widely understood in it by the same callers.
+_NEAREST_VOICE = {
+    "ur": "hi-IN", "ne": "hi-IN", "kok": "hi-IN", "mai": "hi-IN", "doi": "hi-IN", "sa": "hi-IN", "brx": "hi-IN",
+    "ks": "hi-IN", "sd": "hi-IN", "sat": "hi-IN", "as": "bn-IN", "mni": "bn-IN",
+}
+
+
+def speakable(language: str | None, fallback: str = "en-IN") -> str:
+    """A language_code bulbul:v3 can speak: the heard one if it can, its nearest voice if not, else `fallback`."""
+    if language in TTS_LANGUAGES:
+        return language
+    nearest = _NEAREST_VOICE.get((language or "").split("-")[0].lower())
+    if nearest:
+        return nearest
+    return fallback if fallback in TTS_LANGUAGES else "en-IN"
+
+
 # Created once via POST /text-to-speech/pronunciation-dictionary (not at
 # runtime - dictionaries are an account-level resource, not per-call).
 # Passed as dict_id in every TTS config frame.

@@ -34,6 +34,8 @@ apscheduler==3.11.0
 anthropic==0.64.0
 # Text out of an owner's PDF price list, read once into the knowledge card (shared/ai/knowledge_reader.py)
 pypdf==6.21.4
+# Reads Hindi and other Indic text out of PDFs correctly, where pypdf breaks it - shared/ai/knowledge_reader.py.
+pypdfium2==5.13.0
 
 # ── Dev ──────────────────────────────────────────────────────────────────────
 pytest==8.4.1
