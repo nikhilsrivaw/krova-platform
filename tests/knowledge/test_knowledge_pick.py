@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 
-from shared.ai import agent, context, hand_over_lines, knowledge_pick as kp, providers, reply_language, router  # noqa: E402
+from shared.ai import agent, context, hand_over_lines, knowledge_pick as kp, providers, reply_language, router, voice_guard  # noqa: E402
 from shared.channels.voice.pipeline import CallPipeline  # noqa: E402
 from shared.team import language as team_language  # noqa: E402
 from shared.verticals import knowledge_lookup as kl  # noqa: E402
@@ -213,6 +213,127 @@ def model_call_only_once(model):
         return SimpleNamespace(text=model.says, usage=SimpleNamespace(), cost_paise=11)
 
     return call
+
+
+# ── "what do you have?" ──────────────────────────────────────────────────────
+
+
+def _catalogue(count):
+    rows = [{"name": f"Course {i}", "price": "Rs 100", "details": ""} for i in range(count)]
+    return [{"title": "x", "content": "", "topic": kl.CATALOGUE_TOPIC, "card": None, "rows": rows}]
+
+
+def test_asking_what_is_on_offer_shows_every_name_and_no_price(model):
+    c = _ctx("saare courses batao", knowledge=_catalogue(9))
+    model.says = "LANGUAGE: Hindi\nALL"
+    _pick(c)
+    out = c.render_lookup()
+    assert all(f"Course {i}" in out for i in range(9)) and "Rs 100" not in out
+    assert kp.missing_fact(c) is None
+
+
+def test_a_very_long_list_is_cut_and_says_so(model):
+    c = _ctx("sab kuch dikhao", knowledge=_catalogue(45))
+    model.says = "ALL"
+    _pick(c)
+    out = c.render_lookup()
+    assert f"Course {context.LIST_NAMES - 1}" in out and f"Course {context.LIST_NAMES}," not in out and "and 5 more" in out
+
+
+def test_all_with_nothing_listed_shows_nothing(model):
+    c = _ctx("sab kuch dikhao", knowledge=[])
+    c.dna_summary = "A shop."
+    model.says = "ALL"
+    _pick(c)
+    assert c.render_lookup() == ""
+
+
+def test_a_word_starting_with_all_is_not_all(model):
+    c = _ctx("allergy ka kya")
+    model.says = "allergy"
+    _pick(c)
+    assert c.picked is None
+
+
+def test_the_reply_rules_stop_a_promise_of_something_sent():
+    assert "Never say a link, receipt, document" in agent.SYSTEM and "Never say a link, receipt, document" in agent.SYSTEM_STREAM
+
+
+def test_the_line_beside_the_message_asks_for_the_gap_not_a_vague_promise():
+    assert "Escalate and name the missing fact" in context.ONLY_WHAT_IS_ON_FILE
+
+
+# ── a number nothing on file says ────────────────────────────────────────────
+
+
+FACTS = "MBA - Rs 40,000 a year. Last date 31 July. 75 percent attendance. Hostel fee 1,50,000. Classes 10 am."
+
+
+@pytest.mark.parametrize("reply", [
+    "MBA ki fees Rs 40,000 hai", "एमबीए की फीस ४०,००० रुपये है", "এমবিএ ফি ৪০,০০০ টাকা",
+    "Last date 31 July hai", "Hostel 1,50,000", "2 saal ka course", "75 percent",
+])
+def test_a_number_on_file_passes_in_any_script_and_unit(reply):
+    assert voice_guard.ungrounded_numbers(reply, FACTS) == []
+
+
+@pytest.mark.parametrize("reply", [
+    "Bus number 44 milti hai", "15 minutes by auto", "ਬੱਸ ਨੰਬਰ ੪੪", "બસ નંબર ૪૪ મળે છે", "MBA ki total fees 80,000", "MBA ki fees 1,20,000 hai",
+    "Bus number 40 milti hai",  # not to be excused by the fee of 40,000
+])
+def test_a_number_not_on_file_is_caught_in_any_script(reply):
+    assert voice_guard.ungrounded_numbers(reply, FACTS)
+
+
+def _rendering(monkeypatch):
+    monkeypatch.setattr(context.AgentContext, "render_business", lambda self: "MBA - Rs 40,000 a year")
+    monkeypatch.setattr(context.AgentContext, "render_live", lambda self: "")
+    monkeypatch.setattr(context.AgentContext, "render_lookup", lambda self: "")
+
+
+def _checkable(said):
+    full = _full(said)
+    full.upcoming_bookings, full.products = None, []
+    full.picked, full.picked_for = {"rows": [], "answers": [], "products": [], "missing": None}, said
+    return full
+
+
+def test_a_chat_reply_with_a_made_up_number_goes_to_the_team(model, monkeypatch):
+    _rendering(monkeypatch)
+    monkeypatch.setattr(context.AgentContext, "render_conversation", lambda self: "")
+    monkeypatch.setattr(context.AgentContext, "expected_script", lambda self: None)
+
+    async def says(**_):
+        return SimpleNamespace(tool_input={"action": "reply", "message": "Bus number 44 hai", "confidence": 1}, cost_paise=5)
+
+    monkeypatch.setattr(agent.client, "complete", says)
+    draft = asyncio.run(agent.draft_reply(_checkable("bus hai kya")))
+    assert draft.action == "escalate" and draft.message is None and draft.gap == agent.NUMBER_NOT_ON_FILE
+
+
+def test_the_number_check_stays_out_of_its_way(monkeypatch):
+    _rendering(monkeypatch)
+    full = _checkable("kal slot hai kya")
+    assert agent._made_up_number("Bus number 44", full)
+    assert not agent._made_up_number("MBA Rs 40,000", full)
+    assert not agent._made_up_number("Pichhle 12 ya 44 din", _with(full, picked=None))  # helper off: nothing changes
+    assert not agent._made_up_number("3 pm 15 tareekh", _with(_checkable("x"), availability="2026-11-07T15:00"))
+    assert not agent._made_up_number("Total 1500", _with(_checkable("x"), products=[{"name": "Shirt", "price": "Rs 500"}]))
+
+
+def _with(full, **values):
+    for name, value in values.items():
+        setattr(full, name, value)
+    return full
+
+
+@pytest.mark.parametrize("reply", ["Prospectus ka link aapko WhatsApp par bhej diya gaya hai", "Humne link bhej diya", "I have sent you the form"])
+def test_saying_something_was_sent_is_caught(reply):
+    assert voice_guard.ungrounded_claims(reply, "MBA Rs 40,000")
+
+
+def test_escalating_must_name_what_was_missing():
+    assert "gap" in agent.REPLY_TOOL["input_schema"]["required"]
 
 
 # ── the language, from its words ─────────────────────────────────────────────

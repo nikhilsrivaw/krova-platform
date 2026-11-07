@@ -79,9 +79,9 @@ REPLY_TOOL = {
             "gap": {
                 "type": "string",
                 "description": (
-                    "When escalating: exactly what you did not know, so the "
-                    "owner can add it. E.g. 'paediatric treatment pricing is "
-                    "not in the business details'."
+                    "When escalating: exactly what you did not know, in at most "
+                    "five English words, so the owner can add it. E.g. 'paediatric "
+                    "treatment pricing'. Empty when not escalating."
                 ),
             },
             "confidence": {
@@ -253,8 +253,8 @@ REPLY_TOOL = {
                 ),
             },
         },
-        # `message` is required: left optional, Mistral chose "reply", gave the right reasoning and wrote no message.
-        "required": ["action", "message", "reasoning", "confidence"],
+        # Both required: left optional, Mistral chose "reply" and wrote no message, or escalated and named nothing.
+        "required": ["action", "message", "reasoning", "gap", "confidence"],
     },
 }
 
@@ -364,6 +364,10 @@ business details. If it is listed, set the matching field as soon as they ask; \
 KROVA itself asks them to confirm and only then does it, so never say it is \
 already done. If it is not listed, do not offer it: escalate and name what \
 they want.
+
+Your words are the only thing you can send. Never say a link, receipt, document, \
+form or message has been sent or is on its way, unless it is written out in this \
+reply or a field here sends it. If they ask for one, escalate and name it.
 
 If the last message needs no reply - a "thanks", an emoji - choose \
 no_action rather than manufacturing a response. Not every message deserves \
@@ -496,6 +500,12 @@ If the address is not written in the details above:
 ESCALATE
 
 salon address
+
+Caller: "Brochure bhej do"
+If no link to it is written in the details above (a call cannot send anything, so never say it was sent):
+ESCALATE
+
+brochure link
 
 Caller: "Haircut ka rate kya hai?"
 If the price is written in the details above, state it exactly as written:
@@ -656,6 +666,23 @@ def _escalate_floor(text: str, agent_context: ctx.AgentContext) -> str:
 
 
 GUARD_FALLBACK_REPLY ="REPLY\n\nIs baare mein main abhi confirm karke batata hoon."
+NUMBER_NOT_ON_FILE = "needs a person: the reply stated a number that is not on file"
+
+
+def _made_up_number(spoken: str, agent_context: ctx.AgentContext) -> bool:
+    """
+    A number in the reply that nothing on file says. Only with knowledge_pick on, and not where a reply works numbers
+    out from what it was shown: a slot's time from its ISO stamp, an order's total from its prices.
+    """
+    if agent_context.picked is None:
+        return False
+    if agent_context.availability or agent_context.upcoming_bookings or agent_context.open_shifts or agent_context.products:
+        return False
+    facts = (
+        f"{agent_context.render_business()}\n{agent_context.render_live()}\n{agent_context.render_lookup()}\n"
+        f"{ctx.now_line()}\n{agent_context.last_inbound() or ''}"
+    )
+    return bool(voice_guard.ungrounded_numbers(spoken, facts))
 
 
 async def _buffered_voice(route: str, agent_context: ctx.AgentContext) -> _Buffered:
@@ -675,6 +702,9 @@ async def _buffered_voice(route: str, agent_context: ctx.AgentContext) -> _Buffe
     facts = f"{agent_context.render_business()}\n{agent_context.render_live()}\n{agent_context.render_lookup()}"
     text = _escalate_floor(answer.text or "", agent_context)
     if _grounded(text, facts):
+        if text.strip().upper().startswith("REPLY") and _made_up_number(text, agent_context):
+            logger.warning("voice guard stopped a reply from %s with a number not on file", route)
+            return _Buffered(f"ESCALATE\n\n{NUMBER_NOT_ON_FILE}", answer.cost_paise)
         return _Buffered(text, answer.cost_paise)
     logger.warning("voice guard replaced an ungrounded reply from %s with a holding line", route)
     return _Buffered(GUARD_FALLBACK_REPLY, answer.cost_paise)
@@ -1344,6 +1374,11 @@ async def draft_reply(
         logger.warning("agent chose reply with no message, escalating")
         action = "escalate"
         message = None
+
+    if action == "reply" and _made_up_number(message, agent_context):
+        logger.warning("draft reply stopped: a number not on file")
+        action, message = "escalate", None
+        result["gap"] = NUMBER_NOT_ON_FILE
 
     try:
         confidence = min(1.0, max(0.0, float(result.get("confidence", 0.5))))

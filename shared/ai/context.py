@@ -543,6 +543,13 @@ class AgentContext:
             found_answers = knowledge_lookup.match_bank(bank, asked)
             found_products = knowledge_lookup.match_catalogue(products, asked)
         lines: list[str] = []
+        names = [str(r.get("name") or "").strip() for r in rows + products] if picked and picked.get("everything") else []
+        if names:
+            more = f", and {len(names) - LIST_NAMES} more" if len(names) > LIST_NAMES else ""
+            lines.append(
+                "\nEverything this business lists, by name only - no prices or details are shown here, so state none. "
+                f"Tell them what there is and ask which one they want to know about:\n{', '.join(names[:LIST_NAMES])}{more}"
+            )
         if found_products:
             lines.append("\nProducts matching the customer's words - for an order, use these names exactly:")
             lines.extend(f"- {knowledge_lookup.row_line(p)}" for p in found_products)
@@ -575,8 +582,14 @@ class AgentContext:
 # pool" when the same rule is only further up the prompt.
 ONLY_WHAT_IS_ON_FILE = (
     "Everything on file that fits this message is shown above. If it does not say what was asked, you do not know it: no "
-    "price, date, number, yes or no from your own head. Say the office will confirm, in the customer's language, or escalate."
+    "price, date, number, yes or no from your own head. Escalate and name the missing fact, so the business can add it. Do "
+    "not reply that the office will confirm: that answers nothing and the business never hears the question was asked. You "
+    "can send nothing but these words: if they ask for a link, form, receipt or document that is not written out above, "
+    "escalate and name it, and never say it has been sent."
 )
+
+# Plenty for a question like "what courses do you have?", and few enough for one line of a reply.
+LIST_NAMES = 40
 
 
 def lookup_items(context) -> tuple[list[dict], list[dict], list[dict]]:

@@ -53,9 +53,11 @@ ASK = f"""
 
 Look at the customer's last message. Start with this line: LANGUAGE: then the language they are speaking, as one English word, judged by its words and not its letters ("MBA fees evlo" is Tamil, "fee kiti aahe" is Marathi, "fees kitni hai" is Hindi).
 
-On the next line reply in exactly one of these three forms, with nothing else.
+On the next line reply in exactly one of these four forms, with nothing else.
 
 Numbers, separated by commas, at most {MOST_PICKS}: the items that answer it. Asking the fee or anything else about a named item picks that item.
+
+ALL: they want to know what is on offer rather than one thing ("what courses do you have", "what can I do after 12th", "show me everything").
 
 MISSING: then the fact in at most {MISSING_WORDS} English words, with no names or numbers of theirs. Use this whenever they ask about this business (does it have something, what does it cost, when, where, how) and neither the list nor 'Already known' says. If nothing mentions it, you do not know it, so this is the answer. "Do you have parking?" with nothing on parking is MISSING: parking. "How do I get there from the airport?" with nothing on that is MISSING: route from airport. When a question about the business could be this or NONE, choose this: a person following up costs less than a wrong answer.
 
@@ -107,10 +109,13 @@ def _missing_name(text: str) -> str | None:
 def _read(text: str, menu: dict[str, tuple[str, dict]]) -> dict | None:
     """The picked items; empty for a plain NONE; None when the answer cannot be read, so word matching runs instead."""
     language, text = _language(text)
-    found = {"rows": [], "answers": [], "products": [], "missing": None, "language": language}
+    found = {"rows": [], "answers": [], "products": [], "missing": None, "language": language, "everything": False}
     missing = _missing_name(text)
     if missing is not None:
         found["missing"] = missing or "a question the business details do not answer"
+        return found
+    if re.match(r"\W*ALL\b", text, re.I):
+        found["everything"] = True
         return found
     ids = [i for i in dict.fromkeys(re.findall(r"\b\d+\b", text or "")) if i in menu][:MOST_PICKS]
     if not ids:
@@ -154,8 +159,8 @@ async def pick(agent_context: Any, *, timeout: float = CALL_TIMEOUT_S) -> int:
         logger.warning("knowledge pick answer could not be read, using word match")
     else:
         handed_over = HANDED_OVER_LANGUAGES.get(team_language.detect(last) or "")
-        if handed_over and (picked["missing"] or picked["rows"] or picked["answers"] or picked["products"]):
-            picked = {"rows": [], "answers": [], "products": [], "missing": handed_over, "language": picked["language"]}
+        if handed_over and (picked["missing"] or picked["everything"] or picked["rows"] or picked["answers"] or picked["products"]):
+            picked = {"rows": [], "answers": [], "products": [], "missing": handed_over, "language": picked["language"], "everything": False}
         agent_context.picked, agent_context.picked_for = picked, last
     return answer.cost_paise
 
