@@ -32,7 +32,7 @@ from pathlib import Path
 
 import websockets
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import call_summary
@@ -40,7 +40,7 @@ from shared.ai import context as agent_context
 from shared.ai import outbound_opener
 from shared.auth.encryption import decrypt
 from shared.billing import usage
-from shared.channels.voice import line_profile, loudness, outbound, plivo_client, sarvam
+from shared.channels.voice import capacity, line_profile, loudness, outbound, plivo_client, sarvam
 from shared.channels.voice.call_registry import recall as recall_call
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.pipeline import CallPipeline
@@ -176,11 +176,8 @@ async def connect_with_filler(
         raise
 
 
-# Plivo's real answer, not a guess: this is an account-wide limit shared by
-# every business's subaccount, not something Krova can raise per-tenant. A
-# capacity request to Plivo is the only real fix once this is regularly hit.
-_PLIVO_CONCURRENT_CALL_LIMIT = 25
-_CAPACITY_WARN_THRESHOLD = 20
+# Warn at 80% of Plivo's account-wide limit (shared/channels/voice/capacity.py), every business together.
+_CAPACITY_WARN_SHARE = 0.8
 
 
 async def _warn_if_near_capacity(db: AsyncSession) -> None:
@@ -188,18 +185,18 @@ async def _warn_if_near_capacity(db: AsyncSession) -> None:
     Log loudly when the platform - all businesses combined - is close to
     Plivo's account-wide concurrent-call ceiling.
 
-    Not a hard block: this counts unclosed rows in our own database, which
-    can drift from Plivo's real live-call count if a row fails to close
-    cleanly, so refusing calls on it risks rejecting real ones on bad data.
-    Visibility now is worth more than an unreliable block.
+    Not a hard block on an incoming call: this counts unclosed rows in our own
+    database, which can drift from Plivo's real live-call count if a row fails
+    to close cleanly, so refusing calls on it risks rejecting real ones on bad
+    data. Campaigns are what is held back (capacity.Dialler).
     """
-    count = await db.scalar(select(func.count()).select_from(Call).where(Call.ended_at.is_(None)))
-    if count is not None and count >= _CAPACITY_WARN_THRESHOLD:
+    count = await capacity.open_calls(db)
+    if count >= capacity.limit() * _CAPACITY_WARN_SHARE:
         logger.warning(
             "voice concurrency at %s/%s of Plivo's account-wide limit - "
             "request higher capacity from Plivo before this is hit",
             count,
-            _PLIVO_CONCURRENT_CALL_LIMIT,
+            capacity.limit(),
         )
 
 

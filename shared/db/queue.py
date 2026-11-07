@@ -120,6 +120,15 @@ async def complete(job: Job, db: AsyncSession) -> None:
     job.last_error = None
 
 
+async def later(job: Job, seconds: float, db: AsyncSession) -> None:
+    """Put a job back to run after `seconds`, without counting this as a failed attempt (nothing went wrong)."""
+    job.status = JobStatus.pending
+    job.run_after = _now() + timedelta(seconds=seconds)
+    job.attempts = max(0, (job.attempts or 0) - 1)
+    job.locked_by = None
+    job.locked_at = None
+
+
 async def fail(job: Job, error: str, db: AsyncSession) -> None:
     """
     Record a failure and decide whether to retry.

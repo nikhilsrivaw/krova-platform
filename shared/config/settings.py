@@ -171,6 +171,10 @@ class Settings(BaseSettings):
     # How much louder the agent's voice is made on a call, in dB (0 = as Sarvam sends it, at most 12). See
     # shared/channels/voice/loudness.py; callers found it too quiet as sent.
     voice_tts_gain_db: float = Field(default=6.0, alias="VOICE_TTS_GAIN_DB")
+    # Plivo's calls-at-once for the whole account, all businesses together (50, per Plivo support 2026-11-07), and
+    # how many of those campaigns must leave free for people calling in. See shared/channels/voice/capacity.py.
+    voice_concurrent_call_limit: int = Field(default=50, alias="VOICE_CONCURRENT_CALL_LIMIT")
+    voice_inbound_reserve: int = Field(default=15, alias="VOICE_INBOUND_RESERVE")
     # Shadow-testing a cheaper model on real traffic, per task - see
     # shared/ai/router.py. JSON, e.g.
     #   {"extract_signals": {"model": "claude-haiku-4-5", "rate": 1.0}}

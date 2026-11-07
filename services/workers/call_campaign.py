@@ -10,11 +10,12 @@ from a WhatsApp API round-trip - this queue exists specifically so that
 mismatch is never repeated for voice.
 """
 
+import asyncio
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.channels.voice import outbound
+from shared.channels.voice import capacity, outbound
 from shared.db import queue
 from shared.db.models import Job
 from shared.db.worker_runner import run_worker_process
@@ -24,12 +25,21 @@ logger = get_logger(__name__)
 
 QUEUE = "call_campaign_dial"
 
+# One worker process dials for every campaign, so one pacer holds the whole platform to Plivo's limits.
+dialler = capacity.Dialler()
+
 
 async def _run_job(job: Job, db: AsyncSession) -> None:
     raw_id = (job.payload or {}).get("recipient_id")
     if not raw_id:
         await queue.fail(job, "job payload has no recipient_id", db)
         return
+    if not dialler.has_room(await capacity.open_calls(db)):
+        # Lines are needed for people calling in: this recipient is dialled a little later, not dropped.
+        await queue.later(job, capacity.WAIT_WHEN_FULL_SECONDS, db)
+        return
+    await asyncio.sleep(dialler.wait_before_next())
+    dialler.dialled()
     try:
         await outbound.place_call(uuid.UUID(raw_id), db)
         await queue.complete(job, db)
