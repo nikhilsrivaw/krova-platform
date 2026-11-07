@@ -168,6 +168,9 @@ class Settings(BaseSettings):
     claude_deep_model: str = Field(
         default="claude-sonnet-5", alias="CLAUDE_DEEP_MODEL"
     )
+    # How much louder the agent's voice is made on a call, in dB (0 = as Sarvam sends it, at most 12). See
+    # shared/channels/voice/loudness.py; callers found it too quiet as sent.
+    voice_tts_gain_db: float = Field(default=6.0, alias="VOICE_TTS_GAIN_DB")
     # Shadow-testing a cheaper model on real traffic, per task - see
     # shared/ai/router.py. JSON, e.g.
     #   {"extract_signals": {"model": "claude-haiku-4-5", "rate": 1.0}}

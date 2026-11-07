@@ -40,7 +40,7 @@ from shared.ai import context as agent_context
 from shared.ai import outbound_opener
 from shared.auth.encryption import decrypt
 from shared.billing import usage
-from shared.channels.voice import line_profile, outbound, plivo_client, sarvam
+from shared.channels.voice import line_profile, loudness, outbound, plivo_client, sarvam
 from shared.channels.voice.call_registry import recall as recall_call
 from shared.channels.voice.plivo_signature import InvalidSignature, verify
 from shared.channels.voice.pipeline import CallPipeline
@@ -281,8 +281,11 @@ async def stream(
     # chunks - but the lock stays cheap insurance against any future path
     # that writes to this socket from two tasks at once.
     _ws_send_lock = asyncio.Lock()
+    # Every clip the caller hears passes here, the filler included, so one setting decides how loud the agent is.
+    louder = loudness.Louder(settings.voice_tts_gain_db)
 
     async def _send_wire_audio(mulaw_bytes: bytes) -> None:
+        mulaw_bytes = louder(mulaw_bytes)
         async with _ws_send_lock:
             await websocket.send_text(
                 json.dumps(
