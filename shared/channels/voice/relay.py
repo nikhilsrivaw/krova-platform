@@ -185,12 +185,24 @@ async def _warn_if_near_capacity(db: AsyncSession) -> None:
     Log loudly when the platform - all businesses combined - is close to
     Plivo's account-wide concurrent-call ceiling.
 
-    Not a hard block on an incoming call: this counts unclosed rows in our own
-    database, which can drift from Plivo's real live-call count if a row fails
-    to close cleanly, so refusing calls on it risks rejecting real ones on bad
-    data. Campaigns are what is held back (capacity.Dialler).
+    Not a hard block on an incoming call: refusing calls on a count risks
+    rejecting real ones on bad data. Campaigns are what is held back
+    (capacity.Dialler). Our own count is read here; Plivo's (which also sees
+    calls put through to the team) is asked in a detached task, so a slow
+    Plivo never delays the greeting.
     """
-    count = await capacity.open_calls(db)
+    own = await capacity.open_calls(db)
+    task = asyncio.create_task(_warn_with_plivo(own))
+    _cleanup_tasks.add(task)
+    task.add_done_callback(_cleanup_tasks.discard)
+
+
+async def _warn_with_plivo(own: int) -> None:
+    try:
+        plivo = await capacity.plivo_lines_in_use()
+    except Exception:  # noqa: BLE001 - a warning must never break a call
+        plivo = None
+    count = own if plivo is None else max(own, plivo)
     if count >= capacity.limit() * _CAPACITY_WARN_SHARE:
         logger.warning(
             "voice concurrency at %s/%s of Plivo's account-wide limit - "

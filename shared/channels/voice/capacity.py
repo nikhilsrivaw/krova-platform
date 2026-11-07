@@ -9,12 +9,21 @@ ringing an admission helpline would get nothing.
 So a campaign dials at most one call a second, and stops dialling while fewer than VOICE_INBOUND_RESERVE lines are
 free, leaving them for people calling in. One-off calls (an OTP, a team member's call) are left alone: they are few,
 and each matters to someone waiting.
+
+Lines in use are read from Plivo itself, not only from our call rows. A call put through to a team member is a
+bridge, and Plivo counts both of its legs (support, 2026-11-08); our rows miss it entirely - a call that rings the
+team straight away never gets a row, and an agent call's row closes the moment it is transferred. Each business's
+calls live on its own Plivo subaccount, so every subaccount is asked. If Plivo cannot be reached, our own count is
+used instead. The leg to the team member is its own Plivo call on the same subaccount (its own uuid and CDR - see
+human_calls.record_leg_costs), so the live list should show a bridge as two; not yet watched on a live call.
 """
 
+import asyncio
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +57,77 @@ async def open_calls(db: AsyncSession) -> int:
     since = datetime.now(timezone.utc) - STALE_AFTER
     count = await db.scalar(select(func.count()).select_from(Call).where(Call.ended_at.is_(None), Call.started_at > since))
     return int(count or 0)
+
+
+PLIVO_BASE = "https://api.plivo.com/v1/Account"
+PLIVO_TIMEOUT = 5.0
+# Asking Plivo means one request per subaccount, so a reading is reused for this long. Dials made in between are
+# still counted by the Dialler as ringing calls.
+LIVE_READING_SECONDS = 10.0
+# Businesses are added rarely; the subaccount list is fetched again after this long.
+SUBACCOUNTS_SECONDS = 600.0
+
+_live: tuple[float, int] | None = None
+_subaccounts: tuple[float, list[tuple[str, str]]] | None = None
+
+
+async def _subaccount_logins(client: httpx.AsyncClient) -> list[tuple[str, str]]:
+    global _subaccounts
+    now = time.monotonic()
+    if _subaccounts and now - _subaccounts[0] < SUBACCOUNTS_SECONDS:
+        return _subaccounts[1]
+    main = httpx.BasicAuth(settings.plivo_auth_id, settings.plivo_auth_token)
+    logins: list[tuple[str, str]] = []
+    offset = 0
+    while True:
+        res = await client.get(
+            f"{PLIVO_BASE}/{settings.plivo_auth_id}/Subaccount/", params={"limit": 20, "offset": offset}, auth=main
+        )
+        res.raise_for_status()
+        page = res.json().get("objects") or []
+        logins += [(s["auth_id"], s["auth_token"]) for s in page if s.get("auth_id") and s.get("auth_token")]
+        if len(page) < 20:
+            break
+        offset += 20
+    _subaccounts = (now, logins)
+    return logins
+
+
+async def _live_legs(client: httpx.AsyncClient, auth_id: str, auth_token: str) -> int:
+    res = await client.get(
+        f"{PLIVO_BASE}/{auth_id}/Call/", params={"status": "live"}, auth=httpx.BasicAuth(auth_id, auth_token)
+    )
+    res.raise_for_status()
+    return len(res.json().get("calls") or [])
+
+
+async def plivo_lines_in_use() -> int | None:
+    """Live call legs on the main account and every subaccount, as Plivo sees them. None if Plivo could not say."""
+    global _live
+    now = time.monotonic()
+    if _live and now - _live[0] < LIVE_READING_SECONDS:
+        return _live[1]
+    if not settings.plivo_auth_id or not settings.plivo_auth_token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=PLIVO_TIMEOUT) as client:
+            logins = [(settings.plivo_auth_id, settings.plivo_auth_token), *await _subaccount_logins(client)]
+            counts = await asyncio.gather(*(_live_legs(client, a, t) for a, t in logins))
+    except Exception as exc:  # noqa: BLE001 - our own count is the fallback
+        logger.warning("could not read live calls from plivo, using our own count: %s", type(exc).__name__)
+        return None
+    _live = (now, sum(counts))
+    return _live[1]
+
+
+async def lines_in_use(db: AsyncSession) -> int:
+    """
+    The larger of Plivo's live legs and our own open calls. Plivo sees team calls we cannot; our rows can be ahead of
+    Plivo for a moment just after a call starts. Taking the larger errs on the side of leaving lines free.
+    """
+    own = await open_calls(db)
+    plivo = await plivo_lines_in_use()
+    return own if plivo is None else max(own, plivo)
 
 
 class Dialler:

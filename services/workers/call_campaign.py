@@ -34,7 +34,7 @@ async def _run_job(job: Job, db: AsyncSession) -> None:
     if not raw_id:
         await queue.fail(job, "job payload has no recipient_id", db)
         return
-    if not dialler.has_room(await capacity.open_calls(db)):
+    if not dialler.has_room(await capacity.lines_in_use(db)):
         # Lines are needed for people calling in: this recipient is dialled a little later, not dropped.
         await queue.later(job, capacity.WAIT_WHEN_FULL_SECONDS, db)
         return
