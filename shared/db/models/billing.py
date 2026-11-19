@@ -56,6 +56,10 @@ class UsageEventType(str, enum.Enum):
     # One whole WhatsApp template written from the owner's description (shared/ai/template_draft.py); also what its
     # monthly allowance is counted from.
     ai_template_draft = "ai_template_draft"
+    # One "Ask KROVA" answer (services/api/routers/owner.py) - both of its model calls, summed.
+    ai_owner_ask = "ai_owner_ask"
+    # One file (prospectus, price list...) read into the knowledge card (shared/ai/knowledge_reader.py).
+    ai_knowledge_read = "ai_knowledge_read"
 
     # Voice-specific, one row per cost component per call, matching the
     # breakdown already computed in relay.py rather than collapsing them

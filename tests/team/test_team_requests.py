@@ -170,11 +170,14 @@ def test_a_chat_ask_for_a_person_is_filed_and_answered_without_the_model(monkeyp
 def test_the_website_asks_a_visitor_for_a_number_before_filing(monkeypatch):
     from shared.channels.web import reply as web_reply
 
-    session = SimpleNamespace(customer_id=None, transcript=[], needed_person_at=None)
+    session = SimpleNamespace(id=uuid.uuid4(), customer_id=None, transcript=[], needed_person_at=None)
 
     class Db:
         async def get(self, model, key):
             return None
+
+        def add(self, row):
+            pass
 
     out = asyncio.run(web_reply.generate_reply(Db(), business=SimpleNamespace(id=BIZ), session=session,
                                                text="mujhe team se baat karni hai"))

@@ -97,6 +97,7 @@ async def ingest(
     enqueue_analysis: bool = True,
     referral: dict[str, Any] | None = None,
     sent_by_user_id: uuid.UUID | None = None,
+    already_counted: bool = False,
 ) -> Ingested:
     """
     Store one message, attributing it to a customer.
@@ -210,18 +211,21 @@ async def ingest(
     # webhook and costs Krova a processing cycle; an outbound send is
     # already counted wherever it was generated (an AI reply, a campaign
     # send), so counting it again here would double it.
+    # `already_counted`: a website visitor's message was counted when it arrived, before they gave a phone or
+    # email (shared/channels/web/reply.py) - saving it now must not count it twice.
     if direction == Direction.inbound:
-        usage.record(
-            business_id=business_id,
-            event_type=UsageEventType.message_processed,
-            channel=channel.value if isinstance(channel, Channel) else str(channel),
-            quantity=1,
-            unit="message",
-            source_type="message",
-            source_id=message.id,
-            occurred_at=occurred_at,
-            db=db,
-        )
+        if not already_counted:
+            usage.record(
+                business_id=business_id,
+                event_type=UsageEventType.message_processed,
+                channel=channel.value if isinstance(channel, Channel) else str(channel),
+                quantity=1,
+                unit="message",
+                source_type="message",
+                source_id=message.id,
+                occurred_at=occurred_at,
+                db=db,
+            )
         # Every channel funnels through here, so this one call is what
         # makes "message.received" work for WhatsApp, Instagram and email
         # alike - not something each channel's own handler needs its own

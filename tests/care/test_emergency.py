@@ -154,7 +154,10 @@ def test_website_chat_answers_an_anonymous_visitor_and_asks_for_a_number(monkeyp
 
     monkeypatch.setattr(web_reply.agent_module, "notify_escalation", notify)
     session = SimpleNamespace(id=uuid.uuid4(), customer_id=None, transcript=[], needed_person_at=None)
-    out = asyncio.run(web_reply.generate_reply(None, business=_b(), session=session, text="my father can't breathe"))
+    added = []
+    db = SimpleNamespace(add=added.append)
+    out = asyncio.run(web_reply.generate_reply(db, business=_b(), session=session, text="my father can't breathe"))
     assert out.reply_text.startswith("This sounds like an emergency") and out.needs_contact
+    assert [r.event_type.value for r in added] == ["message_processed"]  # the visitor's message is counted once
     assert alerts == [None] and session.needed_person_at is not None
     assert [e["role"] for e in session.transcript] == ["user", "assistant"]

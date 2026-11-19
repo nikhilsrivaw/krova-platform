@@ -159,15 +159,24 @@ def test_the_route_plans_gathers_then_answers(monkeypatch):
         return f"FACTS for {plan.start} {plan.topics}"
 
     class Db:
+        def __init__(self):
+            self.added = []
+
         async def get(self, model, key):
             return SimpleNamespace(id=key, name="X", timezone="Asia/Kolkata")
+
+        def add(self, row):
+            self.added.append(row)
 
     monkeypatch.setattr(providers, "call", fake_call)
     monkeypatch.setattr(owner_ask, "gather", fake_gather)
     monkeypatch.setattr(client, "_log_usage", lambda *a, **k: None)
     body = owner.AskIn(question="business mein pichhle mahine kya hua?")
-    out = asyncio.run(owner.ask(body, SimpleNamespace(business=uuid.uuid4()), Db()))
+    db = Db()
+    out = asyncio.run(owner.ask(body, SimpleNamespace(business=uuid.uuid4()), db))
     assert out.answer == "Pichhle mahine 12 naye customer aaye."
+    # Both model calls' cost is kept for this business (1 + 2 paise).
+    assert [(r.event_type.value, r.krova_cost_paise) for r in db.added] == [("ai_owner_ask", 3)]
     assert calls[0]["tool_choice"]["name"] == "look_up"
     assert "FACTS for 2026-09-01 ['overview']" in calls[1]["system"]
     assert calls[1]["messages"][-1]["content"] == "business mein pichhle mahine kya hua?"

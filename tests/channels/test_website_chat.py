@@ -66,15 +66,57 @@ def _business():
 
 
 def _session(customer_id=None):
-    return SimpleNamespace(customer_id=customer_id, transcript=[], needed_person_at=None)
+    return SimpleNamespace(id=uuid.uuid4(), customer_id=customer_id, transcript=[], needed_person_at=None)
 
 
 class _GetDb:
     def __init__(self, customer):
         self.customer = customer
+        self.added = []
 
     async def get(self, model, key):
         return self.customer
+
+    def add(self, row):
+        self.added.append(row)
+
+
+def test_an_anonymous_visitors_message_is_counted_and_what_the_reply_cost_is_kept(monkeypatch):
+    async def anon(*a, **k):
+        return SimpleNamespace(reply_language=None, expected_script=lambda: None)
+
+    monkeypatch.setattr(web_reply.agent_context, "build_anonymous", anon)
+    monkeypatch.setattr(agent_module, "stream_reply", _stream(
+        agent_module.ReplyStart(action="reply"), agent_module.ReplyChunk(text="Fees are 9,600."),
+        agent_module.ReplyDone(gap=None, cost_paise=7)))
+    db, session = _GetDb(None), _session()
+    out = asyncio.run(web_reply.generate_reply(db, business=_business(), session=session, text="fees?"))
+    assert out.reply_text == "Fees are 9,600."
+    rows = [(r.event_type.value, r.channel, r.krova_cost_paise) for r in db.added]
+    assert rows == [("message_processed", "web", 0), ("ai_reply_generated", "web", 7)]
+    assert session.transcript[0] == {**session.transcript[0], "role": "user", "counted": True}
+
+
+def test_a_message_counted_before_the_visitor_gave_a_number_is_not_counted_again(monkeypatch):
+    seen = []
+
+    async def ingest(**kw):
+        seen.append((kw["direction"].value, kw.get("already_counted", False)))
+
+    async def resolve(*a, **k):
+        return SimpleNamespace(customer=SimpleNamespace(id=uuid.uuid4()),
+                               identity=SimpleNamespace(kind="phone", value="+919800000000"))
+
+    monkeypatch.setattr(web_reply.ingest_module, "ingest", ingest)
+    monkeypatch.setattr(web_reply.resolver, "resolve", resolve)
+    session = _session()
+    session.transcript = [
+        {"role": "user", "text": "fees?", "at": "2026-11-20T10:00:00+00:00", "counted": True},
+        {"role": "assistant", "text": "9,600", "at": "2026-11-20T10:00:01+00:00"},
+        {"role": "user", "text": "older, from before counting began", "at": "2026-11-20T10:00:02+00:00"},
+    ]
+    asyncio.run(web_reply.promote_session(_GetDb(None), business=_business(), session=session, display_name=None, phone="+919800000000", email=None))
+    assert seen == [("inbound", True), ("outbound", False), ("inbound", False)]
 
 
 def test_while_a_person_is_talking_the_ai_stays_quiet_and_they_are_told(monkeypatch):

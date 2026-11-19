@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException, status
 
 from services.api.dependencies import CurrentUserDep, DbDep, OwnerOrAdminDep
 from shared.billing import features as plan_features
+from shared.billing import usage
+from shared.db.models import UsageEventType
 from shared.ai import client, providers
 from shared.config.settings import settings
 from shared.utils.logging import get_logger
@@ -71,5 +73,10 @@ async def ask(body: AskIn, current_user: OwnerOrAdminDep, db: DbDep) -> AskOut:
             "Ask KROVA is not available yet. It needs its AI provider approved and running.",
         )
     client._log_usage("owner_ask", settings.owner_ask_model, answer.usage, answer.cost_paise)
+    # Kept per business, so what each one costs KROVA can be read back (staff use, not a customer message).
+    usage.record(
+        business_id=business.id, event_type=UsageEventType.ai_owner_ask, channel="app", quantity=1, unit="answer",
+        krova_cost_paise=planned.cost_paise + answer.cost_paise, db=db,
+    )
     logger.info("owner ask business=%s plan=%s facts_chars=%s", business.id, owner_ask.jsonable(plan), len(facts))
     return AskOut(answer=owner_ask.clean_answer(answer.text))

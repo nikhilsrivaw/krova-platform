@@ -32,7 +32,9 @@ from shared.db.models import (
     KnowledgeKind,
     KnowledgeSource,
     MessageDraft,
+    UsageEventType,
 )
+from shared.billing import usage
 from shared.payments import fee_list
 from shared.utils.logging import get_logger
 
@@ -404,6 +406,11 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except AIError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not read the file right now. Try again in a minute.") from exc
+    # Kept per business, so what each one costs KROVA can be read back (setup work, not a customer message).
+    usage.record(
+        business_id=business.id, event_type=UsageEventType.ai_knowledge_read, channel="app", quantity=1, unit="file",
+        krova_cost_paise=reading.cost_paise, db=db,
+    )
     await db.flush()
     logger.info(
         "knowledge file read business=%s fields=%s faqs=%s cost_paise=%s",

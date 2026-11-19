@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.ai import agent as agent_module
 from shared.ai import context as agent_context
+from shared.billing import usage
 from shared.channels import ingest as ingest_module
 from shared.channels.web import sites as web_sites
 from shared.db.models import (
@@ -34,6 +35,7 @@ from shared.db.models import (
     Direction,
     IdentityKind,
     IntakeChannel,
+    UsageEventType,
     WebSession,
 )
 from shared.identity import resolver
@@ -76,11 +78,41 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _append_transcript(session: WebSession, *, role: str, text: str) -> None:
+def _append_transcript(session: WebSession, *, role: str, text: str, counted: bool = False) -> None:
     entry = {"role": role, "text": text, "at": _now().isoformat()}
+    if counted:
+        entry["counted"] = True
     session.transcript = (session.transcript or []) + [entry]
     if len(session.transcript) > _MAX_TRANSCRIPT_TURNS:
         session.transcript = session.transcript[-_MAX_TRANSCRIPT_TURNS:]
+
+
+def _visitor_said(db: AsyncSession, business: Business, session: WebSession, text: str) -> None:
+    """
+    A visitor who has not given a phone or email yet: the message is kept on the session, and counted now - the
+    same one-per-message count every channel bills on (shared/channels/ingest.py). Marked, so saving it later
+    when they do give their details does not count it again.
+    """
+    usage.record(
+        business_id=business.id, event_type=UsageEventType.message_processed, channel=Channel.web.value,
+        quantity=1, unit="message", source_type="web_session", source_id=session.id, db=db,
+    )
+    _append_transcript(session, role="user", text=text, counted=True)
+
+
+class _Meter:
+    """What this one widget turn's model calls cost KROVA - every reply path reads the stream through it."""
+
+    __slots__ = ("paise",)
+
+    def __init__(self) -> None:
+        self.paise = 0
+
+    async def stream(self, context):
+        async for ev in agent_module.stream_reply(context):
+            if isinstance(ev, agent_module.ReplyDone):
+                self.paise += ev.cost_paise or 0
+            yield ev
 
 
 def _transcript_as_recent(session: WebSession) -> list[dict]:
@@ -138,6 +170,7 @@ async def promote_session(
             occurred_at=occurred_at,
             db=db,
             enqueue_analysis=(direction == Direction.inbound),
+            already_counted=bool(entry.get("counted")),
         )
     session.transcript = []
 
@@ -215,7 +248,7 @@ async def earlier_question(db: AsyncSession, session: WebSession, text: str) -> 
     return latest.id if latest is not None and (latest.content or "").strip() == text.strip() else None
 
 
-async def _in_the_right_script(context, reply_text: str) -> str:
+async def _in_the_right_script(context, reply_text: str, meter: _Meter | None = None) -> str:
     """
     A reply in the wrong script (an English question answered in Devanagari) is written once more with the mistake
     named. Only a plain reply is swapped - a second answer that books or hands over is not taken, since nothing it
@@ -229,7 +262,7 @@ async def _in_the_right_script(context, reply_text: str) -> str:
     logger.info("web reply came back in the wrong script (want %s) - asking again", want)
     context.language_retry = True
     try:
-        events = agent_module.stream_reply(context)
+        events = (meter or _Meter()).stream(context)
         first = await events.__anext__()
         chunks: list[str] = []
         async for ev in events:
@@ -254,6 +287,28 @@ async def generate_reply(
     already_stored: uuid.UUID | None = None, reply_language: str | None = None,
 ) -> ReplyOutcome:
     """
+    One widget turn. What its model calls cost is kept per business, like every other channel's replies
+    (services/workers/respond.py) - so what a website costs KROVA can be read back.
+    """
+    meter = _Meter()
+    outcome = await _generate_reply(
+        db, business=business, session=session, text=text, already_stored=already_stored,
+        reply_language=reply_language, meter=meter,
+    )
+    if meter.paise > 0:
+        usage.record(
+            business_id=business.id, event_type=UsageEventType.ai_reply_generated, channel=Channel.web.value,
+            quantity=1, unit="call", krova_cost_paise=meter.paise, source_type="web_session", source_id=session.id,
+            db=db,
+        )
+    return outcome
+
+
+async def _generate_reply(
+    db: AsyncSession, *, business: Business, session: WebSession, text: str, meter: _Meter,
+    already_stored: uuid.UUID | None = None, reply_language: str | None = None,
+) -> ReplyOutcome:
+    """
     `already_stored`: this question is already a stored message (asked again with the visitor's details).
     `reply_language`: the site's "Replies in" rule ("auto" | "en" | "hi"), shared/ai/reply_language.py.
     """
@@ -270,7 +325,7 @@ async def generate_reply(
         line = emergency.reply(business, text)
         reason = emergency.reason(phrase)
         if customer is None:
-            _append_transcript(session, role="user", text=text)
+            _visitor_said(db, business, session, text)
             _append_transcript(session, role="assistant", text=line)
         else:
             if not already_stored:
@@ -290,7 +345,7 @@ async def generate_reply(
 
     if team_requests.asks_for_person(text):
         if customer is None:
-            _append_transcript(session, role="user", text=text)
+            _visitor_said(db, business, session, text)
             _append_transcript(session, role="assistant", text=_NEEDS_PERSON_MESSAGE)
             session.needed_person_at = session.needed_person_at or _now()
             return ReplyOutcome(reply_text=_NEEDS_PERSON_MESSAGE, booked=False, needs_contact=True)
@@ -313,11 +368,11 @@ async def generate_reply(
             return ReplyOutcome(reply_text="", booked=False, needs_contact=False, with_person=True)
         context = await agent_context.build(business.id, customer.id, db)
     else:
-        _append_transcript(session, role="user", text=text)
+        _visitor_said(db, business, session, text)
         context = await agent_context.build_anonymous(business.id, _transcript_as_recent(session), db)
     context.reply_language = reply_language or "auto"
 
-    events = agent_module.stream_reply(context)
+    events = meter.stream(context)
     try:
         first = await events.__anext__()
     except StopAsyncIteration:
@@ -425,7 +480,7 @@ async def generate_reply(
             chunks.append(ev.text)
     reply_text = " ".join(chunks).strip() or "Got it."
     if not booked:
-        reply_text = await _in_the_right_script(context, reply_text)
+        reply_text = await _in_the_right_script(context, reply_text, meter)
 
     if customer is not None:
         await _do_ingest(db, business=business, session=session, customer=customer, direction=Direction.outbound, text=reply_text)
