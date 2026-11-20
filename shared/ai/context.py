@@ -19,7 +19,7 @@ exists at all.
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +83,35 @@ MAX_PROPERTIES_IN_CONTEXT = 5
 # How much verbatim history to include. Enough for the thread to make sense,
 # not so much that a chatty customer costs a fortune on every reply.
 RECENT_TURNS = 20
+
+# A quiet gap this long ends a conversation: the next message starts a new one. Only the new one is "the
+# conversation so far" - someone who complained three weeks ago and writes "hi" today is not still complaining.
+# A day matches WhatsApp's own service window. What came before is shown apart, dated, as background.
+CONVERSATION_GAP = timedelta(hours=24)
+EARLIER_TURNS = 6
+
+
+def split_conversation(messages: list, gap: timedelta = CONVERSATION_GAP) -> tuple[list, list]:
+    """
+    (this conversation, the earlier messages shown as background), both oldest first, from messages newest first.
+
+    This conversation runs back from the latest message until a quiet gap longer than `gap`, at most RECENT_TURNS
+    messages. Earlier is the EARLIER_TURNS messages before that gap - empty when there was no gap in what was read.
+    """
+    current: list = []
+    earlier: list = []
+    gap_found = False
+    newer = None
+    for m in messages:
+        if not gap_found and newer is not None and newer.occurred_at - m.occurred_at > gap:
+            gap_found = True
+        if not gap_found:
+            if len(current) < RECENT_TURNS:
+                current.append(m)
+        elif len(earlier) < EARLIER_TURNS:
+            earlier.append(m)
+        newer = m
+    return current[::-1], earlier[::-1]
 
 
 
@@ -200,6 +229,9 @@ class AgentContext:
     # model has to fill in via share_carousel_values; empty if there are none.
     whatsapp_carousels: list[dict] = field(default_factory=list)
     recent: list[dict] = field(default_factory=list)
+    # Messages from before the last quiet gap (split_conversation) - a finished conversation, shown dated and apart
+    # from `recent` so it is read as background. Same shape as recent plus "date". Never used to pick the topic.
+    earlier: list[dict] = field(default_factory=list)
     open_commitments: list[dict] = field(default_factory=list)
     # Who pays for this customer, and who they pay for - with what is still
     # owed on each person they pay for, so a parent asking "Aarav ki kitni
@@ -569,6 +601,15 @@ class AgentContext:
         """The growing half - see render_static. Starts with whatever the latest message looked up."""
         lookup = self.render_lookup()
         lines = [lookup] if lookup else []
+        earlier = getattr(self, "earlier", None) or []
+        if earlier:
+            lines.append(
+                "\n---\n\nAn earlier conversation with them, already over - background only. Do not continue it, "
+                "answer it again, or bring it up yourself; use it only if what they say now is about it:"
+            )
+            for turn in earlier:
+                speaker = "Customer" if turn["direction"] == "inbound" else "You"
+                lines.append(f"[{turn['date']}] [{turn['channel']}] {speaker}: {turn['text']}")
         lines.append("\n---\n\nThe conversation so far:")
         for turn in self.recent:
             speaker = "Customer" if turn["direction"] == "inbound" else "You"
@@ -757,9 +798,9 @@ async def build(
         select(Message)
         .where(Message.customer_id == customer_id)
         .order_by(Message.occurred_at.desc())
-        .limit(RECENT_TURNS)
+        .limit(RECENT_TURNS + EARLIER_TURNS)
     )
-    messages = list(rows.scalars().all())[::-1]
+    messages, earlier_messages = split_conversation(list(rows.scalars().all()))
 
     knowledge = await db.execute(live_knowledge_query(business_id))
     knowledge_items = fee_list.usable(list(knowledge.scalars().all()), business)
@@ -1064,6 +1105,18 @@ async def build(
             for m in messages
             if (m.content or "").strip()
         ],
+        earlier=[
+            {
+                "channel": m.channel.value if hasattr(m.channel, "value") else m.channel,
+                "direction": (
+                    m.direction.value if hasattr(m.direction, "value") else m.direction
+                ),
+                "text": (m.content or "").strip()[:300],
+                "date": m.occurred_at.strftime("%d %b %Y"),
+            }
+            for m in earlier_messages
+            if (m.content or "").strip()
+        ],
         open_commitments=[
             {
                 "direction": (
@@ -1079,7 +1132,7 @@ async def build(
         pays_for=pays_for,
         key_dates=key_dates,
         no_show_count=no_show_count,
-        context_message_ids=[m.id for m in messages],
+        context_message_ids=[m.id for m in earlier_messages + messages],
         products=await _order_products(db, business),
     )
 

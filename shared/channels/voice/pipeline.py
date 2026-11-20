@@ -605,6 +605,8 @@ class CallPipeline:
             agent_context.allow_actions(
                 self._context_cache, await self.db.get(Business, self.route.business_id), "voice",
             )
+        # A call answers from this call alone, as it always has - earlier text conversations stay out of it.
+        self._context_cache.earlier = []
         # The turns as this call has actually heard them, in the shape
         # AgentContext.recent already uses.
         self._context_cache.recent = [
