@@ -167,6 +167,16 @@ DO NOT record these. They are not promises:
 - Pleasantries: greetings, thanks, apologies
 - Hypotheticals: "if we go ahead, we'd pay in 30 days"
 - Vague intentions with no obligation: "we'll be in touch sometime"
+- Requests and wishes: "I want to book a session", "mujhe course join karna
+  hai", "can I come tomorrow?" - wanting something is not promising it
+- A time offered for a booking that is not confirmed: "kal 1 baje" in reply to
+  "when suits you?" - the booking is recorded by itself once it is made
+- What the business asked the customer to do: "please pay the token" - only
+  the customer plainly agreeing ("haan, kal kar dunga") is a promise
+
+Write each description as the promise itself ("Will pay Rs 2,000 by Friday"),
+never as a wish ("Wants to book a session") - if it only reads as a wish, it
+is not a promise and does not belong in the list.
 
 Judgement, in order of importance:
 
@@ -402,8 +412,20 @@ def parse_items(raw, valid_ids: set[str], now: datetime) -> tuple[list[Extracted
                 due_at_explicit=bool(item.get("due_at_explicit")),
                 source_message_ids=[uuid.UUID(c) for c in kept],
                 source_quote=(item.get("source_quote") or "").strip(),
-                confidence=_as_confidence(item.get("confidence")),
+                confidence=_reads_as_wish_capped(
+                    (item.get("description") or ""), _as_confidence(item.get("confidence"))
+                ),
             )
         )
 
     return found, rejected
+
+
+# A request written down as if it were a promise - "Customer wants to book a session with the team tomorrow at 1pm"
+# was saved as an open they-owe. Kept, but below CONFIRM_THRESHOLD, so the owner says yes before anything acts on it.
+_WISH_WORDS = ("wants to", "want to", "would like to", "wishes to", "is interested in", "are interested in")
+
+
+def _reads_as_wish_capped(description: str, confidence: float) -> float:
+    text = description.lower()
+    return min(confidence, 0.5) if any(w in text for w in _WISH_WORDS) else confidence

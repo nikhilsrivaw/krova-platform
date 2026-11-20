@@ -231,3 +231,31 @@ def test_compression_keeps_about_apart_and_says_no_money(monkeypatch):
     assert profile.preferences == {"language": "Hinglish", "about": "Nikhil, writes in Hinglish."}
     rule = compression.SUMMARY_TOOL["input_schema"]["properties"]["about"]["description"]
     assert "NEVER money" in rule and "No judgement" in rule
+
+
+# ── a wish is not a promise ──
+
+from shared.ai import commitments as extractor  # noqa: E402
+
+
+def _item(description, confidence=0.9):
+    mid = "11111111-1111-1111-1111-111111111111"
+    return {"direction": "they_owe", "kind": "meeting", "description": description,
+            "source_message_ids": [mid], "source_quote": "x", "confidence": confidence}, {mid}
+
+
+def test_a_wish_written_as_a_commitment_waits_for_the_owner():
+    item, ids = _item("Customer wants to book a session with the team tomorrow at 1pm")
+    found, _ = extractor.parse_items([item], ids, NOW)
+    assert found[0].confidence < extractor.CONFIRM_THRESHOLD
+
+
+def test_a_real_promise_keeps_its_confidence():
+    item, ids = _item("Will pay Rs 2,000 by Friday")
+    found, _ = extractor.parse_items([item], ids, NOW)
+    assert found[0].confidence == 0.9
+
+
+def test_the_extractor_is_told_wishes_are_not_promises():
+    assert "wanting something is not promising it" in extractor.SYSTEM
+    assert "never as a wish" in extractor.SYSTEM
