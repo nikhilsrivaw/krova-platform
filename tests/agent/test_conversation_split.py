@@ -13,9 +13,43 @@ from shared.ai import context as ctx  # noqa: E402
 NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
 
 
-def _msgs(*ages_hours):
-    """Messages newest first, as build() reads them, each `age` hours before NOW."""
-    return [SimpleNamespace(id=i, occurred_at=NOW - timedelta(hours=h)) for i, h in enumerate(ages_hours)]
+def _msgs(*ages_hours, channel="whatsapp"):
+    """Inbound messages newest first, as build() reads them, each `age` hours before NOW."""
+    return [
+        SimpleNamespace(id=i, occurred_at=NOW - timedelta(hours=h), channel=channel, direction="inbound")
+        for i, h in enumerate(ages_hours)
+    ]
+
+
+def _m(id, age_hours, channel, direction):
+    return SimpleNamespace(id=id, occurred_at=NOW - timedelta(hours=age_hours), channel=channel, direction=direction)
+
+
+def test_a_reminder_on_another_channel_is_not_what_a_website_hi_answers():
+    # 1 Nov website chat, a WhatsApp "your payment is pending" this morning, then "hii" in the website chat.
+    messages = [
+        _m("hi", 0, "web", "inbound"),
+        _m("reminder", 0.6, "whatsapp", "outbound"),
+        _m("old_reply", 450, "web", "outbound"),
+        _m("old_ask", 450.1, "web", "inbound"),
+    ]
+    current, earlier = ctx.split_conversation(messages)
+    assert [m.id for m in current] == ["hi"]
+    assert [m.id for m in earlier] == ["old_ask", "old_reply", "reminder"]
+
+
+def test_a_reply_to_a_reminder_on_the_same_channel_is_the_same_conversation():
+    messages = [_m("haan", 0, "whatsapp", "inbound"), _m("reminder", 2, "whatsapp", "outbound")]
+    current, earlier = ctx.split_conversation(messages)
+    assert [m.id for m in current] == ["reminder", "haan"] and earlier == []
+
+
+def test_other_channel_chatter_does_not_bridge_a_gap():
+    messages = [_m("now", 0, "web", "inbound"), _m("wa1", 20, "whatsapp", "inbound"),
+                _m("wa2", 40, "whatsapp", "inbound"), _m("web_old", 60, "web", "inbound")]
+    current, earlier = ctx.split_conversation(messages)
+    assert [m.id for m in current] == ["now"]
+    assert "web_old" in [m.id for m in earlier]
 
 
 def test_a_long_gap_starts_a_new_conversation():
@@ -58,12 +92,29 @@ OLD = [
 NEW = [{"channel": "whatsapp", "direction": "inbound", "text": "hi"}]
 
 
-def test_the_earlier_conversation_is_shown_dated_and_apart():
-    out = _context(NEW, OLD).render_conversation()
-    assert out.index("An earlier conversation") < out.index("[30 Oct 2026] [whatsapp] Customer: order kharab aaya")
+ASKS = [{"channel": "whatsapp", "direction": "inbound", "text": "mera refund kab aayega"}]
+
+
+def test_the_earlier_conversation_is_shown_dated_and_apart_once_they_raise_it():
+    out = _context(ASKS, OLD).render_conversation()
+    assert out.index("Earlier messages with them") < out.index("[30 Oct 2026] [whatsapp] Customer: order kharab aaya")
     assert out.index("order kharab aaya") < out.index("The conversation so far:")
-    after = out.split("The conversation so far:")[1]
-    assert "refund" not in after and "Customer: hi" in after
+    assert "may have changed since" in out and ctx.NOTHING_RAISED not in out
+
+
+def test_a_plain_hi_gets_no_old_messages_and_is_told_not_to_bring_up_dues():
+    out = _context(NEW, OLD).render_conversation()
+    assert "order kharab aaya" not in out and "Earlier messages with them" not in out
+    assert ctx.NOTHING_RAISED in out
+    # The reply-language line stays last.
+    assert out.index(ctx.NOTHING_RAISED) < out.index("Reply language")
+
+
+def test_a_reminder_that_started_the_conversation_may_be_talked_about():
+    started = [{"channel": "whatsapp", "direction": "outbound", "text": "Your payment of Rs 500 is pending"},
+               {"channel": "whatsapp", "direction": "inbound", "text": "hii"}]
+    assert "money" in ctx.raised_topics(_context(started, []))
+    assert ctx.NOTHING_RAISED not in _context(started, []).render_conversation()
 
 
 def test_the_topic_comes_from_this_conversation_only():
@@ -73,7 +124,7 @@ def test_the_topic_comes_from_this_conversation_only():
 
 def test_no_earlier_block_without_a_gap():
     out = _context(NEW, []).render_conversation()
-    assert "An earlier conversation" not in out
+    assert "Earlier messages with them" not in out
     assert out.startswith("\n---\n\nThe conversation so far:")
 
 
@@ -150,3 +201,33 @@ def test_team_matters_say_open_or_sorted_from_the_record():
     assert "still open, with the team" in lines[0] and "Fees" in lines[0]
     assert "sorted on" in lines[1] and "Order kharab aaya" in lines[1]
     assert "Refund" in lines[2] and not any("spam" in l or ": x" in l for l in lines)
+
+
+# ── the AI reads who they are, not the staff summary of what they owe ──
+
+from shared.ai import compression  # noqa: E402
+
+
+def test_the_ai_reads_about_not_the_staff_summary():
+    intel = SimpleNamespace(summary="The Rs 500 token fee remains pending.", preferences={"about": "Nikhil, in touch since Oct, writes in Hinglish."})
+    assert ctx.customer_about(intel) == "Nikhil, in touch since Oct, writes in Hinglish."
+    assert ctx.customer_about(SimpleNamespace(summary="Rs 500 pending", preferences={})) is None
+    assert ctx.customer_about(None) is None
+
+
+def test_compression_keeps_about_apart_and_says_no_money(monkeypatch):
+    async def complete(**kw):
+        return SimpleNamespace(cost_paise=3, tool_input={
+            "payments_claimed_by_customer": [], "payments_confirmed_by_business": [],
+            "summary": "Owes Rs 500 token fee.", "about": "Nikhil, writes in Hinglish.",
+            "preferences": {"language": "Hinglish"}, "health_score": 50, "reasoning": "x",
+        })
+
+    monkeypatch.setattr(compression.client, "complete", complete)
+    messages = [{"id": i, "direction": "inbound", "channel": "web", "text": f"m{i}", "occurred_at": NOW} for i in range(5)]
+    profile = asyncio.run(compression.compress(messages=messages, commitments=[], customer_name="Nikhil",
+                                               first_seen=NOW, business_context="Aqirox", now=NOW))
+    assert profile.summary == "Owes Rs 500 token fee."
+    assert profile.preferences == {"language": "Hinglish", "about": "Nikhil, writes in Hinglish."}
+    rule = compression.SUMMARY_TOOL["input_schema"]["properties"]["about"]["description"]
+    assert "NEVER money" in rule and "No judgement" in rule

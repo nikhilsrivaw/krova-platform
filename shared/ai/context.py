@@ -97,24 +97,36 @@ def split_conversation(messages: list, gap: timedelta = CONVERSATION_GAP) -> tup
     """
     (this conversation, the earlier messages shown as background), both oldest first, from messages newest first.
 
-    This conversation runs back from the latest message until a quiet gap longer than `gap`, at most RECENT_TURNS
-    messages. Earlier is the EARLIER_TURNS messages before that gap - empty when there was no gap in what was read.
+    This conversation is on the channel the customer last wrote on, running back until a quiet gap longer than `gap`
+    on that channel, at most RECENT_TURNS messages. Anything else - before the gap, or on another channel (a WhatsApp
+    reminder is not what a "hi" in the website chat is answering) - is earlier, the newest EARLIER_TURNS of it.
     """
+    channel = next((m.channel for m in messages if m.direction == Direction.inbound), None)
+    if channel is None and messages:
+        channel = messages[0].channel
     current: list = []
     earlier: list = []
     gap_found = False
     newer = None
     for m in messages:
-        if not gap_found and newer is not None and newer.occurred_at - m.occurred_at > gap:
-            gap_found = True
-        if not gap_found:
-            if len(current) < RECENT_TURNS:
-                current.append(m)
-        elif len(earlier) < EARLIER_TURNS:
+        if m.channel == channel and not gap_found:
+            if newer is not None and newer.occurred_at - m.occurred_at > gap:
+                gap_found = True
+            else:
+                newer = m
+                if len(current) < RECENT_TURNS:
+                    current.append(m)
+                continue
+        if len(earlier) < EARLIER_TURNS:
             earlier.append(m)
-        newer = m
     return current[::-1], earlier[::-1]
 
+
+
+def customer_about(intelligence) -> str | None:
+    """The AI's note on who this customer is - never the staff summary (see build())."""
+    about = ((getattr(intelligence, "preferences", None) or {}) if intelligence else {}).get("about")
+    return about.strip() if isinstance(about, str) and about.strip() else None
 
 
 # How long a sorted request stays in view - long enough for "it happened again", short enough to fade.
@@ -676,11 +688,16 @@ class AgentContext:
         """The growing half - see render_static. Starts with whatever the latest message looked up."""
         lookup = self.render_lookup()
         lines = [lookup] if lookup else []
-        earlier = getattr(self, "earlier", None) or []
+        # Old messages carry old news ("your Rs 500 is pending" stays written after it is paid), so they are held back
+        # like the records until the customer raises a subject - and even then the records, not these, say what is true.
+        raised = raised_topics(self)
+        earlier = (getattr(self, "earlier", None) or []) if raised else []
         if earlier:
             lines.append(
-                "\n---\n\nAn earlier conversation with them, already over - background only. Do not continue it, "
-                "answer it again, or bring it up yourself; use it only if what they say now is about it:"
+                "\n---\n\nEarlier messages with them - from before, or on another channel - background only, not "
+                "what they are writing about now. Do not continue them, answer them again, or bring them up yourself; "
+                "use them only if what they say now is about them. What these say was pending, booked or owed may "
+                "have changed since - only the records above say what is true now:"
             )
             for turn in earlier:
                 speaker = "Customer" if turn["direction"] == "inbound" else "You"
@@ -689,6 +706,8 @@ class AgentContext:
         for turn in self.recent:
             speaker = "Customer" if turn["direction"] == "inbound" else "You"
             lines.append(f"[{turn['channel']}] {speaker}: {turn['text']}")
+        if self.recent and not raised:
+            lines.append(f"\n{NOTHING_RAISED}")
         language = self.language_line()
         if language:
             lines.append(f"\n{language}")
@@ -706,6 +725,29 @@ ONLY_WHAT_IS_ON_FILE = (
     "not reply that the office will confirm: that answers nothing and the business never hears the question was asked. You "
     "can send nothing but these words: if they ask for a link, form, receipt or document that is not written out above, "
     "escalate and name it, and never say it has been sent."
+)
+
+def raised_topics(context) -> set[str]:
+    """
+    What may be talked about from their records: what their last two messages raised, or what our own message began
+    this conversation with (a reminder or campaign they are answering, an outbound call's opening line).
+    """
+    from shared.ai import actions
+
+    recent = getattr(context, "recent", None) or []
+    said = [t["text"] for t in recent if t["direction"] == "inbound"][-2:]
+    if recent and recent[0]["direction"] == "outbound":
+        said.append(recent[0]["text"])
+    return actions.topics(said)
+
+
+# Beside their message, when they have not raised a payment, booking or order and no reminder of ours started
+# this: replies kept telling a customer their Rs 500 was pending, on a plain "hi", after it could long have been paid.
+NOTHING_RAISED = (
+    "They have not asked about their own payments, dues, bookings or orders, and this conversation did not start with "
+    "a reminder about one. Do not mention what they owe, what is pending or what they have booked - not as a greeting, "
+    "a nudge or a reminder, even if an earlier message did. Answer only what they wrote; offering something new they "
+    "ask for is fine."
 )
 
 # Plenty for a question like "what courses do you have?", and few enough for one line of a reply.
@@ -1162,7 +1204,10 @@ async def build(
             for name, spec in whatsapp_carousel_specs.items()
         ],
         customer_name=customer.display_name if customer else None,
-        customer_summary=intelligence.summary if intelligence else None,
+        # Who they are only (compression.py "about"). The staff summary also says what is owed and pending, and read
+        # before every reply it pulled each "hi" back to old dues - those come from the records, once they raise them.
+        # A profile written before "about" existed gives nothing until it is next recompressed.
+        customer_summary=customer_about(intelligence),
         customer_since=(
             customer.first_seen_at.strftime("%d %B %Y")
             if customer and customer.first_seen_at

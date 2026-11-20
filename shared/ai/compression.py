@@ -81,6 +81,17 @@ SUMMARY_TOOL = {
                     "no narration of the conversation."
                 ),
             },
+            "about": {
+                "type": "string",
+                "description": (
+                    "One or two short sentences for the assistant that replies to them, read before every reply: "
+                    "who they are and nothing else - name, roughly how long they have been in touch, the language "
+                    "they write in, what kind of thing they come to this business for. NEVER money, fees, dues, "
+                    "payments, bookings, orders, requests, complaints, reminders, or anything pending or unresolved "
+                    "- the assistant reads those from the records when the customer raises them. No judgement of how "
+                    "they write or behave."
+                ),
+            },
             "preferences": {
                 "type": "object",
                 "description": (
@@ -251,6 +262,11 @@ async def compress(
     # Drop empty values rather than storing {"language": ""}, which reads as a
     # fact we established when it is the opposite.
     preferences = {k: v for k, v in preferences.items() if isinstance(v, str) and v.strip()}
+    # What the replying AI reads about them (shared/ai/context.py) - kept apart from `summary`, which is for staff
+    # and carries what is owed and pending. Stored with the preferences so no new column is needed.
+    about = (result.get("about") or "").strip()
+    if about:
+        preferences["about"] = about
 
     return Profile(
         summary=summary,
