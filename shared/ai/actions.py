@@ -547,27 +547,33 @@ async def _tell_team(db, *, business, customer, text: str) -> None:
 # What they have on file (bookings, orders, dues, dates) is only shown to the AI once they bring the subject up in
 # this conversation - so it answers what they ask now instead of steering every call back to last week's booking.
 
+# Words that name the subject itself. Everyday words that turn up in any question ("kal", "time", "kitna", "link",
+# "number", "plan", "class", "aaya") are left out: "kal aa sakta hu?" or "BA ki class kab hai?" is not about last
+# month's booking, and opening the record for them is what pulled replies back to old matters.
 TOPIC_WORDS: dict[str, set[str]] = {
     "booking": {
-        "booking", "book", "booked", "appointment", "appt", "slot", "meeting", "meet", "visit", "viewing", "consult",
-        "consultation", "checkup", "reschedule", "postpone", "prepone", "cancel", "timing", "time", "date", "kal",
-        "parso", "aaj", "tomorrow", "today", "kab", "milna", "mulakat", "mulaqat", "schedule", "session", "class",
-        "बुकिंग", "अपॉइंटमेंट", "समय", "कल", "मिलना",
+        "booking", "book", "booked", "appointment", "appt", "slot", "meeting", "visit", "viewing", "consult",
+        "consultation", "checkup", "reschedule", "postpone", "prepone", "cancel", "milna", "mulakat", "mulaqat",
+        "schedule", "बुकिंग", "अपॉइंटमेंट", "मिलना",
     },
     "order": {
         "order", "orders", "delivery", "deliver", "delivered", "parcel", "courier", "shipped", "shipping", "tracking",
-        "dispatch", "cod", "product", "item", "return", "refund", "buy", "kharid", "kharidna", "mangwa", "mangwana",
-        "saman", "samaan", "maal", "pahunch", "aaya", "aayega", "cancel", "ऑर्डर", "डिलीवरी", "सामान",
+        "dispatch", "cod", "return", "refund", "saman", "samaan", "maal", "pahunch", "cancel", "ऑर्डर", "डिलीवरी",
+        "सामान",
     },
     "money": {
-        "payment", "pay", "paid", "fees", "fee", "due", "dues", "baaki", "baki", "bakaya", "balance", "amount", "kitna",
-        "kitne", "paisa", "paise", "rupees", "rs", "invoice", "bill", "receipt", "upi", "link", "emi", "owe", "pending",
-        "outstanding", "udhar", "udhaar", "hisab", "hisaab", "refund", "भुगतान", "फीस", "बाकी", "पैसे",
+        "payment", "pay", "paid", "fees", "fee", "due", "dues", "baaki", "baki", "bakaya", "balance", "paisa", "paise",
+        "invoice", "bill", "receipt", "upi", "emi", "owe", "pending", "outstanding", "udhar", "udhaar", "hisab",
+        "hisaab", "refund", "भुगतान", "फीस", "बाकी", "पैसे",
     },
-    "token": {"token", "queue", "line", "number", "turn", "baari", "bari", "wait", "waiting", "टोकन", "नंबर"},
-    "case": {"case", "claim", "insurance", "status", "hearing", "file", "matter", "property", "flat", "plot", "site"},
-    "dates": {"renewal", "renew", "expiry", "expire", "expired", "membership", "plan", "validity", "khatam", "date",
-              "subscription"},
+    "token": {"token", "queue", "baari", "bari", "टोकन"},
+    "case": {"case", "claim", "insurance", "status", "hearing", "property", "flat", "plot"},
+    "dates": {"renewal", "renew", "expiry", "expire", "expired", "membership", "validity", "subscription"},
+    # Something they raised with the team before - a complaint, a problem, a request to talk to someone.
+    "issue": {
+        "complaint", "complain", "complained", "shikayat", "shikayaat", "problem", "issue", "update", "status",
+        "solve", "solved", "resolve", "resolved", "escalate", "callback", "शिकायत", "समस्या", "अपडेट",
+    },
 }
 
 

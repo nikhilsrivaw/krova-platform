@@ -46,12 +46,14 @@ from shared.db.models import (
     CustomerIntelligence,
     Direction,
     Doctor,
+    Escalation,
     InstagramCarousel,
     InsuranceClaim,
     KnowledgeItem,
     Message,
     MessageTemplate,
     TemplateStatus,
+    TeamRequest,
     Order,
     Property,
 )
@@ -113,6 +115,66 @@ def split_conversation(messages: list, gap: timedelta = CONVERSATION_GAP) -> tup
         newer = m
     return current[::-1], earlier[::-1]
 
+
+
+# How long a sorted request stays in view - long enough for "it happened again", short enough to fade.
+TEAM_MATTER_DAYS = 30
+TEAM_MATTERS_SHOWN = 4
+
+
+def _short(text: str | None, limit: int = 200) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+async def load_team_matters(db: AsyncSession, customer_id: uuid.UUID, now: datetime | None = None) -> list[str]:
+    """
+    One line per thing this customer raised with the team - still open, or sorted in the last TEAM_MATTER_DAYS -
+    newest first. Read from the requests and escalations themselves, so "open" and "sorted" are never a guess. The
+    team's closing notes stay out: they are written for staff, not to be read to the customer.
+    """
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(days=TEAM_MATTER_DAYS)
+    found: list[tuple[datetime, str]] = []
+
+    requests = await db.execute(
+        select(TeamRequest)
+        .where(
+            TeamRequest.customer_id == customer_id,
+            or_(TeamRequest.status.in_(("open", "taken")), TeamRequest.done_at >= since),
+        )
+        .order_by(TeamRequest.created_at.desc())
+        .limit(TEAM_MATTERS_SHOWN)
+    )
+    for r in requests.scalars().all():
+        if r.status in ("open", "taken"):
+            state = "still open, with the team"
+        elif r.status == "done" and r.done_at:
+            state = f"sorted on {r.done_at.strftime('%d %b')}"
+        else:
+            continue
+        found.append((r.created_at, f"{r.created_at.strftime('%d %b')}, asked to talk to the team ({state}): {_short(r.what)}"))
+
+    escalations = await db.execute(
+        select(Escalation)
+        .where(
+            Escalation.customer_id == customer_id,
+            or_(Escalation.status.in_(("open", "in_progress")), Escalation.resolved_at >= since),
+        )
+        .order_by(Escalation.created_at.desc())
+        .limit(TEAM_MATTERS_SHOWN)
+    )
+    for e in escalations.scalars().all():
+        if e.status in ("open", "in_progress"):
+            state = "still open, with the team"
+        elif e.status == "resolved" and e.resolved_at:
+            state = f"sorted on {e.resolved_at.strftime('%d %b')}"
+        else:
+            continue
+        found.append((e.created_at, f"{e.created_at.strftime('%d %b')}, passed to the team ({state}): {_short(e.request_summary or e.reason)}"))
+
+    found.sort(key=lambda x: x[0], reverse=True)
+    return [line for _, line in found[:TEAM_MATTERS_SHOWN]]
 
 
 def _amount_text(c) -> str | None:
@@ -232,6 +294,9 @@ class AgentContext:
     # Messages from before the last quiet gap (split_conversation) - a finished conversation, shown dated and apart
     # from `recent` so it is read as background. Same shape as recent plus "date". Never used to pick the topic.
     earlier: list[dict] = field(default_factory=list)
+    # What they raised with the team (Talk to team requests, escalations): still open, or sorted in the last
+    # TEAM_MATTER_DAYS - one rendered line each, held back until they bring up a problem or that subject.
+    team_matters: list[str] = field(default_factory=list)
     open_commitments: list[dict] = field(default_factory=list)
     # Who pays for this customer, and who they pay for - with what is still
     # owed on each person they pay for, so a parent asking "Aarav ki kitni
@@ -489,6 +554,16 @@ class AgentContext:
                 for p in self.pays_for:
                     owed = "; ".join(p["owed"]) if p["owed"] else "nothing outstanding on record"
                     lines.append(f"- {p['name'] or 'someone'} ({owed})")
+
+        team_matters = getattr(self, "team_matters", None) or []
+        if team_matters and show("things raised with the team", "issue", "order", "money", "case"):
+            lines.append(
+                "\nRaised with the team before - the only source of truth on whether it is open or sorted:\n"
+                + "\n".join(f"- {m}" for m in team_matters)
+                + "\nIf they ask about one still open, say it is with the team and they will hear back - never "
+                "promise a time or say it is sorted. If one already sorted has come up again, treat it as new and "
+                "pass it to the team."
+            )
 
         if self.open_commitments and show("payments and promises", "money", "order", "booking"):
             lines.append("\nOutstanding between you:")
@@ -1133,6 +1208,7 @@ async def build(
         key_dates=key_dates,
         no_show_count=no_show_count,
         context_message_ids=[m.id for m in earlier_messages + messages],
+        team_matters=await load_team_matters(db, customer_id),
         products=await _order_products(db, business),
     )
 

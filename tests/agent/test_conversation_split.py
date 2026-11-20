@@ -75,3 +75,78 @@ def test_no_earlier_block_without_a_gap():
     out = _context(NEW, []).render_conversation()
     assert "An earlier conversation" not in out
     assert out.startswith("\n---\n\nThe conversation so far:")
+
+
+# ── everyday words do not open old records; problems raised with the team are shown from their real status ──
+
+import asyncio  # noqa: E402
+
+import pytest  # noqa: E402
+
+from shared.ai import actions  # noqa: E402
+
+
+@pytest.mark.parametrize("text", [
+    "kal aa sakta hu?", "BA ki class kab hai?", "aaj time kya hai", "kitna lagega", "link bhejo", "aapka number do",
+    "koi plan hai?", "result kab aayega",
+])
+def test_everyday_words_open_nothing(text):
+    assert actions.topics([text]) == set()
+
+
+@pytest.mark.parametrize("text, topic", [
+    ("meri complaint ka kya hua", "issue"), ("koi update?", "issue"), ("शिकायत की थी", "issue"),
+    ("mera appointment cancel karo", "booking"), ("fees kitni baaki hai", "money"), ("order nahi pahuncha", "order"),
+])
+def test_naming_the_subject_still_opens_it(text, topic):
+    assert topic in actions.topics([text])
+
+
+def _with_matters(text):
+    c = _context([{"channel": "whatsapp", "direction": "inbound", "text": text}], [])
+    c.team_matters = ["12 Nov, passed to the team (still open, with the team): order kharab aaya"]
+    return c.render_static()
+
+
+def test_a_raised_problem_is_held_back_until_they_bring_it_up():
+    assert "order kharab aaya" not in _with_matters("hi")
+    assert "things raised with the team" in _with_matters("hi")
+    shown = _with_matters("meri complaint ka kya hua?")
+    assert "Raised with the team before" in shown and "order kharab aaya" in shown and "never promise a time" in shown
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _Db:
+    def __init__(self, *results):
+        self.results = list(results)
+
+    async def execute(self, _query):
+        return _Rows(self.results.pop(0))
+
+
+def test_team_matters_say_open_or_sorted_from_the_record():
+    t = lambda d: NOW - timedelta(days=d)  # noqa: E731
+    requests = [
+        SimpleNamespace(status="open", what="Fees ke baare mein baat karni hai", created_at=t(1), done_at=None),
+        SimpleNamespace(status="done", what="Refund", created_at=t(10), done_at=t(8)),
+        SimpleNamespace(status="cancelled", what="x", created_at=t(2), done_at=t(2)),
+    ]
+    escalations = [
+        SimpleNamespace(status="resolved", request_summary="Order kharab aaya", reason="r", created_at=t(5), resolved_at=t(4)),
+        SimpleNamespace(status="dismissed", request_summary="spam", reason="r", created_at=t(3), resolved_at=t(3)),
+    ]
+    lines = asyncio.run(ctx.load_team_matters(_Db(requests, escalations), "c", now=NOW))
+    assert len(lines) == 3
+    assert "still open, with the team" in lines[0] and "Fees" in lines[0]
+    assert "sorted on" in lines[1] and "Order kharab aaya" in lines[1]
+    assert "Refund" in lines[2] and not any("spam" in l or ": x" in l for l in lines)
