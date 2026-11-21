@@ -352,6 +352,10 @@ class ReadFileOut(BaseModel):
     catalogue_now: int = 0
     bank: list[ReadFaqOut] = []
     bank_room: int = 0
+    # a long PDF read in parts (institution): pages read, pages with no text (scans, photos), found more than fits
+    pages_read: int = 0
+    pages_without_text: int = 0
+    more_than_fits: bool = False
 
 
 def _take_file_read(business: Business) -> int:
@@ -379,14 +383,22 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
     """
     raw = await file.read()
     try:
-        knowledge_reader.media_type_for(file.filename or "", file.content_type)
+        media_type = knowledge_reader.media_type_for(file.filename or "", file.content_type)
     except knowledge_reader.UnreadableFile as exc:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
-    if len(raw) > knowledge_reader.MAX_FILE_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="That file is too large. Keep it under 5 MB.")
     business = await db.get(Business, current_user.business)
     if business is None:
         raise HTTPException(status_code=404, detail="Not found")
+    # A long PDF (a college prospectus) is read in parts - only for a type whose template turns it on.
+    large = media_type in knowledge_reader.PDF_TYPES and bool(
+        knowledge_reader.reading_options(business.vertical or "general").get("large_files")
+    )
+    limit = knowledge_reader.MAX_LARGE_FILE_BYTES if large else knowledge_reader.MAX_FILE_BYTES
+    if len(raw) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"That file is too large. Keep it under {limit // (1024 * 1024)} MB.",
+        )
     # A read that fails below raises, and get_db rolls back on any exception, so a failed read is not counted.
     left = _take_file_read(business)
 
@@ -398,10 +410,15 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
     catalogue_item = by_topic.get(knowledge_lookup.CATALOGUE_TOPIC)
     catalogue_now = len((catalogue_item.extra or {}).get("catalogue") or []) if catalogue_item else 0
     try:
-        reading = await knowledge_reader.read_into_card(
-            raw=raw, filename=file.filename or "", content_type=file.content_type, vertical=vertical, faq_room=faq_room,
-            bank_room=bank_room,
-        )
+        if large:
+            reading = await knowledge_reader.read_large_pdf(
+                raw=raw, filename=file.filename or "", vertical=vertical, faq_room=faq_room, bank_room=bank_room,
+            )
+        else:
+            reading = await knowledge_reader.read_into_card(
+                raw=raw, filename=file.filename or "", content_type=file.content_type, vertical=vertical, faq_room=faq_room,
+                bank_room=bank_room,
+            )
     except knowledge_reader.UnreadableFile as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except AIError as exc:
@@ -433,6 +450,9 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
         catalogue_now=catalogue_now,
         bank=[ReadFaqOut(question=q, answer=a) for q, a in reading.bank],
         bank_room=bank_room,
+        pages_read=reading.pages_read,
+        pages_without_text=reading.pages_without_text,
+        more_than_fits=reading.more_than_fits,
     )
 
 
@@ -543,6 +563,8 @@ class CardOut(BaseModel):
     tokens: int  # what the cards cost the AI to read on every message, roughly
     # Questions businesses of this type often get - offered on Top questions (knowledge_card.suggested_questions).
     suggested_questions: list[str] = []
+    # This type may read a long PDF in parts (its template's file_reading.large_files) - the file reader says so.
+    large_files: bool = False
 
 
 async def _business_vertical(db, business_id: uuid.UUID) -> str:
@@ -587,6 +609,7 @@ async def card(current_user: OwnerOrAdminDep, db: DbDep) -> CardOut:
     )
     return CardOut(
         vertical=vertical, vertical_label=label,
+        large_files=bool(knowledge_reader.reading_options(vertical).get("large_files")),
         fields=[
             CardFieldOut(
                 key=f["key"], title=f["title"], question=f["question"], placeholder=f["placeholder"], kind=f["kind"],

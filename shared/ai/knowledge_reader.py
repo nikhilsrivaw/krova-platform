@@ -9,6 +9,7 @@ Never invents: a field the file does not answer comes back empty, the same disci
 on this platform - drafted, then a person decides.
 """
 
+import asyncio
 import base64
 import io
 import re
@@ -69,6 +70,10 @@ class CardReading:
     # the opened-when-needed knowledge the file also holds (shared/verticals/knowledge_lookup.py)
     catalogue: list[dict[str, str]] = dc_field(default_factory=list)
     bank: list[tuple[str, str]] = dc_field(default_factory=list)
+    # a large PDF read in parts (read_large_pdf): pages read, pages with no text (scans), and found more than fits
+    pages_read: int = 0
+    pages_without_text: int = 0
+    more_than_fits: bool = False
 
 
 class UnreadableFile(Exception):
@@ -303,3 +308,195 @@ async def read_into_card(
     if not values and not faqs and not rows and not bank:
         logger.info("knowledge file read found nothing usable file=%s", filename)
     return CardReading(fields=values, faqs=faqs, truncated=truncated, cost_paise=cost, catalogue=rows, bank=bank)
+
+
+# ── a large PDF, read in parts ─────────────────────────────────────────────────────────────────────────────────────
+#
+# A college prospectus runs to 100-300 pages with fee and eligibility tables. Only a type whose template turns on
+# file_reading.large_files gets this (today: institution). The PDF's text is cut into parts of a few pages, each part is
+# read like a small file, and the findings are merged into one set of suggestions for the same review screen. The file
+# is still read once and not kept, so a reply never pays for the whole document. A 150-page PDF is about 13 parts.
+
+MAX_LARGE_FILE_BYTES = 25 * 1024 * 1024
+MAX_LARGE_PAGES = 400
+PART_CHARS = 30_000  # about 8-10k tokens of input per part, so each answer has room for every row it finds
+PARTS_AT_ONCE = 4
+# Answers asked of one part: 40 short answers plus its courses fit in MAX_OUTPUT_TOKENS, so the reply is never cut off.
+PART_ANSWERS = 40
+# A page with less text than this is a scan, a photo or a blank divider.
+PAGE_TEXT_MIN = 40
+
+
+def reading_options(vertical: str) -> dict:
+    """The template's file_reading block: {"large_files": bool, "guide": str}. Empty for a type that has none."""
+    from shared import verticals
+
+    try:
+        block = verticals.get(vertical).get("file_reading") or {}
+    except verticals.UnknownVertical:
+        return {}
+    return block if isinstance(block, dict) else {}
+
+
+def pdf_pages(raw: bytes, max_pages: int = MAX_LARGE_PAGES) -> list[str]:
+    """Each page's text, in order (PDFium, which keeps Hindi intact; pypdf if PDFium cannot open the file)."""
+    try:
+        import pypdfium2
+
+        doc = pypdfium2.PdfDocument(raw)
+        try:
+            pages: list[str] = []
+            for i in range(min(len(doc), max_pages)):
+                page = doc[i]
+                text_page = page.get_textpage()
+                pages.append((text_page.get_text_range() or "").replace("\r\n", "\n").strip())
+                text_page.close()
+                page.close()
+            return pages
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001 - pypdf is the fallback
+        pass
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise UnreadableFile("That PDF is locked with a password. Upload an unlocked copy.")
+        return [(p.extract_text() or "").strip() for p in reader.pages[:max_pages]]
+    except UnreadableFile:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a broken PDF is the owner's file, not our error
+        raise UnreadableFile("We could not open that PDF.") from exc
+
+
+def page_parts(pages: list[str], part_chars: int = PART_CHARS) -> list[tuple[int, int, str]]:
+    """(first page, last page, text) parts of about part_chars each, cut only between pages. Pages are numbered from 1."""
+    parts: list[tuple[int, int, str]] = []
+    first, last, chunk, size = 0, 0, [], 0
+    for number, text in enumerate(pages, start=1):
+        if len(text) < PAGE_TEXT_MIN:
+            continue
+        if chunk and size + len(text) > part_chars:
+            parts.append((first, last, "\n\n".join(chunk)))
+            chunk, size = [], 0
+        if not chunk:
+            first = number
+        chunk.append(f"[Page {number}]\n{text[:part_chars]}")
+        size += len(text)
+        last = number
+    if chunk:
+        parts.append((first, last, "\n\n".join(chunk)))
+    return parts
+
+
+Part = tuple[dict[str, str], list[tuple[str, str]], list[dict[str, str]], list[tuple[str, str]]]
+
+
+def merge_readings(
+    readings: list[Part], *, faq_room: int, bank_room: int,
+) -> tuple[dict[str, str], list[tuple[str, str]], list[dict[str, str]], list[tuple[str, str]], bool]:
+    """
+    One set of suggestions from the parts, in page order. A card field keeps the first part's answer (the front of a
+    prospectus says who and where). Courses and answers are kept once by name or question; past the room, the rest is
+    dropped and the last value says so.
+    """
+    fields: dict[str, str] = {}
+    faqs: list[tuple[str, str]] = []
+    rows: list[dict[str, str]] = []
+    bank: list[tuple[str, str]] = []
+    seen_q: set[str] = set()
+    seen_rows: set[str] = set()
+    found_q = found_rows = 0
+    for values, part_faqs, part_rows, part_bank in readings:
+        for key, value in values.items():
+            fields.setdefault(key, value)
+        for row in part_rows:
+            name = row["name"].strip().lower()
+            if name in seen_rows:
+                continue
+            seen_rows.add(name)
+            found_rows += 1
+            if len(rows) < knowledge_lookup.CATALOGUE_ROWS_LIMIT:
+                rows.append(row)
+        top = set(part_faqs)
+        for q, a in [*part_faqs, *part_bank]:
+            key = q.strip().lower()
+            if key in seen_q:
+                continue
+            seen_q.add(key)
+            found_q += 1
+            if (q, a) in top and len(faqs) < faq_room:
+                faqs.append((q, a))
+            elif len(bank) < bank_room:
+                bank.append((q, a))
+    more = found_rows > len(rows) or found_q > len(faqs) + len(bank)
+    return fields, faqs, rows, bank, more
+
+
+async def _read_part(
+    first: int, last: int, total: int, text: str, *, fields: list[dict[str, Any]], tool: dict[str, Any], system: str,
+    faq_room: int, bank_room: int,
+) -> tuple[Part, int]:
+    ask = (
+        f"These are pages {first} to {last} of a {total}-page document. Fill what these pages say and leave the rest "
+        "empty - the other pages are read separately. List every course and every answer on these pages. Write in "
+        "English (or Hindi/Hinglish only if the document is in that)."
+    )
+    block = {"type": "text", "text": f"<document>\n{text}\n</document>"}
+    cost = 0
+    for attempt in range(2):
+        note = "" if attempt == 0 else " Your last answer was in French - answer in English."
+        completion = await client.complete(
+            system=system, messages=[{"role": "user", "content": [block, {"type": "text", "text": ask + note}]}],
+            speed="fast", task="knowledge_read_file", tool=tool, max_tokens=MAX_OUTPUT_TOKENS,
+        )
+        cost += completion.cost_paise
+        values, faqs = clean(fields, completion.tool_input, faq_room)
+        if not looks_foreign(values, faqs):
+            rows, bank = clean_lookup(completion.tool_input, bank_room)
+            return (values, faqs, rows, bank), cost
+    logger.warning("large file part kept answering in another language, skipped pages=%s-%s", first, last)
+    return ({}, [], [], []), cost
+
+
+async def read_large_pdf(*, raw: bytes, filename: str, vertical: str, faq_room: int, bank_room: int) -> CardReading:
+    """A long PDF, read in parts a few at a time; one merged set of suggestions for the owner to check. Saves nothing."""
+    if len(raw) > MAX_LARGE_FILE_BYTES:
+        raise UnreadableFile("That file is too large. Keep it under 25 MB.")
+    if not raw:
+        raise UnreadableFile("That file is empty.")
+    pages = pdf_pages(raw)
+    parts = page_parts(pages)
+    if not parts:
+        raise UnreadableFile("This PDF looks like a scan with no text in it. Upload a PDF whose text can be selected.")
+    fields = knowledge_card.fields_for(vertical)
+    faq_room, bank_room = max(0, faq_room), max(0, bank_room)
+    part_room = min(bank_room, PART_ANSWERS)
+    tool = _tool(fields, faq_room, part_room)
+    guide = str(reading_options(vertical).get("guide") or "").strip()
+    system = SYSTEM + (f"\n\nThis kind of document:\n{guide}" if guide else "")
+    gate = asyncio.Semaphore(PARTS_AT_ONCE)
+
+    async def one(part: tuple[int, int, str]) -> tuple[Part, int]:
+        async with gate:
+            return await _read_part(part[0], part[1], len(pages), part[2], fields=fields, tool=tool, system=system,
+                                    faq_room=faq_room, bank_room=part_room)
+
+    results = await asyncio.gather(*(one(p) for p in parts), return_exceptions=True)
+    readings: list[Part] = []
+    cost = failed = 0
+    for (first, last, _), result in zip(parts, results):
+        if isinstance(result, BaseException):
+            failed += 1
+            logger.warning("large file part failed pages=%s-%s (%s)", first, last, type(result).__name__)
+            continue
+        readings.append(result[0])
+        cost += result[1]
+    if not readings:
+        raise next(r for r in results if isinstance(r, BaseException))
+    values, faqs, rows, bank, more = merge_readings(readings, faq_room=faq_room, bank_room=bank_room)
+    logger.info("large file read file=%s pages=%s parts=%s failed=%s cost_paise=%s", filename, len(pages), len(parts), failed, cost)
+    return CardReading(
+        fields=values, faqs=faqs, truncated=failed > 0 or len(pages) >= MAX_LARGE_PAGES, cost_paise=cost,
+        catalogue=rows, bank=bank, pages_read=len(pages),
+        pages_without_text=sum(1 for p in pages if len(p) < PAGE_TEXT_MIN), more_than_fits=more,
+    )

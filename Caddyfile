@@ -8,10 +8,10 @@ api.krova.space {
         Referrer-Policy "strict-origin-when-cross-origin"
         -Server
     }
-    # No request bigger than this reaches the app (the largest upload is 10 MB). Also closes Starlette's unbounded
+    # No request bigger than this reaches the app (the largest upload is a 25 MB prospectus PDF). Also closes Starlette's unbounded
     # url-encoded form parsing (PayU and Plivo post forms).
     request_body {
-        max_size 20MB
+        max_size 30MB
     }
     reverse_proxy app:8000
 }
