@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared import verticals
 from shared.ai import compression
 from shared.ai.client import AIError
 from shared.billing import usage
@@ -54,6 +55,12 @@ async def _business_context(business_id: uuid.UUID, db: AsyncSession) -> str:
     return "\n".join(parts)
 
 
+async def _profiles_kept(business_id: uuid.UUID, db: AsyncSession) -> bool:
+    """False for a type whose template turns customer profiles off (verticals.conversation_options)."""
+    business = await db.get(Business, business_id)
+    return not business or bool(verticals.conversation_options(business.vertical).get("customer_profiles", True))
+
+
 async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
     """
     Rewrite one customer's profile. Returns True if it changed.
@@ -67,6 +74,9 @@ async def compress_customer(customer_id: uuid.UUID, db: AsyncSession) -> bool:
     from shared.billing.guards import plan_blocked
 
     if await plan_blocked(db, customer.business_id):
+        return False
+
+    if not await _profiles_kept(customer.business_id, db):
         return False
 
     # The newest MAX_MESSAGES, oldest first. Ordering ascending before the
@@ -195,6 +205,9 @@ async def queue_stale(business_id: uuid.UUID, db: AsyncSession, *, limit: int = 
     Only what moved. A business with 2,000 customers and 30 active
     conversations should pay for 30 summaries.
     """
+    if not await _profiles_kept(business_id, db):
+        return 0
+
     now = datetime.now(timezone.utc)
 
     rows = await db.execute(

@@ -93,13 +93,16 @@ CONVERSATION_GAP = timedelta(hours=24)
 EARLIER_TURNS = 6
 
 
-def split_conversation(messages: list, gap: timedelta = CONVERSATION_GAP) -> tuple[list, list]:
+def split_conversation(
+    messages: list, gap: timedelta = CONVERSATION_GAP, *, recent_turns: int = RECENT_TURNS,
+    earlier_turns: int = EARLIER_TURNS,
+) -> tuple[list, list]:
     """
     (this conversation, the earlier messages shown as background), both oldest first, from messages newest first.
 
     This conversation is on the channel the customer last wrote on, running back until a quiet gap longer than `gap`
-    on that channel, at most RECENT_TURNS messages. Anything else - before the gap, or on another channel (a WhatsApp
-    reminder is not what a "hi" in the website chat is answering) - is earlier, the newest EARLIER_TURNS of it.
+    on that channel, at most `recent_turns` messages. Anything else - before the gap, or on another channel (a WhatsApp
+    reminder is not what a "hi" in the website chat is answering) - is earlier, the newest `earlier_turns` of it.
     """
     channel = next((m.channel for m in messages if m.direction == Direction.inbound), None)
     if channel is None and messages:
@@ -114,10 +117,10 @@ def split_conversation(messages: list, gap: timedelta = CONVERSATION_GAP) -> tup
                 gap_found = True
             else:
                 newer = m
-                if len(current) < RECENT_TURNS:
+                if len(current) < recent_turns:
                     current.append(m)
                 continue
-        if len(earlier) < EARLIER_TURNS:
+        if len(earlier) < earlier_turns:
             earlier.append(m)
     return current[::-1], earlier[::-1]
 
@@ -911,13 +914,19 @@ async def build(
         )
     ).scalars().all()
 
+    # A type can show a shorter history (its template's "conversation" block, see verticals.conversation_options).
+    talk = verticals.conversation_options(business.vertical if business else None)
+    recent_turns = max(1, int(talk.get("recent_turns", RECENT_TURNS)))
+    earlier_turns = max(0, int(talk.get("earlier_turns", EARLIER_TURNS)))
     rows = await db.execute(
         select(Message)
         .where(Message.customer_id == customer_id)
         .order_by(Message.occurred_at.desc())
-        .limit(RECENT_TURNS + EARLIER_TURNS)
+        .limit(recent_turns + earlier_turns)
     )
-    messages, earlier_messages = split_conversation(list(rows.scalars().all()))
+    messages, earlier_messages = split_conversation(
+        list(rows.scalars().all()), recent_turns=recent_turns, earlier_turns=earlier_turns,
+    )
 
     knowledge = await db.execute(live_knowledge_query(business_id))
     knowledge_items = fee_list.usable(list(knowledge.scalars().all()), business)

@@ -115,6 +115,27 @@ def get(key: str) -> dict:
     return templates[key]
 
 
+def conversation_options(vertical: str | None) -> dict:
+    """
+    The template's "conversation" block, or {} for a type that has none (every key then keeps its default):
+
+      recent_turns       - messages of this conversation shown with each reply (default context.RECENT_TURNS)
+      earlier_turns      - messages from before the last quiet gap shown as background (default context.EARLIER_TURNS)
+      read_for_promises  - read each conversation for promises, signals and quotations (default True)
+      customer_profiles  - keep a written profile of each customer (default True)
+
+    A type whose people ask one question and leave (an institution's students) turns the last two off and keeps a
+    short history: the reading costs as much as the reply itself and finds nothing there to keep.
+    """
+    if not vertical:
+        return {}
+    try:
+        block = get(vertical).get("conversation") or {}
+    except UnknownVertical:
+        return {}
+    return block if isinstance(block, dict) else {}
+
+
 def capabilities_for(business: "Business") -> list[str]:
     """
     What this business can actually use: its vertical's declared list, then

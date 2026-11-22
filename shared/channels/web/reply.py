@@ -369,7 +369,11 @@ async def _generate_reply(
         context = await agent_context.build(business.id, customer.id, db)
     else:
         _visitor_said(db, business, session, text)
-        context = await agent_context.build_anonymous(business.id, _transcript_as_recent(session), db)
+        from shared import verticals
+
+        # A type can show a shorter history (verticals.conversation_options), as build() does for a known customer.
+        keep = max(1, int(verticals.conversation_options(getattr(business, "vertical", None)).get("recent_turns", _MAX_TRANSCRIPT_TURNS)))
+        context = await agent_context.build_anonymous(business.id, _transcript_as_recent(session)[-keep:], db)
     context.reply_language = reply_language or "auto"
 
     events = meter.stream(context)

@@ -19,6 +19,12 @@
     },
     "catalogue": {"title": "Courses", "item": "course"}
   },
+  "conversation": {
+    "recent_turns": 4,
+    "earlier_turns": 0,
+    "read_for_promises": false,
+    "customer_profiles": false
+  },
   "file_reading": {
     "large_files": true,
     "guide": "This is a school, college or university document - a prospectus, information bulletin, fee structure or notice. Catalogue: one row per course or programme - its name, its fee exactly as written with its unit (per year, per semester, total), and in details the level, duration and mode. More questions, each its own answer: the eligibility of each course; each important date (last date to apply, counselling, exams, fee deadlines) with what it is for; the documents required, per course where they differ; every web link the document gives, asked as 'X link?' with the full link as the answer; and hostel, refund, scholarship, reservation, attendance and other rules, one rule per answer. Read tables row by row and keep each value with its own course - never move a fee or a date to the course next to it."

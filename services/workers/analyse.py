@@ -342,6 +342,13 @@ async def analyse_message(message_id: uuid.UUID, db: AsyncSession) -> int:
         # the bulk mark at the end of this function).
         return 0
 
+    business = await db.get(Business, message.business_id)
+    if business and not verticals.conversation_options(business.vertical).get("read_for_promises", True):
+        # This type's conversations are a question and its answer - nothing to read for promises (its template's
+        # "conversation" block). Marked read so a later run does not pick it up either.
+        message.analysed_at = datetime.now(timezone.utc)
+        return 0
+
     if message.direction == Direction.inbound and await _superseded(message, db):
         logger.debug("message %s superseded before analysis", message_id)
         return 0
