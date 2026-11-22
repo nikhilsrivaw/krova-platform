@@ -91,7 +91,7 @@ async def _ask(model: str, prompt: str, menu: dict) -> tuple[str, float, float]:
     started = time.monotonic()
     try:
         answer = await asyncio.wait_for(
-            providers.call(model, {"system": kp.SYSTEM, "messages": [{"role": "user", "content": prompt}], "max_tokens": 60}),
+            providers.call(model, {"system": kp.SYSTEM, "messages": [{"role": "user", "content": prompt}], "max_tokens": kp.PICK_TOKENS}),
             30,
         )
     except Exception as exc:  # noqa: BLE001 - a failure is a result here

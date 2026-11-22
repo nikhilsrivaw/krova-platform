@@ -31,6 +31,8 @@ CHAT_TIMEOUT_S = 4.0
 # Past this the list costs more than a pick is worth, on every message. Word matching still runs.
 MENU_LIMIT = 500
 MOST_PICKS = 5
+# Room for five "number: name" picks; a name cut short at the limit is still matched by its start.
+PICK_TOKENS = 120
 SHORT_DETAIL = 60
 RECENT_TURNS = 4
 TURN_CHARS = 300
@@ -55,7 +57,7 @@ Look at the customer's last message. Start with this line: LANGUAGE: then the la
 
 On the next line reply in exactly one of these four forms, with nothing else.
 
-Numbers, separated by commas, at most {MOST_PICKS}: the items that answer it. Asking the fee or anything else about a named item picks that item.
+The items that answer it, at most {MOST_PICKS}, each as its number, a colon and its name as the list writes it, separated by commas, like "12: name on the list, 40: other name". Asking the fee or anything else about a named item picks that item.
 
 ALL: they want to know what is on offer rather than one thing ("what courses do you have", "what can I do after 12th", "show me everything").
 
@@ -129,9 +131,15 @@ def _by_name(item_id: str, written: str, menu: dict[str, tuple[str, dict]]) -> s
     name = _plain(written)
     if len(name) < SHORTEST_NAME:
         return item_id if item_id in menu else None
-    if item_id in menu and _plain(_label(menu[item_id])).startswith(name):
+    def fits(item) -> bool:
+        # Cut short at the token limit, or copied with the "(price on file)" the list line adds.
+        label = _plain(_label(item))
+        return bool(label) and (label.startswith(name) or name.startswith(label))
+
+    if item_id in menu and fits(menu[item_id]):
         return item_id
-    same = [i for i, item in menu.items() if _plain(_label(item)).startswith(name)]
+    exact = [i for i, item in menu.items() if _plain(_label(item)) == name]
+    same = exact or [i for i, item in menu.items() if fits(item)]
     return same[0] if len(same) == 1 else None
 
 
@@ -164,12 +172,18 @@ def _misses_the_named_item(asked: str, found: dict, menu: dict[str, tuple[str, d
     return not any(named & _words(text) for text in picked)
 
 
-COUNTED_RUN = 10
+# Nine numbers one after another ("5, 6, 7 ... 13") is the list read out in order, not a pick. The longest real run
+# seen was seven (a prospectus's seven diploma courses, listed together).
+COUNTED_RUN = 9
 
 
-def _counted_from_one(ids: list[str]) -> bool:
-    """"1, 2, 3, ... 10" somewhere in the answer - the list read out in order, not a pick."""
-    return {str(n) for n in range(1, COUNTED_RUN + 1)} <= set(ids)
+def _counted(ids: list[str]) -> bool:
+    run = 1
+    for before, after in zip(ids, ids[1:]):
+        run = run + 1 if int(after) == int(before) + 1 else 1
+        if run >= COUNTED_RUN:
+            return True
+    return False
 
 
 def _read(text: str, menu: dict[str, tuple[str, dict]], asked: str = "") -> dict | None:
@@ -194,7 +208,7 @@ def _read(text: str, menu: dict[str, tuple[str, dict]], asked: str = "") -> dict
             return None
     else:
         every = list(dict.fromkeys(re.findall(r"\b\d+\b", text)))
-        if _counted_from_one(every):
+        if len(menu) > 2 * COUNTED_RUN and _counted(every):  # on a short list, a run can be most of it
             return None
         ids = [i for i in every if i in menu]
     ids = ids[:MOST_PICKS]
@@ -228,7 +242,7 @@ async def pick(agent_context: Any, *, timeout: float = CALL_TIMEOUT_S) -> int:
             providers.call(route, {
                 "system": SYSTEM,
                 "messages": [{"role": "user", "content": _prompt(menu, agent_context.recent, known)}],
-                "max_tokens": 60,
+                "max_tokens": PICK_TOKENS,
             }),
             timeout,
         )

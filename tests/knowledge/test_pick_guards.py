@@ -62,3 +62,18 @@ def test_words_that_are_not_short_names_do_not_block_a_pick():
 def test_the_form_label_before_missing_is_read():
     found = kp._read("LANGUAGE: Hindi\nNumbers: MISSING: Gorakhpur study centre address", MENU, "")
     assert found["missing"] == "Gorakhpur study centre address"
+
+
+def test_a_run_counted_from_anywhere_is_not_a_pick():
+    assert kp._read("LANGUAGE: Hindi\n\n5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16", MENU, "documents?") is None
+    assert kp._read("LANGUAGE: Hindi\n\n7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,", MENU, "study centre") is None
+    assert len(_names(kp._read("LANGUAGE: Hindi\n\n7, 8, 9, 10, 11, 12, 13, 20, 21", MENU, "diploma"))) == 5
+
+
+def test_names_copied_with_the_list_line_or_cut_short_still_match():
+    raw = "LANGUAGE: Hindi\n4: Bachelor of Computer Application (BCA) (price on file), 37: What is the eligibility fo"
+    assert _names(kp._read(raw, MENU, "")) == ["Bachelor of Computer Application (BCA)", "What is the eligibility for MBA?"]
+
+
+def test_the_answer_form_asks_for_names():
+    assert "its number, a colon and its name" in kp.ASK

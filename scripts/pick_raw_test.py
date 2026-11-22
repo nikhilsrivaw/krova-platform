@@ -78,7 +78,7 @@ async def main(name: str) -> None:
         for cold in (False, True):
             _cold["on"] = cold
             for _ in range(RUNS):
-                answer = await providers.call(MODEL, {"system": kp.SYSTEM, "messages": [{"role": "user", "content": prompt}], "max_tokens": 60})
+                answer = await providers.call(MODEL, {"system": kp.SYSTEM, "messages": [{"role": "user", "content": prompt}], "max_tokens": kp.PICK_TOKENS})
                 raw = " / ".join((answer.text or "").split("\n"))
                 print(f"  {'temp 0 ' if cold else 'as live'}  raw: {raw[:70]:<70}  -> {_names(kp._read(answer.text, menu, asked))}")
         print()
