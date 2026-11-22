@@ -106,9 +106,79 @@ def _missing_name(text: str) -> str | None:
     return " ".join(words[:MISSING_WORDS])[:MISSING_CHARS].strip()
 
 
-def _read(text: str, menu: dict[str, tuple[str, dict]]) -> dict | None:
-    """The picked items; empty for a plain NONE; None when the answer cannot be read, so word matching runs instead."""
+# Tested on a 203-item prospectus list (scripts/pick_raw_test.py), the pick model went wrong in three readable ways:
+# it wrote "1: Bachelor of Computer Application (BCA)" (item 1 is B.A.), it counted "1, 2, 3, ... 15" when lost, and
+# it answered "MBA fee?" with item 1. The checks below catch each; what they reject falls back to word matching.
+_FORM_LABEL = re.compile(r"^\W*numbers?\s*:\s*", re.I)
+_NAMED_ID = re.compile(r"(\d+)\s*:\s*(.+?)(?=\s*(?:[,/|\n]\s*)?\b\d+\s*:|$)", re.S)
+_NAME_WORD = re.compile(r"[^\s()\[\],;:/|?]+")
+SHORTEST_NAME = 3
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"[\W_]+", "", str(text or "").lower())
+
+
+def _label(item: tuple[str, dict]) -> str:
+    group, data = item
+    return str((data.get("question") if group == "answers" else data.get("name")) or "")
+
+
+def _by_name(item_id: str, written: str, menu: dict[str, tuple[str, dict]]) -> str | None:
+    """The item a "12: Name" answer means: the name decides when the number points somewhere else."""
+    name = _plain(written)
+    if len(name) < SHORTEST_NAME:
+        return item_id if item_id in menu else None
+    if item_id in menu and _plain(_label(menu[item_id])).startswith(name):
+        return item_id
+    same = [i for i, item in menu.items() if _plain(_label(item)).startswith(name)]
+    return same[0] if len(same) == 1 else None
+
+
+def _words(text: str) -> set[str]:
+    """Words with their dots taken out, so "B.Ed." and "bed", "M.B.A." and "MBA" are one word."""
+    return {w for w in (_plain(x) for x in _NAME_WORD.findall(str(text or ""))) if w}
+
+
+def _short_names(menu: dict[str, tuple[str, dict]]) -> set[str]:
+    """The short names written in brackets on the list - MBA, BCA, B.Ed. - that a customer types to name one item."""
+    names: set[str] = set()
+    for group, data in menu.values():
+        if group != "answers":
+            for inside in re.findall(r"[(\[]([^)\]]+)[)\]]", str(data.get("name") or "")):
+                # Only what is written like a short name (MBA, B.Ed., B.Com.), not a word such as "Special".
+                for raw in _NAME_WORD.findall(inside):
+                    word = _plain(raw)
+                    if len(word) >= 2 and re.fullmatch(r"[A-Za-z.\-]+", raw) and not re.search(r"[a-z]{3}", raw):
+                        names.add(word)
+    return names
+
+
+def _misses_the_named_item(asked: str, found: dict, menu: dict[str, tuple[str, dict]]) -> bool:
+    """They named an item by its short name ("MBA fee?") and nothing picked carries that name."""
+    named = _words(asked) & _short_names(menu)
+    if not named:
+        return False
+    picked = [f"{r.get('name', '')} {r.get('details') or ''}" for r in found["rows"] + found["products"]]
+    picked += [str(a.get("question", "")) for a in found["answers"]]
+    return not any(named & _words(text) for text in picked)
+
+
+COUNTED_RUN = 10
+
+
+def _counted_from_one(ids: list[str]) -> bool:
+    """"1, 2, 3, ... 10" somewhere in the answer - the list read out in order, not a pick."""
+    return {str(n) for n in range(1, COUNTED_RUN + 1)} <= set(ids)
+
+
+def _read(text: str, menu: dict[str, tuple[str, dict]], asked: str = "") -> dict | None:
+    """
+    The picked items; empty for a plain NONE; None when the answer cannot be read, so word matching runs instead.
+    `asked` is the customer's message: an item they name by its short name must be among the picks.
+    """
     language, text = _language(text)
+    text = _FORM_LABEL.sub("", text or "")
     found = {"rows": [], "answers": [], "products": [], "missing": None, "language": language, "everything": False}
     missing = _missing_name(text)
     if missing is not None:
@@ -117,12 +187,24 @@ def _read(text: str, menu: dict[str, tuple[str, dict]]) -> dict | None:
     if re.match(r"\W*ALL\b", text, re.I):
         found["everything"] = True
         return found
-    ids = [i for i in dict.fromkeys(re.findall(r"\b\d+\b", text or "")) if i in menu][:MOST_PICKS]
+    named = _NAMED_ID.findall(text)
+    if named:
+        ids = [i for i in dict.fromkeys(_by_name(i, n, menu) for i, n in named) if i]
+        if not ids:
+            return None
+    else:
+        every = list(dict.fromkeys(re.findall(r"\b\d+\b", text)))
+        if _counted_from_one(every):
+            return None
+        ids = [i for i in every if i in menu]
+    ids = ids[:MOST_PICKS]
     if not ids:
-        return found if "NONE" in (text or "").upper() else None
+        return found if "NONE" in text.upper() else None
     for item_id in ids:
         group, item = menu[item_id]
         found[group].append(item)
+    if asked and _misses_the_named_item(asked, found, menu):
+        return None
     return found
 
 
@@ -154,7 +236,7 @@ async def pick(agent_context: Any, *, timeout: float = CALL_TIMEOUT_S) -> int:
         logger.warning("knowledge pick failed (%s), using word match", type(exc).__name__)
         return 0
     client._log_usage(TASK, route, answer.usage, answer.cost_paise)
-    picked = _read(answer.text, menu)
+    picked = _read(answer.text, menu, last)
     if picked is None:
         logger.warning("knowledge pick answer could not be read, using word match")
     else:
