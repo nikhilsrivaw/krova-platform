@@ -19,6 +19,7 @@ comes back) is testable without a live Sarvam account.
 
 import base64
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -272,6 +273,39 @@ def tts_start_config(*, speaker: str = "shubh", language: str = "en-IN") -> str:
             },
         }
     )
+
+
+# ── what is said, made sayable ─────────────────────────────────────────────────────────────────────────────────────
+#
+# Two things a caller cannot follow, fixed just before the voice speaks (the transcript keeps the text as written):
+# a web link, which is read out character by character and cannot be written down - it is left out (the agent is told
+# not to say one, so this only catches a slip); and a name in capitals such as "UPRTOU" or "U.P.R.T.O.U.", which bulbul
+# reads as one made-up word - it is spaced into its letters ("U P R T O U"), the way the name is said. A few
+# capitalised words that are said as words, and the names the pronunciation dictionary already holds, are left alone.
+
+_LINK = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|in|org|net|edu|ac\.in|co\.in|gov\.in)(?:/\S*)?",
+                   re.IGNORECASE)
+_DOTTED = re.compile(r"\b(?:[A-Z]\.){2,}[A-Z]?\.?")
+_CAPITALS = re.compile(r"\b[A-Z]{2,8}\b")
+SAID_AS_WORDS = {"KROVA", "AQIROX", "OK", "NAAC", "COVID", "NEET", "CUET", "GATE", "CAT", "JEE", "ODL", "UNESCO", "NASA"}
+
+
+def _letters(word: str) -> str:
+    return " ".join(ch for ch in word if ch.isalpha())
+
+
+def sayable(text: str) -> str:
+    """The text as it should be spoken: links left out, capitalised names spelled letter by letter."""
+    if not text:
+        return text
+    out = _LINK.sub("", text)
+    out = _DOTTED.sub(lambda m: _letters(m.group(0)) + " ", out)
+    out = _CAPITALS.sub(lambda m: m.group(0) if m.group(0) in SAID_AS_WORDS else _letters(m.group(0)), out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\s+([.,!?।:])", r"\1", out)
+    if out != text:
+        out = re.sub(r"\s*[:\-]\s*$", "", out)  # "Form yahan hai: <link>" leaves no dangling colon
+    return out
 
 
 def tts_text_frame(text: str) -> str:

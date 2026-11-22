@@ -429,7 +429,10 @@ async def stream(
 
             try:
                 async for text in text_chunks:
-                    await ws.send(sarvam.tts_text_frame(text))
+                    spoken = sarvam.sayable(text)  # no web links read out, "UPRTOU" said letter by letter
+                    if not spoken.strip():
+                        continue
+                    await ws.send(sarvam.tts_text_frame(spoken))
                     await ws.send(sarvam.tts_flush_frame())
                     state["flushes_sent"] += 1
             finally:
