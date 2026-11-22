@@ -334,12 +334,16 @@ class ReadFieldOut(BaseModel):
 class ReadFaqOut(BaseModel):
     question: str
     answer: str
+    check: str = ""  # a long PDF's answers: "look" when it gives a number the document does not contain
 
 
 class ReadRowOut(BaseModel):
     name: str
     price: str
     details: str
+    # a long PDF's rows are checked against its own tables: "ok", or "look" (check it), and the page it is on
+    check: str = ""
+    page: int | None = None
 
 
 class ReadFileOut(BaseModel):
@@ -443,12 +447,24 @@ async def read_file(current_user: OwnerOrAdminDep, db: DbDep, file: UploadFile =
             )
             for f in knowledge_card.fields_for(vertical) if f["key"] in reading.fields
         ],
-        faqs=[ReadFaqOut(question=q, answer=a) for q, a in reading.faqs],
+        faqs=[
+            ReadFaqOut(question=q, answer=a, check=reading.faq_checks[i] if i < len(reading.faq_checks) else "")
+            for i, (q, a) in enumerate(reading.faqs)
+        ],
         truncated=reading.truncated,
         reads_left_today=left,
-        catalogue=[ReadRowOut(**r) for r in reading.catalogue],
+        catalogue=[
+            ReadRowOut(**r, **(
+                {"check": reading.catalogue_checks[i][0], "page": reading.catalogue_checks[i][1]}
+                if i < len(reading.catalogue_checks) else {}
+            ))
+            for i, r in enumerate(reading.catalogue)
+        ],
         catalogue_now=catalogue_now,
-        bank=[ReadFaqOut(question=q, answer=a) for q, a in reading.bank],
+        bank=[
+            ReadFaqOut(question=q, answer=a, check=reading.bank_checks[i] if i < len(reading.bank_checks) else "")
+            for i, (q, a) in enumerate(reading.bank)
+        ],
         bank_room=bank_room,
         pages_read=reading.pages_read,
         pages_without_text=reading.pages_without_text,

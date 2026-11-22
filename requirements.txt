@@ -36,6 +36,8 @@ anthropic==0.64.0
 pypdf==6.21.4
 # Reads Hindi and other Indic text out of PDFs correctly, where pypdf breaks it - shared/ai/knowledge_reader.py.
 pypdfium2==5.13.0
+# Where each table cell sits in a PDF (shared/ai/pdf_structure.py) - fee tables read with their column names
+pdfplumber==0.11.4
 
 # ── Dev ──────────────────────────────────────────────────────────────────────
 pytest==8.4.1

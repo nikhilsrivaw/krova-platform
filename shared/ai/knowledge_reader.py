@@ -18,7 +18,7 @@ from typing import Any
 
 from pypdf import PdfReader
 
-from shared.ai import client
+from shared.ai import client, pdf_structure
 from shared.verticals import knowledge_card, knowledge_lookup
 from shared.utils.logging import get_logger
 
@@ -74,6 +74,10 @@ class CardReading:
     pages_read: int = 0
     pages_without_text: int = 0
     more_than_fits: bool = False
+    # Checked against the document (check_catalogue / check_answers): "ok" or "look", and the page a course row is on.
+    catalogue_checks: list[tuple[str, int | None]] = dc_field(default_factory=list)
+    faq_checks: list[str] = dc_field(default_factory=list)
+    bank_checks: list[str] = dc_field(default_factory=list)
 
 
 class UnreadableFile(Exception):
@@ -464,7 +468,15 @@ async def read_large_pdf(*, raw: bytes, filename: str, vertical: str, faq_room: 
         raise UnreadableFile("That file is too large. Keep it under 25 MB.")
     if not raw:
         raise UnreadableFile("That file is empty.")
-    pages = pdf_pages(raw)
+    # Tables laid out with their column names and Kruti Dev Hindi converted (shared/ai/pdf_structure.py); plain page
+    # text when the PDF cannot be laid out. Both are slow on a long file, so they run off the event loop.
+    laid_out = await asyncio.to_thread(pdf_structure.read, raw, MAX_LARGE_PAGES)
+    if laid_out:
+        pages = [p.text for p in laid_out]
+        table_rows = [(n, row) for n, p in enumerate(laid_out, start=1) for row in p.rows]
+    else:
+        pages = await asyncio.to_thread(pdf_pages, raw)
+        table_rows = []
     parts = page_parts(pages)
     if not parts:
         raise UnreadableFile("This PDF looks like a scan with no text in it. Upload a PDF whose text can be selected.")
@@ -494,9 +506,66 @@ async def read_large_pdf(*, raw: bytes, filename: str, vertical: str, faq_room: 
     if not readings:
         raise next(r for r in results if isinstance(r, BaseException))
     values, faqs, rows, bank, more = merge_readings(readings, faq_room=faq_room, bank_room=bank_room)
-    logger.info("large file read file=%s pages=%s parts=%s failed=%s cost_paise=%s", filename, len(pages), len(parts), failed, cost)
+    whole = "\n".join(pages)
+    catalogue_checks = check_catalogue(rows, table_rows, whole)
+    logger.info(
+        "large file read file=%s pages=%s parts=%s failed=%s rows=%s rows_to_check=%s cost_paise=%s", filename,
+        len(pages), len(parts), failed, len(rows), sum(1 for c, _ in catalogue_checks if c != "ok"), cost,
+    )
     return CardReading(
         fields=values, faqs=faqs, truncated=failed > 0 or len(pages) >= MAX_LARGE_PAGES, cost_paise=cost,
         catalogue=rows, bank=bank, pages_read=len(pages),
         pages_without_text=sum(1 for p in pages if len(p) < PAGE_TEXT_MIN), more_than_fits=more,
+        catalogue_checks=catalogue_checks, faq_checks=check_answers(faqs, whole), bank_checks=check_answers(bank, whole),
     )
+
+
+# ── checking what was read against the document ───────────────────────────────────────────────────────────────────
+#
+# A model reading a fee table can still put one course's fee on the next course. So every course row is looked for in
+# the document's own table rows: "ok" when one table row holds both the fee's number and the course's name, "look"
+# otherwise - shown to the owner with the page, before anything is saved. Answers are checked for numbers the document
+# does not contain. No AI: plain matching, so it costs nothing and cannot itself make things up.
+
+_GENERIC_NAME_WORDS = {
+    "of", "in", "and", "the", "for", "a", "an", "course", "programme", "program", "degree", "diploma", "certificate",
+    "bachelor", "master", "masters", "post", "graduate", "graduation", "pg", "ug", "science", "arts", "ma", "ba", "msc",
+    "bsc", "mcom", "bcom", "m", "b", "year", "years", "fee", "fees",
+}
+
+
+def _figures(text: str, shortest: int = 3) -> list[str]:
+    """The numbers in a text, commas dropped ("Rs 1,20,000" -> "120000"), of at least `shortest` digits."""
+    return [n for n in (m.replace(",", "") for m in re.findall(r"\d[\d,]*\d|\d", text or "")) if len(n) >= shortest]
+
+
+def _has_figure(text: str, figure: str) -> bool:
+    return re.search(rf"(?<!\d){re.escape(figure)}(?!\d)", (text or "").replace(",", "")) is not None
+
+
+def _name_words(name: str) -> tuple[list[str], list[str]]:
+    words = [w for w in re.findall(r"[^\W_]+", (name or "").lower()) if len(w) >= 2 or w.isdigit()]
+    distinct = [w for w in words if w not in _GENERIC_NAME_WORDS]
+    return distinct, words
+
+
+def check_catalogue(rows: list[dict], table_rows: list[tuple[int, str]], whole: str) -> list[tuple[str, int | None]]:
+    """Per course row: ("ok", page) when one table row of the document holds its fee and its name; else ("look", page)."""
+    out: list[tuple[str, int | None]] = []
+    for row in rows:
+        figures = _figures(row.get("price", ""))
+        distinct, words = _name_words(row.get("name", ""))
+        named = [(page, text) for page, text in table_rows if any(w in text.lower() for w in (distinct or words))]
+        both = [page for page, text in named if figures and all(_has_figure(text, f) for f in figures)]
+        if both:
+            out.append(("ok", both[0]))
+        elif figures and not table_rows and all(_has_figure(whole, f) for f in figures):
+            out.append(("ok", None))  # no tables to hold it against; the fee is at least in the document
+        else:
+            out.append(("look", named[0][0] if named else None))
+    return out
+
+
+def check_answers(pairs: list[tuple[str, str]], whole: str) -> list[str]:
+    """Per answer: "look" when it gives a number (a fee, a date, a count) the document does not contain, else "ok"."""
+    return ["look" if any(not _has_figure(whole, f) for f in _figures(a, 2)) else "ok" for _, a in pairs]
